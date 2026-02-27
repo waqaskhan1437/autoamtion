@@ -68,6 +68,7 @@ class GitHubRunner
             'inputs' => $inputs
         ];
 
+        $dispatchStartedAt = time();
         $res = $this->apiRequest($dispatchUrl, $config['token'], 'POST', $payload);
         if (!$res['success']) {
             return $res;
@@ -85,7 +86,14 @@ class GitHubRunner
         // Dispatch API does not return a run id immediately; poll briefly to capture fresh run metadata.
         $runMeta = [];
         for ($i = 0; $i < 5; $i++) {
-            $runMeta = $this->findLatestRun($config['owner'], $config['repo'], $config['workflow'], $config['token'], $automationId);
+            $runMeta = $this->findLatestRun(
+                $config['owner'],
+                $config['repo'],
+                $config['workflow'],
+                $config['token'],
+                $automationId,
+                $dispatchStartedAt - 2
+            );
             if (!empty($runMeta['run_id'])) {
                 break;
             }
@@ -195,7 +203,7 @@ class GitHubRunner
         return $flat;
     }
 
-    private function findLatestRun(string $owner, string $repo, string $workflow, string $token, int $automationId): array
+    private function findLatestRun(string $owner, string $repo, string $workflow, string $token, int $automationId, ?int $minCreatedAt = null): array
     {
         $encodedWorkflow = rawurlencode($workflow);
         $url = "https://api.github.com/repos/{$owner}/{$repo}/actions/workflows/{$encodedWorkflow}/runs?event=workflow_dispatch&per_page=5";
@@ -209,11 +217,21 @@ class GitHubRunner
             return [];
         }
 
+        $recentRuns = [];
         foreach ($runs as $run) {
             if (!is_array($run)) {
                 continue;
             }
 
+            $createdAtTs = isset($run['created_at']) ? strtotime((string)$run['created_at']) : false;
+            if ($minCreatedAt !== null && $createdAtTs !== false && $createdAtTs < $minCreatedAt) {
+                continue;
+            }
+
+            $recentRuns[] = $run;
+        }
+
+        foreach ($recentRuns as $run) {
             $runId = $run['id'] ?? null;
             $runUrl = $run['html_url'] ?? null;
             $displayTitle = (string)($run['display_title'] ?? '');
@@ -224,10 +242,10 @@ class GitHubRunner
             }
         }
 
-        if (!empty($runs[0]) && is_array($runs[0])) {
+        if (!empty($recentRuns[0]) && is_array($recentRuns[0])) {
             return [
-                'run_id' => $runs[0]['id'] ?? null,
-                'run_url' => $runs[0]['html_url'] ?? null
+                'run_id' => $recentRuns[0]['id'] ?? null,
+                'run_url' => $recentRuns[0]['html_url'] ?? null
             ];
         }
 
