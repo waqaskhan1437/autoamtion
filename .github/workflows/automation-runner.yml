@@ -24,8 +24,11 @@ jobs:
 
       - name: Validate automation id
         shell: pwsh
+        env:
+          INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
         run: |
-          if ([string]::IsNullOrWhiteSpace("${{ inputs.automation_id }}")) {
+          Write-Host "automation_id=$env:INPUT_AUTOMATION_ID"
+          if ([string]::IsNullOrWhiteSpace($env:INPUT_AUTOMATION_ID)) {
             Write-Error "automation_id is required"
             exit 1
           }
@@ -37,7 +40,8 @@ jobs:
           VW_FFPROBE_PATH: ffprobe
           RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
           RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
+          INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
         shell: pwsh
         run: |
           & "C:\xampp\php\php.exe" -v
-          & "C:\xampp\php\php.exe" scripts/github-runner-job.php "${{ inputs.automation_id }}"
+          & "C:\xampp\php\php.exe" scripts/github-runner-job.php "$env:INPUT_AUTOMATION_ID"
