@@ -244,7 +244,9 @@ try {
                     'message' => 'Dispatched to GitHub runner from cron.',
                     'progress' => 15,
                     'stats' => ['fetched' => 0, 'downloaded' => 0, 'processed' => 0, 'scheduled' => 0, 'posted' => 0],
+                    'run_id' => $dispatch['run_id'] ?? null,
                     'run_url' => $dispatch['run_url'] ?? null,
+                    'workflow_url' => $dispatch['workflow_url'] ?? null,
                     'time' => date('H:i:s')
                 ]);
 

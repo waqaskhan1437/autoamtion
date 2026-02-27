@@ -31,7 +31,7 @@ if (!$automationId) {
 
 // Try with new columns first, fallback to basic query
 try {
-    $stmt = $pdo->prepare("SELECT status, progress_percent, progress_data, last_progress_time, next_run_at, enabled FROM automation_settings WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT status, progress_percent, progress_data, last_progress_time, next_run_at, enabled, run_mode FROM automation_settings WHERE id = ?");
     $stmt->execute([$automationId]);
     $automation = $stmt->fetch();
 } catch (Exception $e) {
@@ -46,6 +46,7 @@ try {
             $automation['last_progress_time'] = null;
             $automation['next_run_at'] = null;
             $automation['enabled'] = 0;
+            $automation['run_mode'] = 'local';
         }
     } catch (Exception $e2) {
         echo json_encode(['success' => false, 'error' => 'Database query failed: ' . $e2->getMessage()]);
@@ -62,6 +63,89 @@ $progressData = json_decode($automation['progress_data'] ?? '{}', true);
 $progressPercent = (int)($automation['progress_percent'] ?? 0);
 $nextRunTs = !empty($automation['next_run_at']) ? strtotime((string)$automation['next_run_at']) : false;
 $hasFutureNextRun = ($nextRunTs !== false && $nextRunTs > time());
+
+// Sync GitHub-hosted runner completion status from GitHub API when callback is not used.
+if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automation['status'], ['running', 'processing'], true)) {
+    $runId = (int)($progressData['run_id'] ?? 0);
+    if ($runId <= 0 && !empty($progressData['run_url']) && preg_match('~/runs/(\d+)~', (string)$progressData['run_url'], $m)) {
+        $runId = (int)$m[1];
+    }
+
+    if ($runId > 0 && function_exists('curl_init')) {
+        $stmt = $pdo->prepare("
+            SELECT setting_key, setting_value
+            FROM settings
+            WHERE setting_key IN ('github_runner_token', 'github_runner_owner', 'github_runner_repo')
+        ");
+        $stmt->execute();
+        $gh = $stmt->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
+        $ghToken = trim((string)($gh['github_runner_token'] ?? ''));
+        $ghOwner = trim((string)($gh['github_runner_owner'] ?? ''));
+        $ghRepo = trim((string)($gh['github_runner_repo'] ?? ''));
+
+        if ($ghToken !== '' && $ghOwner !== '' && $ghRepo !== '') {
+            $url = "https://api.github.com/repos/{$ghOwner}/{$ghRepo}/actions/runs/{$runId}";
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 12,
+                CURLOPT_HTTPHEADER => [
+                    'Accept: application/vnd.github+json',
+                    'Authorization: Bearer ' . $ghToken,
+                    'X-GitHub-Api-Version: 2022-11-28',
+                    'User-Agent: VideoWorkflow-GitHubStatus/1.0'
+                ]
+            ]);
+            $body = curl_exec($ch);
+            $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($body !== false && $http === 200) {
+                $run = json_decode($body, true);
+                if (is_array($run)) {
+                    $runStatus = strtolower((string)($run['status'] ?? ''));
+                    if ($runStatus === 'completed') {
+                        $conclusion = strtolower((string)($run['conclusion'] ?? ''));
+                        $isSuccess = in_array($conclusion, ['success', 'neutral', 'skipped'], true);
+                        $newStatus = $isSuccess ? 'completed' : 'error';
+                        $progressPercent = $isSuccess ? 100 : 0;
+
+                        $progressData['step'] = 'github_runner';
+                        $progressData['status'] = $isSuccess ? 'success' : 'error';
+                        $progressData['message'] = $isSuccess
+                            ? 'GitHub workflow completed successfully.'
+                            : ('GitHub workflow failed: ' . ($conclusion ?: 'unknown'));
+                        $progressData['progress'] = $progressPercent;
+                        $progressData['run_id'] = $runId;
+                        $progressData['run_url'] = $run['html_url'] ?? ($progressData['run_url'] ?? null);
+                        $progressData['time'] = date('H:i:s');
+
+                        $progressPayload = json_encode($progressData);
+                        $pdo->prepare("
+                            UPDATE automation_settings
+                            SET status = ?,
+                                progress_percent = ?,
+                                progress_data = ?,
+                                last_progress_time = NOW(),
+                                last_run_at = NOW()
+                            WHERE id = ?
+                        ")->execute([$newStatus, $progressPercent, $progressPayload, $automationId]);
+
+                        try {
+                            $pdo->prepare("
+                                INSERT INTO automation_logs (automation_id, action, status, message)
+                                VALUES (?, 'github_status_sync', ?, ?)
+                            ")->execute([$automationId, $isSuccess ? 'success' : 'error', $progressData['message']]);
+                        } catch (Exception $e) {}
+
+                        $automation['status'] = $newStatus;
+                        $automation['last_progress_time'] = date('Y-m-d H:i:s');
+                    }
+                }
+            }
+        }
+    }
+}
 
 // Treat scheduled-cycle completion as done when cron has already moved to next run.
 $cycleCompleted = (

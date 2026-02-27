@@ -140,7 +140,9 @@ if ($runMode === 'github_runner') {
         'status' => 'success',
         'message' => 'GitHub workflow dispatched successfully.',
         'progress' => 15,
+        'run_id' => $dispatch['run_id'] ?? null,
         'run_url' => $dispatch['run_url'] ?? null,
+        'workflow_url' => $dispatch['workflow_url'] ?? null,
         'time' => date('H:i:s')
     ]);
 
@@ -241,4 +243,3 @@ echo json_encode([
     'message' => 'Automation started in background',
     'automationId' => $automationId
 ]);
-
