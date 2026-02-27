@@ -1,47 +1,116 @@
 name: Automation Runner
 
 on:
+  repository_dispatch:
+    types:
+      - automation_run
   workflow_dispatch:
     inputs:
-      automation_id:
-        description: "Automation ID from automation_settings"
+      payload_gzip_b64:
+        description: "Base64 GZIP payload from local dispatcher"
         required: true
-        type: string
-      trigger_source:
-        description: "Who triggered this run"
-        required: false
-        default: "manual"
         type: string
 
 jobs:
   run-automation:
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: video_workflow
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate automation id
-        shell: powershell
-        env:
-          INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: curl, ftp, mbstring, json, pdo, pdo_mysql, zlib
+
+      - name: Install runtime dependencies
         run: |
-          Write-Host "automation_id=$env:INPUT_AUTOMATION_ID"
-          if ([string]::IsNullOrWhiteSpace($env:INPUT_AUTOMATION_ID)) {
-            Write-Error "automation_id is required"
-            exit 1
-          }
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg default-mysql-client
+
+      - name: Decode automation payload
+        id: payload
+        env:
+          DISPATCH_PAYLOAD: ${{ github.event.client_payload.payload_gzip_b64 }}
+          INPUT_PAYLOAD: ${{ github.event.inputs.payload_gzip_b64 }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, gzip, pathlib
+
+          payload_b64 = os.getenv("DISPATCH_PAYLOAD", "").strip() or os.getenv("INPUT_PAYLOAD", "").strip()
+          if not payload_b64:
+              raise SystemExit("Missing payload_gzip_b64")
+
+          raw = gzip.decompress(base64.b64decode(payload_b64))
+          data = json.loads(raw.decode("utf-8"))
+          pathlib.Path("payload.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+          automation = data.get("automation") or {}
+          automation_id = str(automation.get("id") or "")
+          if not automation_id:
+              raise SystemExit("automation.id missing in payload")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"automation_id={automation_id}\n")
+
+          print("Payload decoded for automation:", automation_id)
+          PY
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            if mysqladmin ping -h127.0.0.1 -uroot -proot --silent; then
+              echo "MySQL is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL did not become ready in time"
+          exit 1
+
+      - name: Create schema
+        run: |
+          awk '/-- Insert Demo Data/{exit} {print}' database.sql > /tmp/schema.sql
+          mysql -h127.0.0.1 -uroot -proot video_workflow < /tmp/schema.sql
+
+      - name: Seed DB from payload
+        env:
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow
+          VW_DB_USER: root
+          VW_DB_PASS: root
+        run: |
+          php scripts/bootstrap-runner-db.php payload.json
 
       - name: Run automation job
         env:
-          VW_BASE_DATA_DIR: C:\VideoWorkflow
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow
+          VW_DB_USER: root
+          VW_DB_PASS: root
+          VW_BASE_DATA_DIR: /tmp/VideoWorkflow
           VW_FFMPEG_PATH: ffmpeg
           VW_FFPROBE_PATH: ffprobe
           RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
           RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
-          INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
-        shell: powershell
         run: |
-          & "C:\xampp\php\php.exe" -v
-          & "C:\xampp\php\php.exe" scripts/github-runner-job.php "$env:INPUT_AUTOMATION_ID"
+          php -v
+          php scripts/github-runner-job.php "${{ steps.payload.outputs.automation_id }}"
+

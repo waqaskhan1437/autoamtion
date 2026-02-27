@@ -48,24 +48,34 @@ class GitHubRunner
             return $config;
         }
 
-        $workflow = rawurlencode($config['workflow']);
-        $dispatchUrl = "https://api.github.com/repos/{$config['owner']}/{$config['repo']}/actions/workflows/{$workflow}/dispatches";
-
-        $inputs = [
-            'automation_id' => (string)$automationId,
-            'trigger_source' => (string)$triggerSource
-        ];
-
-        $extraInputs = $this->decodeExtraInputs($config['inputs_json']);
-        foreach ($extraInputs as $key => $value) {
-            if (!array_key_exists($key, $inputs)) {
-                $inputs[$key] = (string)$value;
-            }
+        $snapshot = $this->buildAutomationSnapshot($automationId);
+        if (!$snapshot['success']) {
+            return $snapshot;
         }
 
+        $snapshotJson = json_encode($snapshot['data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($snapshotJson === false) {
+            return ['success' => false, 'error' => 'Failed to encode automation payload.'];
+        }
+
+        $gzip = gzencode($snapshotJson, 9);
+        if ($gzip === false) {
+            return ['success' => false, 'error' => 'Failed to compress automation payload.'];
+        }
+
+        $payloadB64 = base64_encode($gzip);
+        if (strlen($payloadB64) > 60000) {
+            return ['success' => false, 'error' => 'Automation payload too large for GitHub dispatch.'];
+        }
+
+        $dispatchUrl = "https://api.github.com/repos/{$config['owner']}/{$config['repo']}/dispatches";
         $payload = [
-            'ref' => $config['ref'],
-            'inputs' => $inputs
+            'event_type' => 'automation_run',
+            'client_payload' => [
+                'trigger_source' => (string)$triggerSource,
+                'automation_id' => (string)$automationId,
+                'payload_gzip_b64' => $payloadB64
+            ]
         ];
 
         $dispatchStartedAt = time();
@@ -74,7 +84,7 @@ class GitHubRunner
             return $res;
         }
 
-        if (!in_array($res['status'], [201, 202, 204], true)) {
+        if (!in_array($res['status'], [200, 201, 202, 204], true)) {
             return [
                 'success' => false,
                 'error' => "Dispatch failed ({$res['status']})",
@@ -92,7 +102,8 @@ class GitHubRunner
                 $config['workflow'],
                 $config['token'],
                 $automationId,
-                $dispatchStartedAt - 2
+                $dispatchStartedAt - 2,
+                'repository_dispatch'
             );
             if (!empty($runMeta['run_id'])) {
                 break;
@@ -106,6 +117,44 @@ class GitHubRunner
             'workflow_url' => $workflowUrl,
             'run_id' => $runMeta['run_id'] ?? null,
             'run_url' => $runMeta['run_url'] ?? $workflowUrl
+        ];
+    }
+
+    private function buildAutomationSnapshot(int $automationId): array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM automation_settings WHERE id = ? LIMIT 1");
+        $stmt->execute([$automationId]);
+        $automation = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$automation) {
+            return ['success' => false, 'error' => 'Automation not found for payload snapshot.'];
+        }
+
+        $apiKey = null;
+        $apiKeyId = isset($automation['api_key_id']) ? (int)$automation['api_key_id'] : 0;
+        if ($apiKeyId > 0) {
+            $k = $this->pdo->prepare("SELECT * FROM api_keys WHERE id = ? LIMIT 1");
+            $k->execute([$apiKeyId]);
+            $apiKey = $k->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+
+        $settingsRows = $this->pdo->query("SELECT setting_key, setting_value FROM settings")->fetchAll(PDO::FETCH_ASSOC);
+        $settings = [];
+        foreach ($settingsRows as $row) {
+            $key = (string)($row['setting_key'] ?? '');
+            if ($key === '') {
+                continue;
+            }
+            $settings[$key] = (string)($row['setting_value'] ?? '');
+        }
+
+        return [
+            'success' => true,
+            'data' => [
+                'automation' => $automation,
+                'api_key' => $apiKey,
+                'settings' => $settings,
+                'snapshot_at' => gmdate('c')
+            ]
         ];
     }
 
@@ -203,10 +252,21 @@ class GitHubRunner
         return $flat;
     }
 
-    private function findLatestRun(string $owner, string $repo, string $workflow, string $token, int $automationId, ?int $minCreatedAt = null): array
+    private function findLatestRun(
+        string $owner,
+        string $repo,
+        string $workflow,
+        string $token,
+        int $automationId,
+        ?int $minCreatedAt = null,
+        ?string $eventType = null
+    ): array
     {
         $encodedWorkflow = rawurlencode($workflow);
-        $url = "https://api.github.com/repos/{$owner}/{$repo}/actions/workflows/{$encodedWorkflow}/runs?event=workflow_dispatch&per_page=5";
+        $url = "https://api.github.com/repos/{$owner}/{$repo}/actions/workflows/{$encodedWorkflow}/runs?per_page=10";
+        if ($eventType !== null && $eventType !== '') {
+            $url .= '&event=' . rawurlencode($eventType);
+        }
         $res = $this->apiRequest($url, $token);
         if (!$res['success'] || $res['status'] !== 200 || !is_array($res['json'])) {
             return [];
