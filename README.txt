@@ -197,11 +197,18 @@ You can now choose runner mode per automation:
 - local (existing behavior)
 - github_runner (dispatches GitHub Actions workflow)
 
+How it works now:
+1. Local app sends only a trigger command + automation payload to GitHub.
+2. Full processing runs on GitHub-hosted runner (ubuntu-latest), not local CPU/RAM.
+3. Runner creates temporary MySQL + FFmpeg environment and executes automation.
+4. Dashboard syncs GitHub run completion status automatically.
+
 How to enable:
 1. Open Settings > GitHub Runner
 2. Add token, owner, repo, workflow file, branch
 3. Create/Edit automation and select Runner Mode = GitHub Runner
-4. Click Run Now (or let cron trigger) to dispatch workflow
+4. Start with command/API call:
+   - http://localhost/video-workflow-edit-enabled/api/start-automation.php?id=YOUR_ID
 
 Workflow file included in repo:
 - .github/workflows/automation-runner.yml
@@ -209,13 +216,7 @@ Workflow file included in repo:
 Optional callback endpoint:
 - api/github-runner-callback.php
 
-Required GitHub secrets for hosted runners:
-- VW_DB_HOST
-- VW_DB_NAME
-- VW_DB_USER
-- VW_DB_PASS
-- GH_RUNNER_CALLBACK_URL (optional)
-- GH_RUNNER_CALLBACK_SECRET (optional)
+No external DB secrets required for this payload-dispatch mode.
 
 ==================================================
 REQUIREMENTS:
