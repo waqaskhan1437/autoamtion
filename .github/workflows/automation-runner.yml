@@ -1,0 +1,58 @@
+name: Automation Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      automation_id:
+        description: "Automation ID from automation_settings"
+        required: true
+        type: string
+      trigger_source:
+        description: "Who triggered this run"
+        required: false
+        default: "manual"
+        type: string
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: curl, ftp, mbstring, json, pdo, pdo_mysql
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Validate automation id
+        shell: bash
+        run: |
+          if [[ -z "${{ inputs.automation_id }}" ]]; then
+            echo "automation_id is required"
+            exit 1
+          fi
+
+      - name: Run automation job
+        env:
+          VW_DB_HOST: ${{ secrets.VW_DB_HOST }}
+          VW_DB_NAME: ${{ secrets.VW_DB_NAME }}
+          VW_DB_USER: ${{ secrets.VW_DB_USER }}
+          VW_DB_PASS: ${{ secrets.VW_DB_PASS }}
+          VW_BASE_DATA_DIR: ${{ runner.temp }}/VideoWorkflow
+          VW_FFMPEG_PATH: ffmpeg
+          VW_FFPROBE_PATH: ffprobe
+          RUNNER_CALLBACK_URL: ${{ secrets.GH_RUNNER_CALLBACK_URL }}
+          RUNNER_CALLBACK_SECRET: ${{ secrets.GH_RUNNER_CALLBACK_SECRET }}
+        run: |
+          php -v
+          php scripts/github-runner-job.php "${{ inputs.automation_id }}"
+
