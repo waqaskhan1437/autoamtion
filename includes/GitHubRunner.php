@@ -82,7 +82,15 @@ class GitHubRunner
         }
 
         $workflowUrl = "https://github.com/{$config['owner']}/{$config['repo']}/actions/workflows/{$config['workflow']}";
-        $runMeta = $this->findLatestRun($config['owner'], $config['repo'], $config['workflow'], $config['token'], $automationId);
+        // Dispatch API does not return a run id immediately; poll briefly to capture fresh run metadata.
+        $runMeta = [];
+        for ($i = 0; $i < 5; $i++) {
+            $runMeta = $this->findLatestRun($config['owner'], $config['repo'], $config['workflow'], $config['token'], $automationId);
+            if (!empty($runMeta['run_id'])) {
+                break;
+            }
+            usleep(1500000);
+        }
 
         return [
             'success' => true,
@@ -275,4 +283,3 @@ class GitHubRunner
         ];
     }
 }
-
