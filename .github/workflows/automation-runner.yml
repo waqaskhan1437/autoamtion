@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate automation id
-        shell: pwsh
+        shell: powershell
         env:
           INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
         run: |
@@ -41,7 +41,7 @@ jobs:
           RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
           RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
           INPUT_AUTOMATION_ID: ${{ github.event.inputs.automation_id }}
-        shell: pwsh
+        shell: powershell
         run: |
           & "C:\xampp\php\php.exe" -v
           & "C:\xampp\php\php.exe" scripts/github-runner-job.php "$env:INPUT_AUTOMATION_ID"
