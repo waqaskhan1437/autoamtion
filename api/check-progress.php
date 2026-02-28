@@ -381,6 +381,7 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
     if (!empty($gh['ready']) && $runId > 0) {
         $nowTs = time();
         $runUrl = trim((string)($progressData['run_url'] ?? ''));
+        $markerApplied = false;
 
         $lastLogSync = (int)($progressData['github_log_synced_at'] ?? 0);
         if (($nowTs - $lastLogSync) >= 6) {
@@ -410,6 +411,7 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                     }
                     $progressData['run_id'] = $runId;
                     $progressData['time'] = date('H:i:s');
+                    $markerApplied = true;
                     $dataChanged = true;
                 }
             }
@@ -469,6 +471,67 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                         $automation['status'] = 'processing';
                         $statusChanged = true;
                     }
+
+                    // Fallback progress: estimate from workflow steps when detailed log markers are not yet available.
+                    if (!$markerApplied) {
+                        $jobsUrl = "https://api.github.com/repos/{$gh['owner']}/{$gh['repo']}/actions/runs/{$runId}/jobs?per_page=10";
+                        $jobsRes = cpGithubRequest($jobsUrl, $gh['token'], false, 15);
+                        if ($jobsRes['success'] && (int)$jobsRes['http'] === 200 && is_array($jobsRes['json'])) {
+                            $jobs = $jobsRes['json']['jobs'] ?? [];
+                            if (is_array($jobs) && !empty($jobs[0]) && is_array($jobs[0])) {
+                                $stepsRaw = $jobs[0]['steps'] ?? [];
+                                $steps = [];
+                                if (is_array($stepsRaw)) {
+                                    foreach ($stepsRaw as $stepItem) {
+                                        if (!is_array($stepItem)) {
+                                            continue;
+                                        }
+                                        $name = trim((string)($stepItem['name'] ?? ''));
+                                        if ($name === '') {
+                                            continue;
+                                        }
+                                        // Ignore auto post-steps so progress stays intuitive.
+                                        if (stripos($name, 'Post ') === 0 || stripos($name, 'Complete job') === 0) {
+                                            continue;
+                                        }
+                                        $steps[] = $stepItem;
+                                    }
+                                }
+
+                                if (!empty($steps)) {
+                                    $totalSteps = count($steps);
+                                    $completedSteps = 0;
+                                    $activeStepName = '';
+                                    foreach ($steps as $s) {
+                                        $stepStatus = strtolower(trim((string)($s['status'] ?? '')));
+                                        if ($stepStatus === 'completed') {
+                                            $completedSteps++;
+                                        } elseif ($activeStepName === '' && $stepStatus === 'in_progress') {
+                                            $activeStepName = trim((string)($s['name'] ?? ''));
+                                        }
+                                    }
+
+                                    $estimated = (int)round(($completedSteps / max($totalSteps, 1)) * 95);
+                                    if ($estimated < 15) $estimated = 15;
+                                    if ($estimated > 95) $estimated = 95;
+                                    if ($estimated > $progressPercent) {
+                                        $progressPercent = $estimated;
+                                        $progressData['progress'] = $progressPercent;
+                                    }
+
+                                    if ($activeStepName === '') {
+                                        $activeStepName = trim((string)($steps[min($completedSteps, $totalSteps - 1)]['name'] ?? 'Working...'));
+                                    }
+
+                                    $progressData['step'] = 'github_steps';
+                                    $progressData['status'] = 'info';
+                                    $progressData['message'] = 'GitHub step: ' . $activeStepName;
+                                    $progressData['time'] = date('H:i:s');
+                                    $dataChanged = true;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -485,6 +548,39 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                 WHERE id = ?
             ")->execute([$automation['status'], $progressPercent, $payload, $automation['status'], $automationId]);
             $automation['last_progress_time'] = date('Y-m-d H:i:s');
+        }
+    }
+}
+
+// For completed GitHub runs, retry artifact import on poll until artifacts become available.
+if (($automation['run_mode'] ?? 'local') === 'github_runner' && $automation['status'] === 'completed') {
+    $runIdCompleted = cpExtractRunId($progressData);
+    $ghCompleted = cpGithubSettings($pdo);
+    if (!empty($ghCompleted['ready']) && $runIdCompleted > 0) {
+        $lastImportTry = (int)($progressData['artifact_import_try'] ?? 0);
+        if ((time() - $lastImportTry) >= 10) {
+            $beforePayload = cpEncodeProgressData($progressData);
+            $import = cpImportRunArtifacts($ghCompleted, $runIdCompleted, $progressData);
+            $progressData = $import['progressData'];
+            $progressData['artifact_import_try'] = time();
+
+            if (!empty($import['imported'])) {
+                $progressData['status'] = 'success';
+                $progressData['step'] = 'artifact_import';
+                $progressData['message'] = 'Imported ' . count($import['imported']) . ' output video(s) from GitHub artifacts.';
+                $progressData['time'] = date('H:i:s');
+            }
+
+            $afterPayload = cpEncodeProgressData($progressData);
+            if ($afterPayload !== $beforePayload) {
+                $pdo->prepare("
+                    UPDATE automation_settings
+                    SET progress_data = ?,
+                        last_progress_time = NOW()
+                    WHERE id = ?
+                ")->execute([$afterPayload, $automationId]);
+                $automation['last_progress_time'] = date('Y-m-d H:i:s');
+            }
         }
     }
 }

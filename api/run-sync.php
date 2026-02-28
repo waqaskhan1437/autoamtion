@@ -514,8 +514,12 @@ if ($shuffleEnabled && count($videos) > 1) {
     sendProgress('rotation', 'info', 'Batch shuffled for random order', 35, $stats);
 }
 
-// Set up directories
-$baseDir = (PHP_OS_FAMILY === 'Windows') ? 'C:/VideoWorkflow' : getenv('HOME') . '/VideoWorkflow';
+// Set up directories (honor configurable BASE_DATA_DIR from config.php when available)
+if (defined('BASE_DATA_DIR') && BASE_DATA_DIR) {
+    $baseDir = BASE_DATA_DIR;
+} else {
+    $baseDir = (PHP_OS_FAMILY === 'Windows') ? 'C:/VideoWorkflow' : getenv('HOME') . '/VideoWorkflow';
+}
 $tempDir = $baseDir . '/temp';
 $outputDir = $baseDir . '/output';
 
