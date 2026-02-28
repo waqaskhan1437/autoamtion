@@ -9,6 +9,12 @@ ADD COLUMN IF NOT EXISTS last_progress_time TIMESTAMP NULL;
 ALTER TABLE automation_settings
 ADD COLUMN IF NOT EXISTS run_mode ENUM('local', 'github_runner') DEFAULT 'local';
 
+ALTER TABLE automation_settings
+ADD COLUMN IF NOT EXISTS manual_video_links LONGTEXT NULL;
+
+ALTER TABLE automation_settings
+MODIFY COLUMN video_source ENUM('ftp', 'bunny', 'manual_links') DEFAULT 'ftp';
+
 -- Update status enum to include new states (including queue)
 ALTER TABLE automation_settings 
 MODIFY COLUMN status ENUM('inactive', 'running', 'processing', 'completed', 'error', 'stopped', 'queued') DEFAULT 'inactive';

@@ -483,6 +483,72 @@ class AutomationRunner {
             return ['cycle' => $cycleNumber, 'used' => 0, 'rotation_enabled' => true, 'auto_reset' => true, 'shuffle' => true];
         }
     }
+
+    private function parseManualVideoLinks() {
+        $raw = is_string($this->automation['manual_video_links'] ?? null)
+            ? (string)$this->automation['manual_video_links']
+            : '';
+        $raw = str_replace(["\r\n", "\r"], "\n", trim($raw));
+        if ($raw === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[\n,]+/', $raw) ?: [];
+        $seen = [];
+        $links = [];
+        foreach ($parts as $part) {
+            $url = trim((string)$part);
+            if ($url === '' || !preg_match('#^https?://#i', $url)) {
+                continue;
+            }
+            if (isset($seen[$url])) {
+                continue;
+            }
+            $seen[$url] = true;
+            $links[] = $url;
+        }
+        return $links;
+    }
+
+    private function buildManualFilename(string $url, int $index): string {
+        $path = parse_url($url, PHP_URL_PATH);
+        $baseName = $path ? basename((string)$path) : '';
+        $baseName = urldecode((string)$baseName);
+        $baseName = trim($baseName);
+
+        if ($baseName === '' || strpos($baseName, '.') === false) {
+            $baseName = 'video.mp4';
+        }
+
+        $baseName = preg_replace('/[^A-Za-z0-9._-]/', '_', $baseName);
+        if ($baseName === '' || $baseName === '.' || $baseName === '..') {
+            $baseName = 'video.mp4';
+        }
+
+        $ext = strtolower(pathinfo($baseName, PATHINFO_EXTENSION));
+        $allowed = ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'];
+        if ($ext === '' || !in_array($ext, $allowed, true)) {
+            $baseName .= '.mp4';
+        }
+
+        return 'manual_' . str_pad((string)$index, 3, '0', STR_PAD_LEFT) . '_' . $baseName;
+    }
+
+    private function toManualVideoEntries(array $links): array {
+        $videos = [];
+        foreach ($links as $idx => $url) {
+            $videos[] = [
+                'guid' => hash('sha1', $url),
+                'title' => 'Manual Link ' . ($idx + 1),
+                'filename' => $this->buildManualFilename((string)$url, $idx + 1),
+                'remotePath' => $url,
+                'manual_url' => $url,
+                'Length' => 0,
+                'size' => 0
+            ];
+        }
+        return $videos;
+    }
     
     /**
      * Fetch videos from configured source (FTP or Bunny CDN)
@@ -522,6 +588,14 @@ class AutomationRunner {
             }
         }
         
+        if ($source === 'manual_links') {
+            $this->log('fetch', 'info', 'Fetching videos from manual direct links');
+            $links = $this->parseManualVideoLinks();
+            $videos = $this->toManualVideoEntries($links);
+            $this->log('fetch', 'success', 'Loaded ' . count($videos) . ' manual links');
+            return $videos;
+        }
+
         if ($source === 'ftp') {
             // Fetch from FTP
             $this->log('fetch', 'info', "Fetching videos from FTP server ({$filterLabel})");
@@ -536,41 +610,48 @@ class AutomationRunner {
             } catch (Exception $e) {
                 throw new Exception('FTP Error: ' . $e->getMessage());
             }
-        } else {
-            // Fetch from Bunny CDN
-            $this->log('fetch', 'info', "Fetching videos from Bunny CDN ({$filterLabel})");
-            
-            if (empty($this->automation['api_key']) || empty($this->automation['library_id'])) {
-                throw new Exception('Bunny API key or Library ID not configured. Please check API Keys settings.');
-            }
-            
-            $bunny = new BunnyAPI(
-                $this->automation['api_key'],
-                $this->automation['library_id'],
-                $this->automation['storage_zone'] ?? '',
-                $this->automation['cdn_hostname'] ?? ''
-            );
-            
-            $videos = $usingDateRange
-                ? $bunny->getVideosByDateRange($startStr, $endStr)
-                : $bunny->getRecentVideos($daysFilter);
-            
-            if (isset($videos['error'])) {
-                $this->log('fetch', 'error', 'Bunny API Error: ' . ($videos['message'] ?? $videos['error']));
-                throw new Exception('Bunny API Error: ' . ($videos['message'] ?? $videos['error']));
-            }
-            
-            $this->log('fetch', 'success', 'Found ' . count($videos) . ' videos on Bunny CDN');
-            return $videos;
         }
+
+        // Fetch from Bunny CDN
+        $this->log('fetch', 'info', "Fetching videos from Bunny CDN ({$filterLabel})");
+        
+        if (empty($this->automation['api_key']) || empty($this->automation['library_id'])) {
+            throw new Exception('Bunny API key or Library ID not configured. Please check API Keys settings.');
+        }
+        
+        $bunny = new BunnyAPI(
+            $this->automation['api_key'],
+            $this->automation['library_id'],
+            $this->automation['storage_zone'] ?? '',
+            $this->automation['cdn_hostname'] ?? ''
+        );
+        
+        $videos = $usingDateRange
+            ? $bunny->getVideosByDateRange($startStr, $endStr)
+            : $bunny->getRecentVideos($daysFilter);
+        
+        if (isset($videos['error'])) {
+            $this->log('fetch', 'error', 'Bunny API Error: ' . ($videos['message'] ?? $videos['error']));
+            throw new Exception('Bunny API Error: ' . ($videos['message'] ?? $videos['error']));
+        }
+        
+        $this->log('fetch', 'success', 'Found ' . count($videos) . ' videos on Bunny CDN');
+        return $videos;
     }
     
     /**
      * Process a single video
      */
     private function processVideo($video, $randomWords) {
-        $videoId = $video['guid'];
-        $videoTitle = $video['title'] ?? 'Untitled';
+        $videoId = is_array($video)
+            ? ($video['guid'] ?? $video['remotePath'] ?? $video['filename'] ?? md5(json_encode($video)))
+            : (string)$video;
+        $videoTitle = is_array($video)
+            ? ($video['title'] ?? $video['filename'] ?? basename((string)($video['remotePath'] ?? $videoId)))
+            : basename((string)$videoId);
+        if ($videoTitle === '') {
+            $videoTitle = 'Untitled';
+        }
         
         $this->log('processing_video', 'info', "Processing: {$videoTitle}", $videoId);
         
@@ -591,7 +672,7 @@ class AutomationRunner {
             $prompt = $this->automation['ai_tagline_prompt'] ?? 'Generate catchy viral taglines';
             $taglines = $aiGenerator->generateTaglines(
                 $prompt,
-                $video['title'] ?? $videoTitle,
+                $videoTitle,
                 $this->getUsedTaglines()
             );
             
@@ -682,6 +763,21 @@ class AutomationRunner {
      */
     private function downloadVideo($video) {
         $source = $this->automation['video_source'] ?? 'ftp';
+
+        if ($source === 'manual_links') {
+            $remoteUrl = is_array($video) ? ($video['manual_url'] ?? $video['remotePath'] ?? '') : (string)$video;
+            if ($remoteUrl === '') {
+                throw new Exception('Manual video URL is empty.');
+            }
+            $filename = is_array($video)
+                ? ($video['filename'] ?? $this->buildManualFilename($remoteUrl, 1))
+                : $this->buildManualFilename($remoteUrl, 1);
+            $localPath = $this->tempDir . '/' . $filename;
+
+            $this->log('download', 'info', "Downloading from manual link: {$filename}");
+            $this->downloadManualVideoFromUrl($remoteUrl, $localPath);
+            return $localPath;
+        }
         
         if ($source === 'ftp') {
             // Download from FTP
@@ -715,6 +811,49 @@ class AutomationRunner {
             }
             
             return $localPath;
+        }
+    }
+
+    private function downloadManualVideoFromUrl(string $url, string $localPath): void {
+        if (!function_exists('curl_init')) {
+            throw new Exception('cURL extension is required for manual link downloads.');
+        }
+
+        $directory = dirname($localPath);
+        if (!is_dir($directory) && !@mkdir($directory, 0777, true)) {
+            throw new Exception('Cannot create temp directory for manual link download.');
+        }
+
+        $fp = @fopen($localPath, 'wb');
+        if (!$fp) {
+            throw new Exception('Cannot open temp output file for manual link download.');
+        }
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $fp,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 8,
+            CURLOPT_CONNECTTIMEOUT => 25,
+            CURLOPT_TIMEOUT => 900,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36',
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_FAILONERROR => false
+        ]);
+
+        $ok = curl_exec($ch);
+        $error = $ok ? '' : curl_error($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        fclose($fp);
+
+        clearstatcache(true, $localPath);
+        if (!$ok || $httpCode >= 400 || !file_exists($localPath) || filesize($localPath) <= 0) {
+            @unlink($localPath);
+            $statusMessage = $httpCode > 0 ? "HTTP {$httpCode}" : 'connection error';
+            $errorMessage = $error !== '' ? $error : $statusMessage;
+            throw new Exception('Manual download failed: ' . $errorMessage);
         }
     }
     

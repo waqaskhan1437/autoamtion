@@ -13,6 +13,32 @@ $selectedProvider = $aiSettings['ai_provider'] ?? 'gemini';
 $activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : ($hasGemini ? 'Gemini (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')));
 $hasAnyAI = $hasGemini || $hasOpenAI;
 
+function normalizeManualVideoLinksInput($rawInput) {
+    $raw = is_string($rawInput) ? $rawInput : (string)$rawInput;
+    $raw = str_replace(["\r\n", "\r"], "\n", trim($raw));
+    if ($raw === '') {
+        return '';
+    }
+
+    $tokens = preg_split('/[\n,]+/', $raw) ?: [];
+    $seen = [];
+    $clean = [];
+
+    foreach ($tokens as $token) {
+        $url = trim((string)$token);
+        if ($url === '' || !preg_match('#^https?://#i', $url)) {
+            continue;
+        }
+        if (isset($seen[$url])) {
+            continue;
+        }
+        $seen[$url] = true;
+        $clean[] = $url;
+    }
+
+    return implode("\n", $clean);
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -24,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -51,9 +77,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $nextRunAt = calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes);
         }
         
+        $videoSource = $_POST['video_source'] ?? 'ftp';
+        $manualVideoLinks = ($videoSource === 'manual_links')
+            ? normalizeManualVideoLinksInput($_POST['manual_video_links'] ?? '')
+            : null;
+
         $stmt->execute([
             $_POST['name'],
-            $_POST['video_source'] ?? 'ftp',
+            $videoSource,
+            $manualVideoLinks,
             $_POST['run_mode'] ?? 'local',
             $_POST['api_key_id'] ?: null,
             $enabled,
@@ -130,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -153,9 +185,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
         $nextRunAt = $enabled ? calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes) : null;
         
+        $videoSource = $_POST['video_source'] ?? 'ftp';
+        $manualVideoLinks = ($videoSource === 'manual_links')
+            ? normalizeManualVideoLinksInput($_POST['manual_video_links'] ?? '')
+            : null;
+
         $stmt->execute([
             $_POST['name'],
-            $_POST['video_source'] ?? 'ftp',
+            $videoSource,
+            $manualVideoLinks,
             $_POST['run_mode'] ?? 'local',
             $_POST['api_key_id'] ?: null,
             $videoDaysFilter,
@@ -841,6 +879,7 @@ refreshOutputVideoCount();
                     <select name="video_source" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" onchange="toggleVideoSource(this)">
                         <option value="ftp">FTP Server</option>
                         <option value="bunny">Bunny CDN</option>
+                        <option value="manual_links">Manual Links (Direct URL)</option>
                     </select>
                 </div>
 
@@ -865,6 +904,17 @@ refreshOutputVideoCount();
                 
                 <div id="ftp_source_info" class="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-gray-400">
                     Videos fetch from FTP in <a href="settings.php?tab=ftp" class="text-blue-400">Settings</a>
+                </div>
+
+                <div id="manual_source_section" class="hidden space-y-2">
+                    <label class="block text-sm text-gray-400 mb-1">Manual Video Links</label>
+                    <textarea
+                        name="manual_video_links"
+                        id="manual_video_links"
+                        rows="5"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
+                        placeholder="Paste one direct video URL per line"></textarea>
+                    <p class="text-xs text-gray-500">Supports direct links (Cloudinary, Fiverr CDN, archive/media URLs). One URL per line.</p>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1288,6 +1338,7 @@ refreshOutputVideoCount();
                     <select name="video_source" id="edit_video_source" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" onchange="toggleEditVideoSource(this)">
                         <option value="ftp">FTP Server</option>
                         <option value="bunny">Bunny CDN</option>
+                        <option value="manual_links">Manual Links (Direct URL)</option>
                     </select>
                 </div>
 
@@ -1312,6 +1363,17 @@ refreshOutputVideoCount();
                 
                 <div id="edit_ftp_source_info" class="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-gray-400">
                     Videos fetch from FTP in <a href="settings.php?tab=ftp" class="text-blue-400">Settings</a>
+                </div>
+
+                <div id="edit_manual_source_section" class="hidden space-y-2">
+                    <label class="block text-sm text-gray-400 mb-1">Manual Video Links</label>
+                    <textarea
+                        name="manual_video_links"
+                        id="edit_manual_video_links"
+                        rows="5"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
+                        placeholder="Paste one direct video URL per line"></textarea>
+                    <p class="text-xs text-gray-500">One direct URL per line. These links will be downloaded then processed.</p>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1710,8 +1772,12 @@ function showFormTab(tab) {
 }
 
 function toggleVideoSource(select) {
-    document.getElementById('bunny_source_section').classList.toggle('hidden', select.value !== 'bunny');
-    document.getElementById('ftp_source_info').classList.toggle('hidden', select.value !== 'ftp');
+    const bunnySection = document.getElementById('bunny_source_section');
+    const ftpSection = document.getElementById('ftp_source_info');
+    const manualSection = document.getElementById('manual_source_section');
+    if (bunnySection) bunnySection.classList.toggle('hidden', select.value !== 'bunny');
+    if (ftpSection) ftpSection.classList.toggle('hidden', select.value !== 'ftp');
+    if (manualSection) manualSection.classList.toggle('hidden', select.value !== 'manual_links');
 }
 
 function togglePostForMe(checkbox) {
@@ -1782,8 +1848,12 @@ function showEditFormTab(tab) {
 }
 
 function toggleEditVideoSource(select) {
-    document.getElementById('edit_bunny_source_section').classList.toggle('hidden', select.value !== 'bunny');
-    document.getElementById('edit_ftp_source_info').classList.toggle('hidden', select.value !== 'ftp');
+    const bunnySection = document.getElementById('edit_bunny_source_section');
+    const ftpSection = document.getElementById('edit_ftp_source_info');
+    const manualSection = document.getElementById('edit_manual_source_section');
+    if (bunnySection) bunnySection.classList.toggle('hidden', select.value !== 'bunny');
+    if (ftpSection) ftpSection.classList.toggle('hidden', select.value !== 'ftp');
+    if (manualSection) manualSection.classList.toggle('hidden', select.value !== 'manual_links');
 }
 
 function toggleEditPostForMe(checkbox) {
@@ -1851,6 +1921,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_ai_tagline_prompt').value = automationData.ai_tagline_prompt || 'Generate universal greeting taglines';
     document.getElementById('edit_branding_text_top').value = automationData.branding_text_top || '';
     document.getElementById('edit_branding_text_bottom').value = automationData.branding_text_bottom || '';
+    document.getElementById('edit_manual_video_links').value = automationData.manual_video_links || '';
     document.getElementById('edit_rotation_enabled').checked = automationData.rotation_enabled == 1;
     document.getElementById('edit_rotation_shuffle').checked = automationData.rotation_shuffle == 1;
     document.getElementById('edit_rotation_auto_reset').checked = automationData.rotation_auto_reset == 1;

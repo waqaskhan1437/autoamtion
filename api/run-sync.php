@@ -131,6 +131,119 @@ function computeScheduleDateForSync($automation, $postIndex = 0) {
     return null;
 }
 
+function parseManualVideoLinks($rawLinks) {
+    $raw = is_string($rawLinks) ? $rawLinks : (string)$rawLinks;
+    $raw = str_replace(["\r\n", "\r"], "\n", trim($raw));
+    if ($raw === '') {
+        return [];
+    }
+
+    // Accept newline- and comma-separated links.
+    $parts = preg_split('/[\n,]+/', $raw) ?: [];
+    $seen = [];
+    $links = [];
+
+    foreach ($parts as $part) {
+        $url = trim((string)$part);
+        if ($url === '' || !preg_match('#^https?://#i', $url)) {
+            continue;
+        }
+        if (isset($seen[$url])) {
+            continue;
+        }
+        $seen[$url] = true;
+        $links[] = $url;
+    }
+
+    return $links;
+}
+
+function buildManualFilenameFromUrl($url, $index = 1) {
+    $path = parse_url((string)$url, PHP_URL_PATH);
+    $baseName = $path ? basename((string)$path) : '';
+    $baseName = urldecode((string)$baseName);
+    $baseName = trim($baseName);
+
+    if ($baseName === '' || strpos($baseName, '.') === false) {
+        $baseName = 'video.mp4';
+    }
+
+    $baseName = preg_replace('/[^A-Za-z0-9._-]/', '_', $baseName);
+    if ($baseName === '' || $baseName === '.' || $baseName === '..') {
+        $baseName = 'video.mp4';
+    }
+
+    $ext = strtolower(pathinfo($baseName, PATHINFO_EXTENSION));
+    $allowed = ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'];
+    if ($ext === '' || !in_array($ext, $allowed, true)) {
+        $baseName .= '.mp4';
+    }
+
+    return 'manual_' . str_pad((string)$index, 3, '0', STR_PAD_LEFT) . '_' . $baseName;
+}
+
+function createManualVideoEntries($rawLinks) {
+    $links = parseManualVideoLinks($rawLinks);
+    $videos = [];
+    foreach ($links as $idx => $url) {
+        $videos[] = [
+            'guid' => hash('sha1', $url),
+            'filename' => buildManualFilenameFromUrl($url, $idx + 1),
+            'remotePath' => $url,
+            'manual_url' => $url,
+            'source' => 'manual_links',
+            'Length' => 0,
+            'size' => 0
+        ];
+    }
+    return $videos;
+}
+
+function downloadManualVideoFromUrl($url, $localPath) {
+    if (!function_exists('curl_init')) {
+        throw new Exception('cURL extension is required for manual link downloads.');
+    }
+
+    $directory = dirname($localPath);
+    if (!is_dir($directory) && !@mkdir($directory, 0777, true)) {
+        throw new Exception('Unable to create temp directory for download.');
+    }
+
+    $fp = @fopen($localPath, 'wb');
+    if (!$fp) {
+        throw new Exception('Unable to open local file for writing.');
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_FILE => $fp,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 8,
+        CURLOPT_CONNECTTIMEOUT => 25,
+        CURLOPT_TIMEOUT => 900,
+        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36',
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FAILONERROR => false
+    ]);
+
+    $ok = curl_exec($ch);
+    $error = $ok ? '' : curl_error($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    fclose($fp);
+
+    clearstatcache(true, $localPath);
+    if (!$ok || $httpCode >= 400 || !file_exists($localPath) || filesize($localPath) <= 0) {
+        @unlink($localPath);
+        $statusMessage = $httpCode > 0 ? "HTTP {$httpCode}" : 'connection error';
+        $errorMessage = $error !== '' ? $error : $statusMessage;
+        throw new Exception('Manual download failed: ' . $errorMessage);
+    }
+
+    return true;
+}
+
 $automationId = $_GET['id'] ?? null;
 
 if (!$automationId) {
@@ -185,9 +298,12 @@ if (!$automation) {
     sendDone(false, 'Automation not found');
 }
 
+$videoSource = strtolower((string)($automation['video_source'] ?? 'ftp'));
+$isManualSource = ($videoSource === 'manual_links');
+
 // API key is optional if FTP is configured in Settings
 $useFtpSettings = false;
-if (!$automation['api_key_id']) {
+if (!$isManualSource && !$automation['api_key_id']) {
     // Check if FTP is configured in global settings
     $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'ftp_host'");
     $ftpHost = $stmt->fetchColumn();
@@ -254,93 +370,110 @@ if (!$ffmpeg->isAvailable()) {
 }
 sendProgress('ffmpeg', 'success', 'FFmpeg OK', 20, $stats);
 
-// Fetch videos
-sendProgress('fetch', 'info', 'Connecting to Bunny CDN storage...', 25, $stats);
-
+$ftp = null;
+$videos = [];
 try {
-    // Use FTP from Settings or from API key
-    if ($useFtpSettings) {
-        sendProgress('fetch', 'info', 'Using FTP settings from Settings page...', 26, $stats);
-        $ftp = FTPAPI::fromSettings($pdo);
+    if ($isManualSource) {
+        sendProgress('fetch', 'info', 'Loading manual video links...', 25, $stats);
+        $videos = createManualVideoEntries($automation['manual_video_links'] ?? '');
+        $stats['fetched'] = count($videos);
+
+        if ($stats['fetched'] === 0) {
+            $pdo->prepare("UPDATE automation_settings SET status = 'completed', progress_percent = 100 WHERE id = ?")->execute([$automationId]);
+            sendDone(true, 'No manual links found. Add direct video URLs in automation source settings.', $stats);
+        }
+
+        sendProgress('fetch', 'success', "Loaded {$stats['fetched']} manual link(s) (will process up to {$videosPerRun} this run)", 30, $stats);
     } else {
-        // Try global FTP settings first if available
-        $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'ftp_host'");
-        $globalFtpHost = $stmt->fetchColumn();
-        
-        if ($globalFtpHost) {
-            // Use global FTP settings (more reliable)
-            sendProgress('fetch', 'info', 'Using FTP from Settings (recommended)...', 26, $stats);
+        sendProgress('fetch', 'info', 'Connecting to Bunny CDN storage...', 25, $stats);
+
+        // Use FTP from Settings or from API key
+        if ($useFtpSettings) {
+            sendProgress('fetch', 'info', 'Using FTP settings from Settings page...', 26, $stats);
             $ftp = FTPAPI::fromSettings($pdo);
         } else {
-            // Fallback to API key credentials
-            sendProgress('fetch', 'info', 'Using API key credentials...', 26, $stats);
-            // For Bunny CDN: username = storage zone name, password = access key
-            $ftpUsername = $automation['storage_zone'] ?? '';
-            $ftpPassword = $automation['api_key'] ?? '';
+            // Try global FTP settings first if available
+            $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'ftp_host'");
+            $globalFtpHost = $stmt->fetchColumn();
             
-            $ftp = new FTPAPI(
-                'storage.bunnycdn.com',
-                $ftpUsername,
-                $ftpPassword,
-                21,
-                '/',
-                true
-            );
+            if ($globalFtpHost) {
+                // Use global FTP settings (more reliable)
+                sendProgress('fetch', 'info', 'Using FTP from Settings (recommended)...', 26, $stats);
+                $ftp = FTPAPI::fromSettings($pdo);
+            } else {
+                // Fallback to API key credentials
+                sendProgress('fetch', 'info', 'Using API key credentials...', 26, $stats);
+                // For Bunny CDN: username = storage zone name, password = access key
+                $ftpUsername = $automation['storage_zone'] ?? '';
+                $ftpPassword = $automation['api_key'] ?? '';
+                
+                $ftp = new FTPAPI(
+                    'storage.bunnycdn.com',
+                    $ftpUsername,
+                    $ftpPassword,
+                    21,
+                    '/',
+                    true
+                );
+            }
         }
-    }
-    
-    // Determine whether to use date range or "last X days"
-    $daysFilter = intval($automation['video_days_filter'] ?? 30);
-    if ($daysFilter < 1) $daysFilter = 30;
+        
+        // Determine whether to use date range or "last X days"
+        $daysFilter = intval($automation['video_days_filter'] ?? 30);
+        if ($daysFilter < 1) $daysFilter = 30;
 
-    $startValue = $automation['video_start_date'] ?? null;
-    $endValue = $automation['video_end_date'] ?? null;
+        $startValue = $automation['video_start_date'] ?? null;
+        $endValue = $automation['video_end_date'] ?? null;
 
-    $startStr = is_string($startValue) ? trim($startValue) : (is_null($startValue) ? '' : trim((string)$startValue));
-    $endStr = is_string($endValue) ? trim($endValue) : (is_null($endValue) ? '' : trim((string)$endValue));
+        $startStr = is_string($startValue) ? trim($startValue) : (is_null($startValue) ? '' : trim((string)$startValue));
+        $endStr = is_string($endValue) ? trim($endValue) : (is_null($endValue) ? '' : trim((string)$endValue));
 
-    $hasStart = ($startStr !== '' && strtolower($startStr) !== 'null' && $startStr !== '0000-00-00');
-    $hasEnd = ($endStr !== '' && strtolower($endStr) !== 'null' && $endStr !== '0000-00-00');
+        $hasStart = ($startStr !== '' && strtolower($startStr) !== 'null' && $startStr !== '0000-00-00');
+        $hasEnd = ($endStr !== '' && strtolower($endStr) !== 'null' && $endStr !== '0000-00-00');
 
-    $startTs = $hasStart ? strtotime($startStr) : false;
-    $endTs = $hasEnd ? strtotime($endStr) : false;
+        $startTs = $hasStart ? strtotime($startStr) : false;
+        $endTs = $hasEnd ? strtotime($endStr) : false;
 
-    $usingDateRange = ($startTs !== false && $endTs !== false && $startTs <= $endTs);
+        $usingDateRange = ($startTs !== false && $endTs !== false && $startTs <= $endTs);
 
-    $filterLabel = $usingDateRange
-        ? "Date range {$startStr} to {$endStr}"
-        : "Last {$daysFilter} days";
+        $filterLabel = $usingDateRange
+            ? "Date range {$startStr} to {$endStr}"
+            : "Last {$daysFilter} days";
 
-    if (!$usingDateRange && ($hasStart || $hasEnd)) {
-        // Explain why date range is not being used (helps debugging)
-        if ($startTs === false || $endTs === false) {
-            $filterLabel .= " (invalid date format)";
-        } elseif ($startTs > $endTs) {
-            $filterLabel .= " (end date before start date)";
-        } else {
-            $filterLabel .= " (incomplete date range)";
+        if (!$usingDateRange && ($hasStart || $hasEnd)) {
+            // Explain why date range is not being used (helps debugging)
+            if ($startTs === false || $endTs === false) {
+                $filterLabel .= " (invalid date format)";
+            } elseif ($startTs > $endTs) {
+                $filterLabel .= " (end date before start date)";
+            } else {
+                $filterLabel .= " (incomplete date range)";
+            }
         }
-    }
 
-    sendProgress('fetch', 'info', "Filter: {$filterLabel} (limit {$videosPerRun}/run)", 27, $stats);
-    sendProgress('fetch', 'info', 'Fetching video list (this may take a moment)...', 28, $stats);
+        sendProgress('fetch', 'info', "Filter: {$filterLabel} (limit {$videosPerRun}/run)", 27, $stats);
+        sendProgress('fetch', 'info', 'Fetching video list (this may take a moment)...', 28, $stats);
 
-    $videos = $usingDateRange
-        ? $ftp->getVideosByDateRange($startStr, $endStr)
-        : $ftp->getVideos($daysFilter);
-    $stats['fetched'] = count($videos);
-    
-    if ($stats['fetched'] === 0) {
-        $pdo->prepare("UPDATE automation_settings SET status = 'completed', progress_percent = 100 WHERE id = ?")->execute([$automationId]);
-        $emptyMsg = $usingDateRange
-            ? "No videos found between {$startStr} and {$endStr}"
-            : "No videos found in the last {$daysFilter} days";
-        sendDone(true, $emptyMsg, $stats);
+        $videos = $usingDateRange
+            ? $ftp->getVideosByDateRange($startStr, $endStr)
+            : $ftp->getVideos($daysFilter);
+        $stats['fetched'] = count($videos);
+        
+        if ($stats['fetched'] === 0) {
+            $pdo->prepare("UPDATE automation_settings SET status = 'completed', progress_percent = 100 WHERE id = ?")->execute([$automationId]);
+            $emptyMsg = $usingDateRange
+                ? "No videos found between {$startStr} and {$endStr}"
+                : "No videos found in the last {$daysFilter} days";
+            sendDone(true, $emptyMsg, $stats);
+        }
+        
+        sendProgress('fetch', 'success', "Found {$stats['fetched']} videos (will process up to {$videosPerRun} this run)", 30, $stats);
     }
-    
-    sendProgress('fetch', 'success', "Found {$stats['fetched']} videos (will process up to {$videosPerRun} this run)", 30, $stats);
 } catch (Exception $e) {
     $pdo->prepare("UPDATE automation_settings SET status = 'error' WHERE id = ?")->execute([$automationId]);
+    if ($isManualSource) {
+        sendDone(false, 'Manual links error: ' . $e->getMessage());
+    }
     sendDone(false, 'FTP/API Error: ' . $e->getMessage());
 }
 
@@ -567,7 +700,12 @@ foreach ($videos as $index => $video) {
             sendProgress('download', 'info', "Downloading: $videoName ({$sizeMB}MB)...", $currentProgress, $stats);
         }
         
-        $downloadResult = $ftp->downloadVideo($remotePath, $localPath);
+        $isManualVideo = is_array($video) && !empty($video['manual_url']);
+        if ($isManualVideo) {
+            $downloadResult = downloadManualVideoFromUrl($remotePath, $localPath);
+        } else {
+            $downloadResult = $ftp->downloadVideo($remotePath, $localPath);
+        }
         
         // Send ping after download
         sendPing();

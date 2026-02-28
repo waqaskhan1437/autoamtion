@@ -126,6 +126,9 @@ try {
         if (!in_array('video_source', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN video_source VARCHAR(20) DEFAULT 'ftp'");
         }
+        if (!in_array('manual_video_links', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN manual_video_links LONGTEXT NULL");
+        }
         if (!in_array('run_mode', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN run_mode ENUM('local', 'github_runner') DEFAULT 'local'");
         }
@@ -198,6 +201,13 @@ try {
             $pdo->exec("ALTER TABLE automation_settings MODIFY COLUMN schedule_type ENUM('minutes', 'hourly', 'daily', 'weekly') DEFAULT 'daily'");
         } catch (Exception $e) {
             // Ignore if already correct
+        }
+
+        // Ensure new source option exists for direct URL pipelines
+        try {
+            $pdo->exec("ALTER TABLE automation_settings MODIFY COLUMN video_source ENUM('ftp', 'bunny', 'manual_links') DEFAULT 'ftp'");
+        } catch (Exception $e) {
+            // Ignore if enum already supports manual links
         }
         
         // Create processed_videos table if not exists
@@ -341,7 +351,8 @@ try {
             CREATE TABLE IF NOT EXISTS automation_settings (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
-                video_source ENUM('ftp', 'bunny') DEFAULT 'ftp',
+                video_source ENUM('ftp', 'bunny', 'manual_links') DEFAULT 'ftp',
+                manual_video_links LONGTEXT NULL,
                 run_mode ENUM('local', 'github_runner') DEFAULT 'local',
                 api_key_id INT,
                 enabled TINYINT(1) DEFAULT 1,

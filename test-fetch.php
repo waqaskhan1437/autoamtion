@@ -8,6 +8,30 @@ header('Content-Type: application/json');
 $source = $_GET['source'] ?? 'ftp';
 $automationId = $_GET['id'] ?? null;
 
+function parseManualLinksForTest($rawLinks) {
+    $raw = is_string($rawLinks) ? $rawLinks : (string)$rawLinks;
+    $raw = str_replace(["\r\n", "\r"], "\n", trim($raw));
+    if ($raw === '') {
+        return [];
+    }
+
+    $parts = preg_split('/[\n,]+/', $raw) ?: [];
+    $seen = [];
+    $links = [];
+    foreach ($parts as $part) {
+        $url = trim((string)$part);
+        if ($url === '' || !preg_match('#^https?://#i', $url)) {
+            continue;
+        }
+        if (isset($seen[$url])) {
+            continue;
+        }
+        $seen[$url] = true;
+        $links[] = $url;
+    }
+    return $links;
+}
+
 try {
     if ($source === 'ftp') {
         // Get FTP settings first to show them
@@ -90,6 +114,44 @@ try {
             ],
             'count' => count($videos),
             'videos' => array_slice($videos, 0, 10)
+        ], JSON_PRETTY_PRINT);
+    } elseif ($source === 'manual_links') {
+        if (!$automationId) {
+            echo json_encode([
+                'success' => false,
+                'error' => 'Automation ID is required for manual links source'
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        $stmt = $pdo->prepare("SELECT manual_video_links FROM automation_settings WHERE id = ?");
+        $stmt->execute([$automationId]);
+        $automation = $stmt->fetch();
+
+        if (!$automation) {
+            echo json_encode([
+                'success' => false,
+                'error' => 'Automation not found'
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        $links = parseManualLinksForTest($automation['manual_video_links'] ?? '');
+        $preview = array_map(function ($url, $idx) {
+            $path = parse_url((string)$url, PHP_URL_PATH);
+            $name = $path ? basename((string)$path) : ('video_' . ($idx + 1) . '.mp4');
+            return [
+                'index' => $idx + 1,
+                'name' => $name ?: ('video_' . ($idx + 1) . '.mp4'),
+                'url' => $url
+            ];
+        }, $links, array_keys($links));
+
+        echo json_encode([
+            'success' => true,
+            'source' => 'Manual Links',
+            'count' => count($links),
+            'videos' => array_slice($preview, 0, 10)
         ], JSON_PRETTY_PRINT);
     } else {
         if (!$automationId) {
