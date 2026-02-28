@@ -190,10 +190,7 @@ try {
             a.name as automation_name
         FROM postforme_posts pp
         LEFT JOIN automation_settings a ON pp.automation_id = a.id
-        WHERE (
-            pp.scheduled_at IS NOT NULL
-            OR pp.status IN ('pending', 'scheduled', 'partial', 'queued')
-        )
+        WHERE pp.status IN ('pending', 'scheduled', 'partial', 'queued', 'processing')
     ";
 
     if ($automationId > 0) {

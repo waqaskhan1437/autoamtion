@@ -6,6 +6,53 @@ require_once __DIR__ . '/../includes/PostForMeAPI.php';
 
 header('Content-Type: application/json');
 
+function vwmBulkIsActiveScheduledStatus(string $status): bool
+{
+    $status = strtolower(trim($status));
+    return in_array($status, ['pending', 'scheduled', 'partial', 'queued', 'processing'], true);
+}
+
+function vwmBulkFetchRemotePostStatusMap(PostForMeAPI $postForMe, int $maxPages = 8): array
+{
+    $map = [];
+    $anySuccess = false;
+
+    for ($page = 1; $page <= $maxPages; $page++) {
+        $resp = $postForMe->listPosts([
+            'page' => $page,
+            'per_page' => 100
+        ]);
+
+        if (empty($resp['success'])) {
+            break;
+        }
+        $anySuccess = true;
+
+        $rows = $resp['posts'] ?? [];
+        if (!is_array($rows) || empty($rows)) {
+            break;
+        }
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $postId = (string)($row['id'] ?? $row['post_id'] ?? '');
+            if ($postId === '') {
+                continue;
+            }
+            $status = strtolower(trim((string)($row['status'] ?? $row['state'] ?? '')));
+            $map[$postId] = ($status !== '' ? $status : 'unknown');
+        }
+
+        if (count($rows) < 100) {
+            break;
+        }
+    }
+
+    return ['ok' => $anySuccess, 'map' => $map];
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         http_response_code(405);
@@ -26,8 +73,7 @@ try {
     $sql = "
         SELECT id, post_id, status
         FROM postforme_posts
-        WHERE status IN ('pending', 'scheduled', 'partial')
-          AND scheduled_at IS NOT NULL
+        WHERE status IN ('pending', 'scheduled', 'partial', 'queued', 'processing')
     ";
     $params = [];
     if ($automationId > 0) {
@@ -52,20 +98,37 @@ try {
     }
 
     $postForMe = new PostForMeAPI($apiKey);
+    $remoteScan = vwmBulkFetchRemotePostStatusMap($postForMe, 8);
+    $remoteMap = (is_array($remoteScan['map'] ?? null)) ? $remoteScan['map'] : [];
+    $remoteScanOk = !empty($remoteScan['ok']);
+
     $deleted = 0;
     $failed = 0;
+    $fallbackCleared = 0;
     $errors = [];
 
     foreach ($rows as $row) {
-        $resp = $postForMe->cancelOrDeletePost((string)$row['post_id']);
+        $postId = (string)$row['post_id'];
+        $resp = $postForMe->cancelOrDeletePost($postId);
         if (!empty($resp['success'])) {
             $up = $pdo->prepare("UPDATE postforme_posts SET status='cancelled' WHERE id = ?");
             $up->execute([(int)$row['id']]);
             $deleted++;
         } else {
+            if ($remoteScanOk) {
+                $remoteStatus = $remoteMap[$postId] ?? null;
+                if ($remoteStatus === null || !vwmBulkIsActiveScheduledStatus((string)$remoteStatus)) {
+                    $up = $pdo->prepare("UPDATE postforme_posts SET status='cancelled' WHERE id = ?");
+                    $up->execute([(int)$row['id']]);
+                    $deleted++;
+                    $fallbackCleared++;
+                    continue;
+                }
+            }
+
             $failed++;
             if (count($errors) < 10) {
-                $errors[] = '#' . $row['post_id'] . ': ' . ($resp['message'] ?? 'Failed');
+                $errors[] = '#' . $postId . ': ' . ($resp['message'] ?? 'Failed');
             }
         }
     }
@@ -76,9 +139,9 @@ try {
         'total' => count($rows),
         'deleted' => $deleted,
         'failed' => $failed,
+        'fallback_cleared' => $fallbackCleared,
         'errors' => $errors
     ]);
 } catch (Throwable $e) {
     echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
 }
-
