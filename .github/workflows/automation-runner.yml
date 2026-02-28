@@ -114,3 +114,12 @@ jobs:
         run: |
           php -v
           php scripts/github-runner-job.php "${{ steps.payload.outputs.automation_id }}"
+
+      - name: Upload output videos artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-output-${{ steps.payload.outputs.automation_id }}-${{ github.run_id }}
+          path: /tmp/VideoWorkflow/output/*
+          if-no-files-found: ignore
+          retention-days: 3

@@ -94,6 +94,18 @@ $message = trim((string)($payload['message'] ?? 'GitHub runner update received.'
 $step = trim((string)($payload['step'] ?? 'github_runner'));
 $runUrl = trim((string)($payload['run_url'] ?? ''));
 $stats = isset($payload['stats']) && is_array($payload['stats']) ? $payload['stats'] : [];
+$outputs = isset($payload['outputs']) && is_array($payload['outputs']) ? array_values($payload['outputs']) : [];
+$eventStatus = strtolower(trim((string)($payload['event_status'] ?? '')));
+$sequence = isset($payload['sequence']) ? (int)$payload['sequence'] : 0;
+
+$visualStatus = 'info';
+if ($status === 'error') {
+    $visualStatus = 'error';
+} elseif ($status === 'completed') {
+    $visualStatus = 'success';
+} elseif (in_array($eventStatus, ['success', 'warning', 'error', 'info'], true)) {
+    $visualStatus = $eventStatus;
+}
 
 $stmt = $pdo->prepare("
     SELECT enabled, schedule_type, schedule_hour, schedule_every_minutes, next_run_at
@@ -110,11 +122,13 @@ if (!$automation) {
 
 $progressData = [
     'step' => $step,
-    'status' => $status === 'error' ? 'error' : ($status === 'completed' ? 'success' : 'info'),
+    'status' => $visualStatus,
     'message' => $message,
     'progress' => $progress,
     'run_url' => ($runUrl !== '' ? $runUrl : null),
     'stats' => $stats,
+    'outputs' => $outputs,
+    'sequence' => $sequence,
     'time' => date('H:i:s')
 ];
 
@@ -164,4 +178,3 @@ echo json_encode([
     'automation_id' => $automationId,
     'status' => $status
 ]);
-

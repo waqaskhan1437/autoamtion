@@ -724,10 +724,19 @@ refreshOutputVideoCount();
                     
                     <?php
                         $lastStats = ['fetched' => 0, 'downloaded' => 0, 'processed' => 0, 'scheduled' => 0, 'posted' => 0];
+                        $lastOutputs = [];
                         if (!empty($automation['progress_data'])) {
                             $pd = json_decode($automation['progress_data'], true);
                             if (!empty($pd['stats'])) {
                                 $lastStats = array_merge($lastStats, $pd['stats']);
+                            }
+                            if (!empty($pd['outputs']) && is_array($pd['outputs'])) {
+                                foreach ($pd['outputs'] as $outFile) {
+                                    $outFile = trim((string)$outFile);
+                                    if ($outFile !== '') {
+                                        $lastOutputs[] = $outFile;
+                                    }
+                                }
                             }
                         }
                     ?>
@@ -768,6 +777,18 @@ refreshOutputVideoCount();
                             <div id="progress-bar-<?= $automation['id'] ?>" class="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-300" style="width: 0%"></div>
                         </div>
                         <div id="progress-log-<?= $automation['id'] ?>" class="mt-3 max-h-32 overflow-y-auto text-xs font-mono space-y-1"></div>
+                        <div class="mt-3 border-t border-gray-700/60 pt-2">
+                            <div class="text-xs text-gray-400 mb-1">Edited Outputs</div>
+                            <div id="progress-outputs-<?= $automation['id'] ?>" class="space-y-1 text-xs">
+                                <?php if (!empty($lastOutputs)): ?>
+                                    <?php foreach (array_slice(array_reverse($lastOutputs), 0, 5) as $outName): ?>
+                                        <div class="text-cyan-300 truncate"><?= htmlspecialchars($outName) ?></div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="text-gray-500">No edited output yet</div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2244,6 +2265,7 @@ function runAutomationGithub(automationId) {
     const progressBar = document.getElementById('progress-bar-' + automationId);
     const progressPercent = document.getElementById('progress-percent-' + automationId);
     const progressLog = document.getElementById('progress-log-' + automationId);
+    const progressOutputs = document.getElementById('progress-outputs-' + automationId);
 
     if (progressSection) {
         progressSection.classList.remove('hidden');
@@ -2257,6 +2279,9 @@ function runAutomationGithub(automationId) {
     if (progressLog) {
         progressLog.innerHTML = '';
         addCardLog(progressLog, 'Dispatching to GitHub runner...', 'info');
+    }
+    if (progressOutputs) {
+        progressOutputs.innerHTML = '<div class="text-gray-500">Waiting for edited outputs...</div>';
     }
 
     setCardStatus(automationId, 'processing');
@@ -2302,6 +2327,7 @@ function runAutomationLive(automationId) {
     const progressBar = document.getElementById('progress-bar-' + automationId);
     const progressPercent = document.getElementById('progress-percent-' + automationId);
     const progressLog = document.getElementById('progress-log-' + automationId);
+    const progressOutputs = document.getElementById('progress-outputs-' + automationId);
     const statFetched = document.getElementById('stat-fetched-' + automationId);
     const statDownloaded = document.getElementById('stat-downloaded-' + automationId);
     const statProcessed = document.getElementById('stat-processed-' + automationId);
@@ -2324,6 +2350,9 @@ function runAutomationLive(automationId) {
     progressBar.style.width = '0%';
     progressPercent.textContent = '0%';
     progressLog.innerHTML = '';
+    if (progressOutputs) {
+        progressOutputs.innerHTML = '<div class="text-gray-500">No edited output yet</div>';
+    }
     statFetched.textContent = '0';
     statDownloaded.textContent = '0';
     statProcessed.textContent = '0';
@@ -2360,6 +2389,9 @@ function runAutomationLive(automationId) {
                 if (statScheduled) statScheduled.textContent = data.stats.scheduled || 0;
                 statPosted.textContent = data.stats.posted || 0;
             }
+            if (Array.isArray(data.outputs)) {
+                renderCardOutputs(automationId, data.outputs);
+            }
             
             // Add log entry
             if (data.message) {
@@ -2377,6 +2409,9 @@ function runAutomationLive(automationId) {
                 
                 if (data.success) {
                     setCardStatus(automationId, 'completed');
+                    if (typeof loadOutputVideoCount === 'function') {
+                        loadOutputVideoCount();
+                    }
                     addLogEntry(modalLogContainer, 'complete', 'success', '✅ ' + data.message);
                     addCardLog(progressLog, '✅ Complete!', 'success');
                 } else {
@@ -2444,6 +2479,9 @@ function pollDatabaseProgress(automationId, modalLogContainer, modalProgressBar,
                     statProcessed.textContent = data.data.stats.processed || 0;
                     statPosted.textContent = data.data.stats.posted || 0;
                 }
+                if (data.data && Array.isArray(data.data.outputs)) {
+                    renderCardOutputs(automationId, data.data.outputs);
+                }
                 
                 // Show new log entries
                 if (data.data && data.data.message && data.data.message !== lastMessage) {
@@ -2463,6 +2501,9 @@ function pollDatabaseProgress(automationId, modalLogContainer, modalProgressBar,
                     setCardStatus(automationId, 'completed');
                     addLogEntry(modalLogContainer, 'complete', 'success', '✅ Process completed!');
                     addCardLog(progressLog, '✅ Complete!', 'success');
+                    if (typeof loadOutputVideoCount === 'function') {
+                        loadOutputVideoCount();
+                    }
                     processComplete = true;
                     return;
                 } else if (data.status === 'error') {
@@ -2490,6 +2531,34 @@ function pollDatabaseProgress(automationId, modalLogContainer, modalProgressBar,
     }
     
     poll();
+}
+
+function renderCardOutputs(automationId, outputs) {
+    const container = document.getElementById('progress-outputs-' + automationId);
+    if (!container) return;
+
+    const unique = [];
+    if (Array.isArray(outputs)) {
+        outputs.forEach((item) => {
+            const name = (item || '').toString().trim();
+            if (name && !unique.includes(name)) {
+                unique.push(name);
+            }
+        });
+    }
+
+    if (unique.length === 0) {
+        container.innerHTML = '<div class="text-gray-500">No edited output yet</div>';
+        return;
+    }
+
+    const html = unique.slice(-5).reverse().map((name) => {
+        const safe = escapeHtml(name);
+        const href = 'output/' + encodeURIComponent(name);
+        return `<a href="${href}" target="_blank" class="block text-cyan-300 hover:text-cyan-200 truncate" title="${safe}">${safe}</a>`;
+    }).join('');
+
+    container.innerHTML = html;
 }
 
 function addCardLog(container, message, status) {
@@ -2535,7 +2604,7 @@ function closeLiveLogModal() {
 // Check for running processes on page load
 document.addEventListener('DOMContentLoaded', function() {
     <?php foreach ($automations as $auto): ?>
-        <?php if ($auto['status'] === 'processing'): ?>
+        <?php if (in_array($auto['status'], ['processing', 'running'])): ?>
         // Found running automation - resume polling
         resumePolling(<?= $auto['id'] ?>);
         <?php endif; ?>
@@ -2586,6 +2655,9 @@ function resumePolling(automationId) {
                     if (statScheduled) statScheduled.textContent = data.data.stats.scheduled || 0;
                     if (statPosted) statPosted.textContent = data.data.stats.posted || 0;
                 }
+                if (data.data && Array.isArray(data.data.outputs)) {
+                    renderCardOutputs(automationId, data.data.outputs);
+                }
 
                 if (data.data && data.data.message && data.data.message !== lastMessage) {
                     lastMessage = data.data.message;
@@ -2595,11 +2667,14 @@ function resumePolling(automationId) {
                 if (data.status === 'completed' || data.status === 'error') {
                     setCardStatus(automationId, data.status);
                     addCardLog(progressLog, data.status === 'completed' ? 'Complete!' : 'Error', data.status === 'completed' ? 'success' : 'error');
+                    if (data.status === 'completed' && typeof loadOutputVideoCount === 'function') {
+                        loadOutputVideoCount();
+                    }
                     activeResumePollers.delete(pollerKey);
                     return;
                 }
 
-                if (data.status === 'processing') {
+                if (data.status === 'processing' || data.status === 'running') {
                     setCardStatus(automationId, 'processing');
                     setTimeout(poll, 1000);
                 } else if (data.status === 'queued') {
@@ -2663,7 +2738,7 @@ function startLiveDebugBanner() {
                 const msg = (data.data && data.data.message) ? data.data.message : '';
                 const time = (data.data && data.data.time) ? data.data.time : '';
                 
-                if (['processing', 'queued'].includes(status) || msg) {
+                if (['processing', 'running', 'queued'].includes(status) || msg) {
                     hasActive = true;
                     const statusLabel = status.toUpperCase();
                     lines.push(`[${time || '-'}] ${item.name} :: ${statusLabel} :: ${msg || '...'}`);

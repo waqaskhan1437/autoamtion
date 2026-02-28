@@ -140,6 +140,8 @@ if ($runMode === 'github_runner') {
         'status' => 'success',
         'message' => 'GitHub workflow dispatched successfully.',
         'progress' => 15,
+        'stats' => ['fetched' => 0, 'downloaded' => 0, 'processed' => 0, 'scheduled' => 0, 'posted' => 0],
+        'outputs' => [],
         'run_id' => $dispatch['run_id'] ?? null,
         'run_url' => $dispatch['run_url'] ?? null,
         'workflow_url' => $dispatch['workflow_url'] ?? null,
@@ -148,7 +150,7 @@ if ($runMode === 'github_runner') {
 
     $pdo->prepare("
         UPDATE automation_settings
-        SET status = 'running',
+        SET status = 'processing',
             progress_percent = 15,
             progress_data = ?,
             last_progress_time = NOW(),
@@ -166,7 +168,7 @@ if ($runMode === 'github_runner') {
     echo json_encode([
         'success' => true,
         'mode' => 'github_runner',
-        'status' => 'running',
+        'status' => 'processing',
         'message' => 'Dispatched to GitHub runner.',
         'run_url' => $dispatch['run_url'] ?? null,
         'workflow_url' => $dispatch['workflow_url'] ?? null,
