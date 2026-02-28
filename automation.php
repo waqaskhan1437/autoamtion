@@ -431,7 +431,7 @@ function refreshOutputVideoCount() {
 }
 
 async function deleteAllOutputVideos() {
-    if (!confirm('Delete all processed videos from output folder? This cannot be undone.')) {
+    if (!confirm('Delete all processed videos (local + GitHub output list)? This cannot be undone.')) {
         return;
     }
 
@@ -441,10 +441,16 @@ async function deleteAllOutputVideos() {
     btn.textContent = 'Deleting...';
 
     try {
-        const res = await fetch('api/delete-all-output-videos.php', { method: 'POST' });
+        const formData = new FormData();
+        formData.append('mode', 'all');
+
+        const res = await fetch('api/delete-all-output-videos.php', { method: 'POST', body: formData });
         const data = await res.json();
         if (data.success) {
-            showToast(`Deleted ${data.deleted || 0} output video(s)`);
+            const total = Number(data.deleted || 0);
+            const localDeleted = Number(data.local_deleted || 0);
+            const githubRefs = Number(data.github_refs_cleared || 0);
+            showToast(`Deleted ${total} output item(s) [local: ${localDeleted}, github refs: ${githubRefs}]`);
             refreshOutputVideoCount();
         } else {
             showToast((data && data.error) ? data.error : 'Delete failed');
