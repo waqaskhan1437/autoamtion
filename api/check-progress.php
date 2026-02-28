@@ -6,7 +6,7 @@
 
 error_reporting(0);
 ini_set('display_errors', 0);
-
+set_time_limit(180);
 header('Content-Type: application/json');
 
 try {
@@ -66,7 +66,7 @@ function cpGithubSettings(PDO $pdo): array
     ];
 }
 
-function cpGithubRequest(string $url, string $token, bool $binary = false, int $timeout = 25): array
+function cpGithubRequest(string $url, string $token, bool $binary = false, int $timeout = 90): array
 {
     if (!function_exists('curl_init')) {
         return ['success' => false, 'error' => 'cURL extension required'];
@@ -115,215 +115,378 @@ function cpExtractRunId(array $progressData): int
     return 0;
 }
 
-function cpPickLatestMarkerFromLogsZip(string $zipPath): ?array
+function cpParseMarkersFromText(string $content, int &$autoSeq = 0): array
+{
+    if ($content === '' || strpos($content, 'VW_PROGRESS_B64:') === false) {
+        return [];
+    }
+    if (!preg_match_all('/VW_PROGRESS_B64:([A-Za-z0-9+\/=]+)/', $content, $matches)) {
+        return [];
+    }
+
+    $markers = [];
+    foreach ($matches[1] as $b64) {
+        $raw = base64_decode((string)$b64, true);
+        if ($raw === false || $raw === '') {
+            continue;
+        }
+        $marker = json_decode($raw, true);
+        if (!is_array($marker)) {
+            continue;
+        }
+
+        $seq = (int)($marker['sequence'] ?? 0);
+        if ($seq <= 0) {
+            $autoSeq++;
+            $seq = 1000000 + $autoSeq;
+        }
+        $marker['_seq'] = $seq;
+        $marker['_ts'] = (int)($marker['time_unix'] ?? 0);
+        $markers[] = $marker;
+    }
+
+    return $markers;
+}
+
+function cpSortMarkers(array $markers): array
+{
+    if (empty($markers)) {
+        return [];
+    }
+    usort($markers, function ($a, $b) {
+        $sa = (int)($a['_seq'] ?? 0);
+        $sb = (int)($b['_seq'] ?? 0);
+        if ($sa === $sb) {
+            return ((int)($a['_ts'] ?? 0)) <=> ((int)($b['_ts'] ?? 0));
+        }
+        return $sa <=> $sb;
+    });
+    return $markers;
+}
+
+function cpExtractMarkersFromLogsZip(string $zipPath): array
 {
     if (!class_exists('ZipArchive')) {
-        return null;
+        return [];
     }
 
     $zip = new ZipArchive();
     if ($zip->open($zipPath) !== true) {
-        return null;
+        return [];
     }
 
-    $best = null;
-    $bestSeq = -1;
-    $bestTs = 0;
+    $autoSeq = 0;
+    $markers = [];
 
     for ($i = 0; $i < $zip->numFiles; $i++) {
-        $name = (string)$zip->getNameIndex($i);
-        if ($name === '') {
-            continue;
-        }
         $content = $zip->getFromIndex($i);
-        if (!is_string($content) || $content === '' || strpos($content, 'VW_PROGRESS_B64:') === false) {
+        if (!is_string($content) || $content === '') {
             continue;
         }
-
-        if (preg_match_all('/VW_PROGRESS_B64:([A-Za-z0-9+\/=]+)/', $content, $matches)) {
-            foreach ($matches[1] as $b64) {
-                $json = base64_decode((string)$b64, true);
-                if ($json === false || $json === '') {
-                    continue;
-                }
-                $event = json_decode($json, true);
-                if (!is_array($event)) {
-                    continue;
-                }
-                $seq = (int)($event['sequence'] ?? 0);
-                $ts = (int)($event['time_unix'] ?? 0);
-                if ($seq > $bestSeq || ($seq === $bestSeq && $ts >= $bestTs)) {
-                    $best = $event;
-                    $bestSeq = $seq;
-                    $bestTs = $ts;
-                }
+        $parsed = cpParseMarkersFromText($content, $autoSeq);
+        if (!empty($parsed)) {
+            foreach ($parsed as $m) {
+                $markers[] = $m;
             }
         }
     }
 
     $zip->close();
-    return $best;
+    return cpSortMarkers($markers);
 }
 
-function cpFetchLatestProgressMarker(string $owner, string $repo, int $runId, string $token): ?array
+function cpFetchProgressMarkers(string $owner, string $repo, int $runId, string $token): array
 {
     if ($runId <= 0) {
-        return null;
+        return [];
     }
 
     $url = "https://api.github.com/repos/{$owner}/{$repo}/actions/runs/{$runId}/logs";
-    $res = cpGithubRequest($url, $token, true, 30);
-    if (!$res['success'] || (int)$res['http'] !== 200 || !is_string($res['body']) || $res['body'] === '') {
-        return null;
+    $res = cpGithubRequest($url, $token, true, 120);
+    if (!$res['success'] || (int)($res['http'] ?? 0) !== 200 || !is_string($res['body']) || $res['body'] === '') {
+        return [];
     }
 
     $tmp = tempnam(sys_get_temp_dir(), 'ghlog_');
     if ($tmp === false) {
-        return null;
+        return [];
     }
+
     file_put_contents($tmp, $res['body']);
-    $event = cpPickLatestMarkerFromLogsZip($tmp);
+    $markers = cpExtractMarkersFromLogsZip($tmp);
     @unlink($tmp);
-    return $event;
+    return $markers;
 }
 
-function cpImportRunArtifacts(array $gh, int $runId, array $progressData): array
+function cpFetchProgressMarkersFromJobLogs(string $owner, string $repo, int $runId, string $token): array
 {
-    $result = [
-        'progressData' => $progressData,
-        'imported' => [],
-        'errors' => []
+    if ($runId <= 0) {
+        return [];
+    }
+
+    $jobsUrl = "https://api.github.com/repos/{$owner}/{$repo}/actions/runs/{$runId}/jobs?per_page=10";
+    $jobsRes = cpGithubRequest($jobsUrl, $token, false, 20);
+    if (!$jobsRes['success'] || (int)($jobsRes['http'] ?? 0) !== 200 || !is_array($jobsRes['json'])) {
+        return [];
+    }
+
+    $jobs = $jobsRes['json']['jobs'] ?? [];
+    if (!is_array($jobs) || empty($jobs)) {
+        return [];
+    }
+
+    $autoSeq = 0;
+    $markers = [];
+    foreach ($jobs as $job) {
+        if (!is_array($job)) {
+            continue;
+        }
+        $jobId = (int)($job['id'] ?? 0);
+        if ($jobId <= 0) {
+            continue;
+        }
+
+        $jobStatus = strtolower(trim((string)($job['status'] ?? '')));
+        if (in_array($jobStatus, ['queued', 'waiting', 'requested'], true)) {
+            continue;
+        }
+
+        $logUrl = "https://api.github.com/repos/{$owner}/{$repo}/actions/jobs/{$jobId}/logs";
+        $logRes = cpGithubRequest($logUrl, $token, true, 60);
+        if (!$logRes['success'] || (int)($logRes['http'] ?? 0) !== 200 || !is_string($logRes['body']) || $logRes['body'] === '') {
+            continue;
+        }
+
+        $parsed = cpParseMarkersFromText($logRes['body'], $autoSeq);
+        if (!empty($parsed)) {
+            foreach ($parsed as $m) {
+                $markers[] = $m;
+            }
+        }
+    }
+
+    return cpSortMarkers($markers);
+}
+
+function cpNormalizeStats($stats): array
+{
+    $base = [
+        'fetched' => 0,
+        'downloaded' => 0,
+        'processed' => 0,
+        'scheduled' => 0,
+        'posted' => 0,
+        'errors' => 0
     ];
-
-    if (empty($gh['ready']) || $runId <= 0 || !class_exists('ZipArchive')) {
-        return $result;
+    if (!is_array($stats)) {
+        return $base;
     }
-
-    $artifactsUrl = "https://api.github.com/repos/{$gh['owner']}/{$gh['repo']}/actions/runs/{$runId}/artifacts?per_page=100";
-    $listRes = cpGithubRequest($artifactsUrl, $gh['token'], false, 25);
-    if (!$listRes['success'] || (int)$listRes['http'] !== 200 || !is_array($listRes['json'])) {
-        return $result;
-    }
-
-    $artifacts = $listRes['json']['artifacts'] ?? [];
-    if (!is_array($artifacts) || empty($artifacts)) {
-        return $result;
-    }
-
-    $downloaded = [];
-    if (!empty($progressData['downloaded_artifacts']) && is_array($progressData['downloaded_artifacts'])) {
-        foreach ($progressData['downloaded_artifacts'] as $id) {
-            $downloaded[] = (int)$id;
+    foreach ($base as $k => $v) {
+        if (isset($stats[$k])) {
+            $base[$k] = (int)$stats[$k];
         }
     }
-    $downloaded = array_values(array_unique(array_filter($downloaded)));
+    return $base;
+}
 
-    $outDir = defined('OUTPUT_DIR')
-        ? OUTPUT_DIR
-        : ((PHP_OS_FAMILY === 'Windows') ? 'C:/VideoWorkflow/output' : (getenv('HOME') . '/VideoWorkflow/output'));
-    if (!is_dir($outDir)) {
-        @mkdir($outDir, 0777, true);
+function cpNormalizeScheduledAt(?string $value): ?string
+{
+    if ($value === null) {
+        return null;
+    }
+    $value = trim($value);
+    if ($value === '') {
+        return null;
+    }
+    $ts = strtotime($value);
+    if ($ts === false) {
+        return null;
+    }
+    return gmdate('Y-m-d H:i:s', $ts);
+}
+
+function cpAutomationAccountIds(PDO $pdo, int $automationId): ?string
+{
+    static $cache = [];
+    if (array_key_exists($automationId, $cache)) {
+        return $cache[$automationId];
     }
 
-    foreach ($artifacts as $artifact) {
-        if (!is_array($artifact)) {
-            continue;
+    try {
+        $stmt = $pdo->prepare("SELECT postforme_account_ids FROM automation_settings WHERE id = ? LIMIT 1");
+        $stmt->execute([$automationId]);
+        $raw = $stmt->fetchColumn();
+        $decoded = json_decode((string)$raw, true);
+        if (is_array($decoded) && !empty($decoded)) {
+            $cache[$automationId] = json_encode(array_values(array_unique(array_filter(array_map('strval', $decoded)))));
+            return $cache[$automationId];
         }
-        $artifactId = (int)($artifact['id'] ?? 0);
-        $artifactName = (string)($artifact['name'] ?? '');
-        $expired = !empty($artifact['expired']);
-        $downloadUrl = (string)($artifact['archive_download_url'] ?? '');
-
-        if ($artifactId <= 0 || $expired || $downloadUrl === '') {
-            continue;
-        }
-        if (strpos($artifactName, 'automation-output-') !== 0) {
-            continue;
-        }
-        if (in_array($artifactId, $downloaded, true)) {
-            continue;
-        }
-
-        $zipRes = cpGithubRequest($downloadUrl, $gh['token'], true, 60);
-        if (!$zipRes['success'] || (int)$zipRes['http'] !== 200 || !is_string($zipRes['body']) || $zipRes['body'] === '') {
-            $result['errors'][] = "Artifact download failed: {$artifactName}";
-            continue;
-        }
-
-        $tmp = tempnam(sys_get_temp_dir(), 'ghart_');
-        if ($tmp === false) {
-            $result['errors'][] = "Temp file allocation failed: {$artifactName}";
-            continue;
-        }
-        file_put_contents($tmp, $zipRes['body']);
-
-        $zip = new ZipArchive();
-        if ($zip->open($tmp) !== true) {
-            $result['errors'][] = "Invalid artifact zip: {$artifactName}";
-            @unlink($tmp);
-            continue;
-        }
-
-        for ($i = 0; $i < $zip->numFiles; $i++) {
-            $entry = (string)$zip->getNameIndex($i);
-            if ($entry === '' || substr($entry, -1) === '/') {
-                continue;
-            }
-
-            $base = basename($entry);
-            $ext = strtolower((string)pathinfo($base, PATHINFO_EXTENSION));
-            if (!in_array($ext, ['mp4', 'mov', 'mkv', 'webm', 'avi'], true)) {
-                continue;
-            }
-
-            $stream = $zip->getStream($entry);
-            if (!is_resource($stream)) {
-                continue;
-            }
-
-            $target = rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $base;
-            if (file_exists($target)) {
-                fclose($stream);
-                continue;
-            }
-
-            $fp = @fopen($target, 'wb');
-            if (!is_resource($fp)) {
-                fclose($stream);
-                continue;
-            }
-            stream_copy_to_stream($stream, $fp);
-            fclose($fp);
-            fclose($stream);
-
-            $result['imported'][] = basename($target);
-        }
-
-        $zip->close();
-        @unlink($tmp);
-        $downloaded[] = $artifactId;
+    } catch (Exception $e) {
     }
 
-    $downloaded = array_values(array_unique(array_filter(array_map('intval', $downloaded))));
-    $progressData['downloaded_artifacts'] = $downloaded;
+    $cache[$automationId] = null;
+    return null;
+}
 
-    $existingOutputs = [];
+function cpUpsertPostForMeFromMarker(PDO $pdo, int $automationId, string $message, ?string $videoName = null): void
+{
+    if (!preg_match('/Post ID:\s*([A-Za-z0-9_\-]+)/i', $message, $pm)) {
+        return;
+    }
+    $postId = trim((string)$pm[1]);
+    if ($postId === '') {
+        return;
+    }
+
+    $scheduledAt = null;
+    if (preg_match('/scheduled:\s*([^)]+)\)/i', $message, $sm)) {
+        $scheduledAt = cpNormalizeScheduledAt((string)$sm[1]);
+    }
+
+    $status = 'pending';
+    if ($scheduledAt !== null || stripos($message, 'SCHEDULED!') !== false) {
+        $status = 'scheduled';
+    } elseif (stripos($message, 'POSTED!') !== false) {
+        $status = 'posted';
+    }
+
+    $accountIdsJson = cpAutomationAccountIds($pdo, $automationId);
+    $videoId = ($videoName !== null && trim($videoName) !== '') ? trim($videoName) : null;
+
+    try {
+        $sel = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
+        $sel->execute([$postId]);
+        $existingId = (int)($sel->fetchColumn() ?: 0);
+
+        if ($existingId > 0) {
+            $up = $pdo->prepare("
+                UPDATE postforme_posts
+                SET automation_id = COALESCE(automation_id, ?),
+                    video_id = COALESCE(video_id, ?),
+                    account_ids = COALESCE(account_ids, ?),
+                    status = ?,
+                    scheduled_at = COALESCE(scheduled_at, ?),
+                    published_at = CASE WHEN ? = 'posted' THEN COALESCE(published_at, NOW()) ELSE published_at END
+                WHERE id = ?
+            ");
+            $up->execute([$automationId, $videoId, $accountIdsJson, $status, $scheduledAt, $status, $existingId]);
+        } else {
+            $ins = $pdo->prepare("
+                INSERT INTO postforme_posts (post_id, automation_id, video_id, account_ids, status, scheduled_at, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? = 'posted' THEN NOW() ELSE NULL END)
+            ");
+            $ins->execute([$postId, $automationId, $videoId, $accountIdsJson, $status, $scheduledAt, $status]);
+        }
+    } catch (Exception $e) {
+    }
+}
+
+function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &$progressPercent, array $markers): bool
+{
+    if (empty($markers)) {
+        return false;
+    }
+
+    $changed = false;
+    $lastSeq = (int)($progressData['sequence'] ?? 0);
+    $currentVideo = trim((string)($progressData['current_video'] ?? ''));
+    $outputs = [];
     if (!empty($progressData['outputs']) && is_array($progressData['outputs'])) {
         foreach ($progressData['outputs'] as $o) {
             $v = trim((string)$o);
-            if ($v !== '') {
-                $existingOutputs[] = $v;
+            if ($v !== '' && !in_array($v, $outputs, true)) {
+                $outputs[] = $v;
             }
         }
     }
-    foreach ($result['imported'] as $file) {
-        if (!in_array($file, $existingOutputs, true)) {
-            $existingOutputs[] = $file;
+    $stats = cpNormalizeStats($progressData['stats'] ?? []);
+
+    foreach ($markers as $marker) {
+        $seq = (int)($marker['_seq'] ?? $marker['sequence'] ?? 0);
+        if ($seq <= $lastSeq) {
+            continue;
+        }
+
+        $message = trim((string)($marker['message'] ?? 'Runner update.'));
+        $step = trim((string)($marker['step'] ?? 'github_runner'));
+        $eventStatus = trim((string)($marker['event_status'] ?? $marker['status'] ?? 'info'));
+        if ($eventStatus === '') {
+            $eventStatus = 'info';
+        }
+
+        if (preg_match('/Processing:\s*(.+)$/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        } elseif (preg_match('/Downloading:\s*([^()]+)\(/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        }
+
+        if (isset($marker['progress'])) {
+            $progressPercent = cpClampPercent($marker['progress']);
+        }
+        if (!empty($marker['stats']) && is_array($marker['stats'])) {
+            $stats = cpNormalizeStats($marker['stats']);
+        }
+        if (!empty($marker['outputs']) && is_array($marker['outputs'])) {
+            foreach ($marker['outputs'] as $ov) {
+                $vv = trim((string)$ov);
+                if ($vv !== '' && !in_array($vv, $outputs, true)) {
+                    $outputs[] = $vv;
+                }
+            }
+        }
+        if (preg_match('/(?:Created|Output):\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i', $message, $om)) {
+            $ov = basename(trim((string)$om[1]));
+            if ($ov !== '' && !in_array($ov, $outputs, true)) {
+                $outputs[] = $ov;
+            }
+        }
+
+        if (stripos($message, 'Post ID:') !== false) {
+            cpUpsertPostForMeFromMarker($pdo, $automationId, $message, $currentVideo !== '' ? $currentVideo : null);
+        }
+
+        $progressData['sequence'] = $seq;
+        $progressData['step'] = $step;
+        $progressData['status'] = $eventStatus;
+        $progressData['message'] = $message;
+        $progressData['progress'] = $progressPercent;
+        $progressData['stats'] = $stats;
+        $progressData['outputs'] = $outputs;
+        $progressData['time'] = date('H:i:s');
+        if (!empty($marker['run_url'])) {
+            $progressData['run_url'] = trim((string)$marker['run_url']);
+        }
+        $changed = true;
+        $lastSeq = $seq;
+    }
+
+    $progressData['current_video'] = $currentVideo;
+    return $changed;
+}
+
+function cpBackfillPostForMeFromMarkers(PDO $pdo, int $automationId, array $markers): void
+{
+    if (empty($markers)) {
+        return;
+    }
+
+    $currentVideo = '';
+    foreach ($markers as $marker) {
+        $message = trim((string)($marker['message'] ?? ''));
+        if ($message === '') {
+            continue;
+        }
+
+        if (preg_match('/Processing:\s*(.+)$/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        } elseif (preg_match('/Downloading:\s*([^()]+)\(/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        }
+
+        if (stripos($message, 'Post ID:') !== false) {
+            cpUpsertPostForMeFromMarker($pdo, $automationId, $message, $currentVideo !== '' ? $currentVideo : null);
         }
     }
-    $progressData['outputs'] = $existingOutputs;
-    $result['progressData'] = $progressData;
-    return $result;
 }
 
 $automationId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -365,7 +528,7 @@ $progressData = cpDecodeProgressData((string)($automation['progress_data'] ?? ''
 $statusChanged = false;
 $dataChanged = false;
 
-if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automation['status'], ['running', 'processing'], true)) {
+if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automation['status'], ['running', 'processing', 'completed'], true)) {
     $gh = cpGithubSettings($pdo);
     $runId = cpExtractRunId($progressData);
 
@@ -376,33 +539,21 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
 
         $lastLogSync = (int)($progressData['github_log_synced_at'] ?? 0);
         if (($nowTs - $lastLogSync) >= 6) {
-            $marker = cpFetchLatestProgressMarker($gh['owner'], $gh['repo'], $runId, $gh['token']);
+            $markers = cpFetchProgressMarkers($gh['owner'], $gh['repo'], $runId, $gh['token']);
+            if (empty($markers) && in_array(($automation['status'] ?? ''), ['running', 'processing'], true)) {
+                // Workflow run logs can be unavailable until completion; job logs are usually live.
+                $markers = cpFetchProgressMarkersFromJobLogs($gh['owner'], $gh['repo'], $runId, $gh['token']);
+            }
             $progressData['github_log_synced_at'] = $nowTs;
-            if (is_array($marker)) {
-                $markerSeq = (int)($marker['sequence'] ?? 0);
-                $lastSeq = (int)($progressData['sequence'] ?? 0);
-                if ($markerSeq === 0 || $markerSeq >= $lastSeq) {
-                    $progressData['sequence'] = $markerSeq;
-                    $progressData['step'] = trim((string)($marker['step'] ?? ($progressData['step'] ?? 'github_runner')));
-                    $progressData['status'] = trim((string)($marker['event_status'] ?? ($marker['status'] ?? ($progressData['status'] ?? 'info'))));
-                    $progressData['message'] = trim((string)($marker['message'] ?? ($progressData['message'] ?? 'GitHub runner update.')));
-                    if (isset($marker['progress'])) {
-                        $progressPercent = cpClampPercent($marker['progress']);
-                        $progressData['progress'] = $progressPercent;
-                    }
-                    if (!empty($marker['stats']) && is_array($marker['stats'])) {
-                        $progressData['stats'] = $marker['stats'];
-                    }
-                    if (!empty($marker['outputs']) && is_array($marker['outputs'])) {
-                        $progressData['outputs'] = array_values(array_filter(array_map('strval', $marker['outputs'])));
-                    }
-                    if (!empty($marker['run_url'])) {
-                        $runUrl = trim((string)$marker['run_url']);
-                        $progressData['run_url'] = $runUrl;
-                    }
-                    $progressData['run_id'] = $runId;
-                    $progressData['time'] = date('H:i:s');
-                    $markerApplied = true;
+            if (!empty($markers)) {
+                $markerApplied = cpApplyMarkers($pdo, $automationId, $progressData, $progressPercent, $markers);
+                if ($markerApplied) {
+                    $dataChanged = true;
+                }
+
+                if (($automation['status'] ?? '') === 'completed' && empty($progressData['postforme_backfilled'])) {
+                    cpBackfillPostForMeFromMarkers($pdo, $automationId, $markers);
+                    $progressData['postforme_backfilled'] = 1;
                     $dataChanged = true;
                 }
             }
@@ -426,25 +577,28 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
 
                 if ($ghStatus === 'completed') {
                     $isSuccess = in_array($ghConclusion, ['success', 'neutral', 'skipped'], true);
-                    $automation['status'] = $isSuccess ? 'completed' : 'error';
-                    $statusChanged = true;
-                    $progressPercent = $isSuccess ? 100 : max(0, $progressPercent);
-
-                    $progressData['step'] = 'github_runner';
-                    $progressData['status'] = $isSuccess ? 'success' : 'error';
-                    $progressData['message'] = $isSuccess
-                        ? 'GitHub workflow completed successfully.'
-                        : ('GitHub workflow failed: ' . ($ghConclusion !== '' ? $ghConclusion : 'unknown'));
-                    $progressData['progress'] = $progressPercent;
-                    $progressData['time'] = date('H:i:s');
+                    $newStatus = $isSuccess ? 'completed' : 'error';
+                    if ($automation['status'] !== $newStatus) {
+                        $automation['status'] = $newStatus;
+                        $statusChanged = true;
+                    }
 
                     if ($isSuccess) {
-                        $import = cpImportRunArtifacts($gh, $runId, $progressData);
-                        $progressData = $import['progressData'];
-                        if (!empty($import['imported'])) {
-                            $progressData['message'] .= ' Imported ' . count($import['imported']) . ' output video(s).';
+                        $progressPercent = 100;
+                        if (!$markerApplied && empty($progressData['message'])) {
+                            $progressData['step'] = 'github_runner';
+                            $progressData['status'] = 'success';
+                            $progressData['message'] = 'GitHub workflow completed successfully.';
+                            $progressData['time'] = date('H:i:s');
                         }
+                    } else {
+                        $progressData['step'] = 'github_runner';
+                        $progressData['status'] = 'error';
+                        $progressData['message'] = 'GitHub workflow failed: ' . ($ghConclusion !== '' ? $ghConclusion : 'unknown');
+                        $progressData['time'] = date('H:i:s');
                     }
+                    $progressData['progress'] = $progressPercent;
+                    $dataChanged = true;
 
                     try {
                         $pdo->prepare("
@@ -453,17 +607,17 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                         ")->execute([
                             $automationId,
                             $isSuccess ? 'success' : 'error',
-                            $progressData['message']
+                            (string)($progressData['message'] ?? ($isSuccess ? 'GitHub workflow completed.' : 'GitHub workflow failed.'))
                         ]);
-                    } catch (Exception $e) {}
-                    $dataChanged = true;
+                    } catch (Exception $e) {
+                    }
                 } elseif (in_array($ghStatus, ['queued', 'in_progress', 'waiting', 'requested'], true)) {
                     if ($automation['status'] !== 'processing') {
                         $automation['status'] = 'processing';
                         $statusChanged = true;
                     }
 
-                    // Fallback progress: estimate from workflow steps when detailed log markers are not yet available.
+                    // Fallback when log markers are not available yet.
                     if (!$markerApplied) {
                         $jobsUrl = "https://api.github.com/repos/{$gh['owner']}/{$gh['repo']}/actions/runs/{$runId}/jobs?per_page=10";
                         $jobsRes = cpGithubRequest($jobsUrl, $gh['token'], false, 15);
@@ -474,49 +628,41 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                                 $steps = [];
                                 if (is_array($stepsRaw)) {
                                     foreach ($stepsRaw as $stepItem) {
-                                        if (!is_array($stepItem)) {
-                                            continue;
-                                        }
+                                        if (!is_array($stepItem)) continue;
                                         $name = trim((string)($stepItem['name'] ?? ''));
-                                        if ($name === '') {
-                                            continue;
-                                        }
-                                        // Ignore auto post-steps so progress stays intuitive.
-                                        if (stripos($name, 'Post ') === 0 || stripos($name, 'Complete job') === 0) {
-                                            continue;
-                                        }
+                                        if ($name === '') continue;
+                                        if (stripos($name, 'Post ') === 0 || stripos($name, 'Complete job') === 0) continue;
                                         $steps[] = $stepItem;
                                     }
                                 }
 
                                 if (!empty($steps)) {
-                                    $totalSteps = count($steps);
-                                    $completedSteps = 0;
-                                    $activeStepName = '';
+                                    $total = count($steps);
+                                    $completed = 0;
+                                    $active = '';
                                     foreach ($steps as $s) {
-                                        $stepStatus = strtolower(trim((string)($s['status'] ?? '')));
-                                        if ($stepStatus === 'completed') {
-                                            $completedSteps++;
-                                        } elseif ($activeStepName === '' && $stepStatus === 'in_progress') {
-                                            $activeStepName = trim((string)($s['name'] ?? ''));
+                                        $st = strtolower(trim((string)($s['status'] ?? '')));
+                                        if ($st === 'completed') {
+                                            $completed++;
+                                        } elseif ($active === '' && $st === 'in_progress') {
+                                            $active = trim((string)($s['name'] ?? ''));
                                         }
                                     }
 
-                                    $estimated = (int)round(($completedSteps / max($totalSteps, 1)) * 95);
+                                    $estimated = (int)round(($completed / max($total, 1)) * 95);
                                     if ($estimated < 15) $estimated = 15;
                                     if ($estimated > 95) $estimated = 95;
                                     if ($estimated > $progressPercent) {
                                         $progressPercent = $estimated;
-                                        $progressData['progress'] = $progressPercent;
                                     }
-
-                                    if ($activeStepName === '') {
-                                        $activeStepName = trim((string)($steps[min($completedSteps, $totalSteps - 1)]['name'] ?? 'Working...'));
+                                    if ($active === '') {
+                                        $active = trim((string)($steps[min($completed, $total - 1)]['name'] ?? 'Working...'));
                                     }
 
                                     $progressData['step'] = 'github_steps';
                                     $progressData['status'] = 'info';
-                                    $progressData['message'] = 'GitHub step: ' . $activeStepName;
+                                    $progressData['message'] = 'GitHub step: ' . $active;
+                                    $progressData['progress'] = $progressPercent;
                                     $progressData['time'] = date('H:i:s');
                                     $dataChanged = true;
                                 }
@@ -539,39 +685,6 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                 WHERE id = ?
             ")->execute([$automation['status'], $progressPercent, $payload, $automation['status'], $automationId]);
             $automation['last_progress_time'] = date('Y-m-d H:i:s');
-        }
-    }
-}
-
-// For completed GitHub runs, retry artifact import on poll until artifacts become available.
-if (($automation['run_mode'] ?? 'local') === 'github_runner' && $automation['status'] === 'completed') {
-    $runIdCompleted = cpExtractRunId($progressData);
-    $ghCompleted = cpGithubSettings($pdo);
-    if (!empty($ghCompleted['ready']) && $runIdCompleted > 0) {
-        $lastImportTry = (int)($progressData['artifact_import_try'] ?? 0);
-        if ((time() - $lastImportTry) >= 10) {
-            $beforePayload = cpEncodeProgressData($progressData);
-            $import = cpImportRunArtifacts($ghCompleted, $runIdCompleted, $progressData);
-            $progressData = $import['progressData'];
-            $progressData['artifact_import_try'] = time();
-
-            if (!empty($import['imported'])) {
-                $progressData['status'] = 'success';
-                $progressData['step'] = 'artifact_import';
-                $progressData['message'] = 'Imported ' . count($import['imported']) . ' output video(s) from GitHub artifacts.';
-                $progressData['time'] = date('H:i:s');
-            }
-
-            $afterPayload = cpEncodeProgressData($progressData);
-            if ($afterPayload !== $beforePayload) {
-                $pdo->prepare("
-                    UPDATE automation_settings
-                    SET progress_data = ?,
-                        last_progress_time = NOW()
-                    WHERE id = ?
-                ")->execute([$afterPayload, $automationId]);
-                $automation['last_progress_time'] = date('Y-m-d H:i:s');
-            }
         }
     }
 }

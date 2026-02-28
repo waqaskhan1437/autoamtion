@@ -115,12 +115,25 @@ try {
                         }
                     }
                     $accountIdsJson = !empty($accountIds) ? json_encode(array_values(array_unique($accountIds))) : null;
+                    $accountOverlap = false;
+                    if ($automationId > 0 && !empty($targetAutomationAccounts) && !empty($accountIds)) {
+                        $targetSet = array_fill_keys($targetAutomationAccounts, true);
+                        foreach ($accountIds as $aid) {
+                            if (isset($targetSet[(string)$aid])) {
+                                $accountOverlap = true;
+                                break;
+                            }
+                        }
+                    }
 
                     $mappedAutomationId = null;
                     if ($automationId > 0) {
                         // Strict per-automation mapping:
                         // only map remote posts that are already tracked locally for this automation.
                         if (isset($trackedPostIdSet[$postId])) {
+                            $mappedAutomationId = $automationId;
+                        } elseif (empty($trackedPostIdSet) && $accountOverlap) {
+                            // Fallback for GitHub-runner flows where local post IDs are not persisted.
                             $mappedAutomationId = $automationId;
                         }
                     }

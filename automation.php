@@ -2554,7 +2554,7 @@ function renderCardOutputs(automationId, outputs) {
 
     const html = unique.slice(-5).reverse().map((name) => {
         const safe = escapeHtml(name);
-        const href = 'output/' + encodeURIComponent(name);
+        const href = 'api/stream-github-video.php?automation_id=' + encodeURIComponent(String(automationId)) + '&file=' + encodeURIComponent(name);
         return `<a href="${href}" target="_blank" class="block text-cyan-300 hover:text-cyan-200 truncate" title="${safe}">${safe}</a>`;
     }).join('');
 

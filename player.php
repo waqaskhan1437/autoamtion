@@ -27,21 +27,74 @@ try {
 }
 
 $videos = [];
+$localCount = 0;
+$githubCount = 0;
+
 if (is_dir($outputDir)) {
     $files = glob($outputDir . '*.mp4');
     foreach ($files as $file) {
         $videos[] = [
             'name' => basename($file),
             'path' => $file,
-            'size' => filesize($file),
-            'date' => filemtime($file),
-            'url' => 'stream.php?file=' . urlencode(basename($file))
+            'size' => (int)filesize($file),
+            'date' => (int)filemtime($file),
+            'url' => 'stream.php?file=' . rawurlencode(basename($file)),
+            'source' => 'local',
+            'automation_id' => null
         ];
+        $localCount++;
     }
-    usort($videos, function($a, $b) {
-        return $b['date'] - $a['date'];
-    });
 }
+
+// Add GitHub runner outputs as direct stream links (not output folder files).
+try {
+    $stmt = $pdo->query("
+        SELECT id, name, last_run_at, progress_data
+        FROM automation_settings
+        WHERE run_mode = 'github_runner'
+          AND progress_data IS NOT NULL
+    ");
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $seenGithub = [];
+
+    foreach ($rows as $row) {
+        $automationId = (int)($row['id'] ?? 0);
+        if ($automationId <= 0) continue;
+
+        $pd = json_decode((string)($row['progress_data'] ?? ''), true);
+        if (!is_array($pd) || empty($pd['outputs']) || !is_array($pd['outputs'])) {
+            continue;
+        }
+
+        $dateTs = !empty($row['last_run_at']) ? strtotime((string)$row['last_run_at']) : false;
+        if ($dateTs === false) $dateTs = time();
+
+        foreach ($pd['outputs'] as $outputNameRaw) {
+            $outputName = basename(trim((string)$outputNameRaw));
+            if ($outputName === '') continue;
+
+            $key = $automationId . '|' . strtolower($outputName);
+            if (isset($seenGithub[$key])) continue;
+            $seenGithub[$key] = true;
+
+            $videos[] = [
+                'name' => $outputName,
+                'path' => 'github://' . $automationId . '/' . $outputName,
+                'size' => 0,
+                'date' => (int)$dateTs,
+                'url' => 'api/stream-github-video.php?automation_id=' . rawurlencode((string)$automationId) . '&file=' . rawurlencode($outputName),
+                'source' => 'github',
+                'automation_id' => $automationId
+            ];
+            $githubCount++;
+        }
+    }
+} catch (Exception $e) {
+}
+
+usort($videos, function($a, $b) {
+    return ((int)$b['date']) - ((int)$a['date']);
+});
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['delete_all'])) {
@@ -95,7 +148,7 @@ include 'includes/header.php';
         <form method="POST" onsubmit="return confirm('Delete all videos from output folder?')">
             <input type="hidden" name="delete_all" value="1">
             <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg">
-                Delete All Videos
+                Delete All Local Videos
             </button>
         </form>
         <button onclick="location.reload()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-2">
@@ -111,7 +164,13 @@ include 'includes/header.php';
         <span class="text-gray-400">Output Directory:</span>
         <code class="bg-gray-800 px-2 py-1 rounded text-xs"><?= htmlspecialchars($outputDir) ?></code>
         <span class="text-gray-400">|</span>
-        <span class="text-gray-400">Total Videos:</span>
+        <span class="text-gray-400">Local:</span>
+        <span class="font-bold text-white"><?= (int)$localCount ?></span>
+        <span class="text-gray-400">|</span>
+        <span class="text-gray-400">GitHub:</span>
+        <span class="font-bold text-cyan-300"><?= (int)$githubCount ?></span>
+        <span class="text-gray-400">|</span>
+        <span class="text-gray-400">Total:</span>
         <span class="font-bold text-white"><?= count($videos) ?></span>
     </div>
 </div>
@@ -134,29 +193,52 @@ include 'includes/header.php';
                     Your browser does not support video playback.
                 </video>
                 <div class="p-3">
-                    <div class="font-medium text-sm truncate mb-1" title="<?= htmlspecialchars($video['name']) ?>">
-                        <?= htmlspecialchars($video['name']) ?>
+                    <div class="flex items-center justify-between gap-2 mb-1">
+                        <div class="font-medium text-sm truncate" title="<?= htmlspecialchars($video['name']) ?>">
+                            <?= htmlspecialchars($video['name']) ?>
+                        </div>
+                        <?php if (($video['source'] ?? 'local') === 'github'): ?>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">GitHub</span>
+                        <?php else: ?>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-green-500/15 text-green-300 border border-green-500/30">Local</span>
+                        <?php endif; ?>
                     </div>
                     <div class="flex items-center justify-between text-xs text-gray-400">
-                        <span><?= number_format($video['size'] / 1024 / 1024, 1) ?> MB</span>
+                        <span>
+                            <?php if (($video['source'] ?? 'local') === 'github'): ?>
+                                Remote
+                            <?php else: ?>
+                                <?= number_format(((int)$video['size']) / 1024 / 1024, 1) ?> MB
+                            <?php endif; ?>
+                        </span>
                         <span><?= date('M d, H:i', $video['date']) ?></span>
                     </div>
                     <div class="flex gap-2 mt-2">
-                        <button onclick="openPostModal('<?= htmlspecialchars($video['name']) ?>', '<?= htmlspecialchars($video['path']) ?>')" class="flex-1 py-1 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 rounded text-xs flex items-center justify-center gap-1" <?= empty($postformeAccounts) ? 'disabled title="Sync accounts in Settings first"' : '' ?>>
-                            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-                            Post Now
-                        </button>
+                        <?php if (($video['source'] ?? 'local') === 'local'): ?>
+                            <button onclick="openPostModal('<?= htmlspecialchars($video['name']) ?>', '<?= htmlspecialchars($video['path']) ?>')" class="flex-1 py-1 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 rounded text-xs flex items-center justify-center gap-1" <?= empty($postformeAccounts) ? 'disabled title="Sync accounts in Settings first"' : '' ?>>
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                Post Now
+                            </button>
+                        <?php else: ?>
+                            <button type="button" class="flex-1 py-1 bg-gray-700 rounded text-xs text-gray-400 cursor-not-allowed" title="For GitHub outputs, use automation-level scheduling">
+                                Scheduled via Automation
+                            </button>
+                        <?php endif; ?>
                     </div>
                     <div class="flex gap-2 mt-2">
                         <a href="<?= $video['url'] ?>&download=1" class="flex-1 text-center py-1 bg-indigo-600 hover:bg-indigo-700 rounded text-xs">
                             Download
                         </a>
-                        <form method="POST" class="flex-1" onsubmit="return confirm('Delete this video?')">
-                            <input type="hidden" name="delete" value="<?= htmlspecialchars($video['name']) ?>">
-                            <button type="submit" class="w-full py-1 bg-red-600 hover:bg-red-700 rounded text-xs">
-                                Delete
-                            </button>
-                        </form>
+                        <?php if (($video['source'] ?? 'local') === 'local'): ?>
+                            <form method="POST" class="flex-1" onsubmit="return confirm('Delete this video?')">
+                                <input type="hidden" name="delete" value="<?= htmlspecialchars($video['name']) ?>">
+                                <button type="submit" class="w-full py-1 bg-red-600 hover:bg-red-700 rounded text-xs">
+                                    Delete
+                                </button>
+                            </form>
+                        <?php else: ?>
+                            <div class="flex-1 py-1 bg-gray-800 rounded text-xs text-center text-gray-500">Remote</div>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
