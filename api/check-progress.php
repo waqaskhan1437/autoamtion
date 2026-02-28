@@ -187,20 +187,6 @@ function cpFetchLatestProgressMarker(string $owner, string $repo, int $runId, st
     return $event;
 }
 
-function cpUniqueOutputPath(string $dir, string $fileName): string
-{
-    $base = pathinfo($fileName, PATHINFO_FILENAME);
-    $ext = pathinfo($fileName, PATHINFO_EXTENSION);
-    $extPart = $ext !== '' ? ('.' . $ext) : '';
-    $target = rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . $fileName;
-    $i = 1;
-    while (file_exists($target)) {
-        $target = rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . $base . '_' . $i . $extPart;
-        $i++;
-    }
-    return $target;
-}
-
 function cpImportRunArtifacts(array $gh, int $runId, array $progressData): array
 {
     $result = [
@@ -295,7 +281,12 @@ function cpImportRunArtifacts(array $gh, int $runId, array $progressData): array
                 continue;
             }
 
-            $target = cpUniqueOutputPath($outDir, $base);
+            $target = rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $base;
+            if (file_exists($target)) {
+                fclose($stream);
+                continue;
+            }
+
             $fp = @fopen($target, 'wb');
             if (!is_resource($fp)) {
                 fclose($stream);
