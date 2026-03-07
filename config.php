@@ -492,6 +492,21 @@ try {
     </div>');
 }
 
+$ytdlpCookiesFile = trim((string)(getenv('VW_YTDLP_COOKIES_FILE') ?: ''));
+if ($ytdlpCookiesFile === '' && isset($pdo)) {
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'ytdlp_cookies_file' LIMIT 1");
+        $stmt->execute();
+        $dbCookies = $stmt->fetchColumn();
+        if (is_string($dbCookies)) {
+            $ytdlpCookiesFile = trim($dbCookies);
+        }
+    } catch (Exception $e) {
+        // Ignore optional cookies setting failures.
+    }
+}
+define('YTDLP_COOKIES_FILE', $ytdlpCookiesFile);
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================

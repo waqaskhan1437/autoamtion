@@ -102,6 +102,27 @@ jobs:
         run: |
           php scripts/bootstrap-runner-db.php payload.json
 
+      - name: Prepare yt-dlp cookies
+        env:
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+        run: |
+          if [ -z "${YTDLP_COOKIES_B64}" ]; then
+            echo "No YTDLP_COOKIES_B64 secret configured; YouTube may hit bot checks."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("YTDLP_COOKIES_B64", "").strip()
+          target = Path(os.environ["RUNNER_TEMP"]) / "youtube-cookies.txt"
+          target.write_bytes(base64.b64decode(raw))
+          print(f"Wrote cookies file to {target}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"VW_YTDLP_COOKIES_FILE={target}\n")
+          PY
+
       - name: Run automation job
         env:
           VW_DB_HOST: 127.0.0.1

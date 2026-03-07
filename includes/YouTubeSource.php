@@ -55,6 +55,7 @@ class YouTubeSource
                     '--print',
                     $metadataTemplate,
                 ],
+                $this->getCookiesArgs(),
                 $this->getYouTubeExtractorArgs(),
                 $this->getJsRuntimeArgs(),
                 $urls
@@ -145,6 +146,7 @@ class YouTubeSource
                 '--output',
                 $outputTemplate,
             ],
+            $this->getCookiesArgs(),
             $this->getYouTubeExtractorArgs(),
             $this->getJsRuntimeArgs(),
             $this->ffmpegPath !== null ? ['--ffmpeg-location', $this->ffmpegPath] : [],
@@ -491,6 +493,20 @@ class YouTubeSource
         $nodePath = $this->resolveExistingBinary('node');
         if ($nodePath !== null) {
             return ['--js-runtimes', 'node'];
+        }
+
+        return [];
+    }
+
+    private function getCookiesArgs(): array
+    {
+        $cookiesFile = trim((string)(getenv('VW_YTDLP_COOKIES_FILE') ?: ''));
+        if ($cookiesFile === '' && defined('YTDLP_COOKIES_FILE')) {
+            $cookiesFile = trim((string)YTDLP_COOKIES_FILE);
+        }
+
+        if ($cookiesFile !== '' && is_file($cookiesFile) && filesize($cookiesFile) > 0) {
+            return ['--cookies', $cookiesFile];
         }
 
         return [];

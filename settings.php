@@ -158,6 +158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute(['github_runner_ref', $_POST['github_runner_ref'] ?? 'main']);
         $stmt->execute(['github_runner_inputs_json', $_POST['github_runner_inputs_json'] ?? '']);
         $stmt->execute(['github_runner_callback_secret', $_POST['github_runner_callback_secret'] ?? '']);
+        $stmt->execute(['ytdlp_cookies_file', $_POST['ytdlp_cookies_file'] ?? '']);
         $message = 'GitHub runner settings saved';
         
     } elseif ($action === 'test_github_runner') {
@@ -850,8 +851,19 @@ include 'includes/header.php';
                 <input type="text" name="github_runner_callback_secret" value="<?= htmlspecialchars($settings['github_runner_callback_secret'] ?? '') ?>" placeholder="Used by /api/github-runner-callback.php" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
             </div>
 
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Local yt-dlp Cookies File (optional)</label>
+                <input type="text" name="ytdlp_cookies_file" value="<?= htmlspecialchars($settings['ytdlp_cookies_file'] ?? '') ?>" placeholder="C:\Users\YourName\Downloads\youtube-cookies.txt" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                <p class="text-xs text-gray-500 mt-1">Ye sirf local machine par use hota hai. GitHub runner ke liye same cookies file ko repo secret <code>YTDLP_COOKIES_B64</code> ke naam se add karein.</p>
+            </div>
+
             <div class="p-3 bg-sky-500/10 border border-sky-500/20 rounded text-xs text-sky-200">
                 Create automations with <strong>Runner Mode = GitHub Runner</strong>. Manual Run and Cron will dispatch the GitHub workflow.
+            </div>
+            <div class="p-3 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-100">
+                <strong>YouTube cookies setup:</strong> browser se <code>cookies.txt</code> export karein, local path upar save karein, aur GitHub repo Settings → Secrets and variables → Actions mein <code>YTDLP_COOKIES_B64</code> secret set karein.
+                Base64 banane ke liye PowerShell:
+                <code>[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content -Raw 'C:\path\youtube-cookies.txt')))</code>
             </div>
         </div>
     </div>
