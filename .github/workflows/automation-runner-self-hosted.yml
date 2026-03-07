@@ -125,6 +125,16 @@ jobs:
           Get-Content $schemaPath | & $mysql -uroot video_workflow_runner
           & $mysql -uroot video_workflow_runner -e "ALTER TABLE automation_settings MODIFY COLUMN api_key_id INT NULL;"
 
+      - name: Apply app migrations
+        shell: powershell
+        env:
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow_runner
+          VW_DB_USER: root
+          VW_DB_PASS: ""
+        run: |
+          & 'C:\xampp\php\php.exe' -r "require 'config.php'; echo 'Runner DB migrations applied', PHP_EOL;"
+
       - name: Seed DB from payload
         shell: powershell
         env:

@@ -58,21 +58,27 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     video_source ENUM('ftp', 'bunny', 'manual_links', 'youtube_channel') DEFAULT 'ftp',
     manual_video_links LONGTEXT NULL,
     youtube_channel_url VARCHAR(500) NULL,
-    api_key_id INT NOT NULL,
     run_mode ENUM('local', 'github_runner') DEFAULT 'local',
+    api_key_id INT NULL,
     enabled BOOLEAN DEFAULT FALSE,
     
     -- Video Filter Settings
     video_days_filter INT DEFAULT 30,
+    video_start_date DATE NULL,
+    video_end_date DATE NULL,
+    videos_per_run INT DEFAULT 5,
+    process_id VARCHAR(20) NULL,
     
     -- Short Conversion Settings
     short_duration INT DEFAULT 60,
     short_aspect_ratio VARCHAR(20) DEFAULT '9:16',
+    ai_taglines_enabled TINYINT(1) DEFAULT 0,
+    ai_tagline_prompt TEXT,
     
     -- Branding Settings
     branding_text_top VARCHAR(255),
     branding_text_bottom VARCHAR(255),
-    random_words TEXT,
+    random_words JSON,
     
     -- Whisper/Caption Settings
     whisper_enabled BOOLEAN DEFAULT FALSE,
@@ -126,7 +132,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     -- Status & Timestamps
     last_run_at TIMESTAMP NULL,
     next_run_at TIMESTAMP NULL,
-    status ENUM('inactive', 'running', 'processing', 'completed', 'error', 'stopped', 'queued') DEFAULT 'inactive',
+    status ENUM('inactive', 'running', 'processing', 'completed', 'error', 'stopped', 'queued', 'paused') DEFAULT 'inactive',
     
     -- Background Progress Tracking
     progress_percent INT DEFAULT 0,
@@ -134,8 +140,9 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     last_progress_time TIMESTAMP NULL,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
-    FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL
 );
 
 -- Add progress columns to existing table (run if upgrading)

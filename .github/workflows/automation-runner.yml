@@ -98,6 +98,15 @@ jobs:
           mysql -h127.0.0.1 -uroot -proot video_workflow < /tmp/schema.sql
           mysql -h127.0.0.1 -uroot -proot video_workflow -e "ALTER TABLE automation_settings MODIFY COLUMN api_key_id INT NULL;"
 
+      - name: Apply app migrations
+        env:
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow
+          VW_DB_USER: root
+          VW_DB_PASS: root
+        run: |
+          php -r "require 'config.php'; echo 'Runner DB migrations applied', PHP_EOL;"
+
       - name: Seed DB from payload
         env:
           VW_DB_HOST: 127.0.0.1

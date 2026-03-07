@@ -18,9 +18,18 @@ MODIFY COLUMN video_source ENUM('ftp', 'bunny', 'manual_links', 'youtube_channel
 ALTER TABLE automation_settings
 ADD COLUMN IF NOT EXISTS youtube_channel_url VARCHAR(500) NULL AFTER manual_video_links;
 
+ALTER TABLE automation_settings
+ADD COLUMN IF NOT EXISTS ai_taglines_enabled TINYINT(1) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS ai_tagline_prompt TEXT,
+ADD COLUMN IF NOT EXISTS video_start_date DATE NULL,
+ADD COLUMN IF NOT EXISTS video_end_date DATE NULL,
+ADD COLUMN IF NOT EXISTS videos_per_run INT DEFAULT 5,
+ADD COLUMN IF NOT EXISTS schedule_every_minutes INT DEFAULT 10,
+ADD COLUMN IF NOT EXISTS process_id VARCHAR(20) NULL;
+
 -- Update status enum to include new states (including queue)
 ALTER TABLE automation_settings 
-MODIFY COLUMN status ENUM('inactive', 'running', 'processing', 'completed', 'error', 'stopped', 'queued') DEFAULT 'inactive';
+MODIFY COLUMN status ENUM('inactive', 'running', 'processing', 'completed', 'error', 'stopped', 'queued', 'paused') DEFAULT 'inactive';
 
 -- For MySQL versions that don't support IF NOT EXISTS in ADD COLUMN:
 -- Run each separately and ignore errors for columns that already exist:
