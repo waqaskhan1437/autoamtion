@@ -110,8 +110,16 @@ jobs:
       - name: Prepare yt-dlp cookies
         env:
           YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+          YTDLP_COOKIES_B64_1: ${{ secrets.YTDLP_COOKIES_B64_1 }}
+          YTDLP_COOKIES_B64_2: ${{ secrets.YTDLP_COOKIES_B64_2 }}
+          YTDLP_COOKIES_B64_3: ${{ secrets.YTDLP_COOKIES_B64_3 }}
+          YTDLP_COOKIES_B64_4: ${{ secrets.YTDLP_COOKIES_B64_4 }}
+          YTDLP_COOKIES_B64_5: ${{ secrets.YTDLP_COOKIES_B64_5 }}
+          YTDLP_COOKIES_B64_6: ${{ secrets.YTDLP_COOKIES_B64_6 }}
+          YTDLP_COOKIES_B64_7: ${{ secrets.YTDLP_COOKIES_B64_7 }}
+          YTDLP_COOKIES_B64_8: ${{ secrets.YTDLP_COOKIES_B64_8 }}
         run: |
-          if [ -z "${YTDLP_COOKIES_B64}" ]; then
+          if [ -z "${YTDLP_COOKIES_B64}" ] && [ -z "${YTDLP_COOKIES_B64_1}" ]; then
             echo "No YTDLP_COOKIES_B64 secret configured; YouTube may hit bot checks."
             exit 0
           fi
@@ -120,7 +128,13 @@ jobs:
           import os
           from pathlib import Path
 
-          raw = os.environ.get("YTDLP_COOKIES_B64", "").strip()
+          chunks = []
+          for idx in range(1, 9):
+              value = os.environ.get(f"YTDLP_COOKIES_B64_{idx}", "").strip()
+              if value:
+                  chunks.append(value)
+
+          raw = ''.join(chunks) if chunks else os.environ.get("YTDLP_COOKIES_B64", "").strip()
           target = Path(os.environ["RUNNER_TEMP"]) / "youtube-cookies.txt"
           target.write_bytes(base64.b64decode(raw))
           print(f"Wrote cookies file to {target}")
