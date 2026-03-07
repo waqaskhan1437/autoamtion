@@ -159,6 +159,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute(['github_runner_inputs_json', $_POST['github_runner_inputs_json'] ?? '']);
         $stmt->execute(['github_runner_callback_secret', $_POST['github_runner_callback_secret'] ?? '']);
         $stmt->execute(['ytdlp_cookies_file', $_POST['ytdlp_cookies_file'] ?? '']);
+        $stmt->execute(['ytdlp_cookies_browser', $_POST['ytdlp_cookies_browser'] ?? '']);
+        $stmt->execute(['ytdlp_cookies_browser_profile', $_POST['ytdlp_cookies_browser_profile'] ?? '']);
         $message = 'GitHub runner settings saved';
         
     } elseif ($action === 'test_github_runner') {
@@ -857,6 +859,19 @@ include 'includes/header.php';
                 <p class="text-xs text-gray-500 mt-1">Ye sirf local machine par use hota hai. GitHub runner ke liye same cookies file ko repo secret <code>YTDLP_COOKIES_B64</code> ke naam se add karein.</p>
             </div>
 
+            <div class="grid md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Local yt-dlp Browser (optional)</label>
+                    <input type="text" name="ytdlp_cookies_browser" value="<?= htmlspecialchars($settings['ytdlp_cookies_browser'] ?? '') ?>" placeholder="chrome" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                    <p class="text-xs text-gray-500 mt-1">Trusted local ya self-hosted Windows runner par direct browser cookies use karne ke liye. Example: <code>chrome</code>.</p>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Browser Profile (optional)</label>
+                    <input type="text" name="ytdlp_cookies_browser_profile" value="<?= htmlspecialchars($settings['ytdlp_cookies_browser_profile'] ?? '') ?>" placeholder="Default" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                    <p class="text-xs text-gray-500 mt-1">Chrome profile folder name. Example: <code>Default</code> ya <code>Profile 1</code>.</p>
+                </div>
+            </div>
+
             <div class="p-3 bg-sky-500/10 border border-sky-500/20 rounded text-xs text-sky-200">
                 Create automations with <strong>Runner Mode = GitHub Runner</strong>. Manual Run and Cron will dispatch the GitHub workflow.
             </div>
@@ -864,6 +879,9 @@ include 'includes/header.php';
                 <strong>YouTube cookies setup:</strong> browser se <code>cookies.txt</code> export karein, local path upar save karein, aur GitHub repo Settings → Secrets and variables → Actions mein <code>YTDLP_COOKIES_B64</code> secret set karein.
                 Base64 banane ke liye PowerShell:
                 <code>[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content -Raw 'C:\path\youtube-cookies.txt')))</code>
+            </div>
+            <div class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded text-xs text-emerald-100">
+                <strong>Local/self-hosted shortcut:</strong> trusted Windows machine par <code>Local yt-dlp Browser</code> mein <code>chrome</code> aur profile mein <code>Default</code> save karein. Is surat mein exported <code>cookies.txt</code> ki zarurat nahi hoti, lekin Chrome login tumhare account se hi hoga.
             </div>
         </div>
     </div>

@@ -1,4 +1,5 @@
 name: Automation Runner
+run-name: Automation #${{ inputs.automation_id || github.event.client_payload.automation_id || 'dispatch' }}
 
 on:
   repository_dispatch:
@@ -6,6 +7,10 @@ on:
       - automation_run
   workflow_dispatch:
     inputs:
+      automation_id:
+        description: "Automation ID"
+        required: false
+        type: string
       payload_gzip_b64:
         description: "Base64 GZIP payload from local dispatcher"
         required: true

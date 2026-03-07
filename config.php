@@ -507,6 +507,26 @@ if ($ytdlpCookiesFile === '' && isset($pdo)) {
 }
 define('YTDLP_COOKIES_FILE', $ytdlpCookiesFile);
 
+$ytdlpCookiesBrowser = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER') ?: ''));
+$ytdlpCookiesBrowserProfile = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER_PROFILE') ?: ''));
+if (($ytdlpCookiesBrowser === '' || $ytdlpCookiesBrowserProfile === '') && isset($pdo)) {
+    try {
+        $stmt = $pdo->prepare("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('ytdlp_cookies_browser', 'ytdlp_cookies_browser_profile')");
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+        if ($ytdlpCookiesBrowser === '' && is_array($rows) && isset($rows['ytdlp_cookies_browser'])) {
+            $ytdlpCookiesBrowser = trim((string)$rows['ytdlp_cookies_browser']);
+        }
+        if ($ytdlpCookiesBrowserProfile === '' && is_array($rows) && isset($rows['ytdlp_cookies_browser_profile'])) {
+            $ytdlpCookiesBrowserProfile = trim((string)$rows['ytdlp_cookies_browser_profile']);
+        }
+    } catch (Exception $e) {
+        // Ignore optional browser cookies setting failures.
+    }
+}
+define('YTDLP_COOKIES_BROWSER', $ytdlpCookiesBrowser);
+define('YTDLP_COOKIES_BROWSER_PROFILE', $ytdlpCookiesBrowserProfile);
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================

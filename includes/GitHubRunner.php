@@ -68,14 +68,19 @@ class GitHubRunner
             return ['success' => false, 'error' => 'Automation payload too large for GitHub dispatch.'];
         }
 
-        $dispatchUrl = "https://api.github.com/repos/{$config['owner']}/{$config['repo']}/dispatches";
+        $dispatchUrl = "https://api.github.com/repos/{$config['owner']}/{$config['repo']}/actions/workflows/" . rawurlencode($config['workflow']) . "/dispatches";
+        $inputs = [
+            'automation_id' => (string)$automationId,
+            'payload_gzip_b64' => $payloadB64
+        ];
+        foreach ($this->decodeExtraInputs($config['inputs_json']) as $key => $value) {
+            if (!array_key_exists($key, $inputs)) {
+                $inputs[$key] = $value;
+            }
+        }
         $payload = [
-            'event_type' => 'automation_run',
-            'client_payload' => [
-                'trigger_source' => (string)$triggerSource,
-                'automation_id' => (string)$automationId,
-                'payload_gzip_b64' => $payloadB64
-            ]
+            'ref' => $config['ref'],
+            'inputs' => $inputs
         ];
 
         $dispatchStartedAt = time();
@@ -103,7 +108,7 @@ class GitHubRunner
                 $config['token'],
                 $automationId,
                 $dispatchStartedAt - 2,
-                'repository_dispatch'
+                'workflow_dispatch'
             );
             if (!empty($runMeta['run_id'])) {
                 break;

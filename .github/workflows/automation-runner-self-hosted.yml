@@ -1,0 +1,152 @@
+name: Automation Runner (Self-Hosted)
+run-name: Automation #${{ inputs.automation_id || 'dispatch' }} on self-hosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      automation_id:
+        description: "Automation ID"
+        required: false
+        type: string
+      payload_gzip_b64:
+        description: "Base64 GZIP payload from local dispatcher"
+        required: true
+        type: string
+
+jobs:
+  run-automation:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - video-workflow
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare local runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $php = 'C:\xampp\php\php.exe'
+          $mysql = 'C:\xampp\mysql\bin\mysql.exe'
+          if (-not (Test-Path $php)) {
+            throw "PHP not found at $php"
+          }
+          if (-not (Test-Path $mysql)) {
+            throw "MySQL CLI not found at $mysql"
+          }
+
+          $toolsRoot = 'C:\VideoWorkflow'
+          $binDir = Join-Path $toolsRoot 'bin'
+          $ffmpegRoot = Join-Path $toolsRoot 'ffmpeg'
+          $ffmpegBin = Join-Path $ffmpegRoot 'bin'
+          New-Item -ItemType Directory -Force -Path $toolsRoot, $binDir, $ffmpegRoot | Out-Null
+
+          $ytDlp = Join-Path $binDir 'yt-dlp.exe'
+          if (-not (Test-Path $ytDlp)) {
+            Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile $ytDlp
+          }
+
+          $ffmpegExe = Join-Path $ffmpegBin 'ffmpeg.exe'
+          $ffprobeExe = Join-Path $ffmpegBin 'ffprobe.exe'
+          if (-not (Test-Path $ffmpegExe) -or -not (Test-Path $ffprobeExe)) {
+            $zipPath = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+            $extractRoot = Join-Path $env:RUNNER_TEMP 'ffmpeg-extract'
+            if (Test-Path $extractRoot) {
+              Remove-Item -Recurse -Force $extractRoot
+            }
+            Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zipPath
+            Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+            $downloadedBin = Get-ChildItem -Path $extractRoot -Recurse -Directory | Where-Object { $_.Name -eq 'bin' } | Select-Object -First 1
+            if (-not $downloadedBin) {
+              throw 'Downloaded FFmpeg archive did not contain a bin directory.'
+            }
+            New-Item -ItemType Directory -Force -Path $ffmpegBin | Out-Null
+            Copy-Item (Join-Path $downloadedBin.FullName 'ffmpeg.exe') $ffmpegExe -Force
+            Copy-Item (Join-Path $downloadedBin.FullName 'ffprobe.exe') $ffprobeExe -Force
+          }
+
+          Add-Content $env:GITHUB_PATH $binDir
+          Add-Content $env:GITHUB_ENV "VW_YTDLP_PATH=$ytDlp"
+          Add-Content $env:GITHUB_ENV "VW_FFMPEG_PATH=$ffmpegExe"
+          Add-Content $env:GITHUB_ENV "VW_FFPROBE_PATH=$ffprobeExe"
+
+      - name: Decode automation payload
+        id: payload
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payloadB64 = '${{ inputs.payload_gzip_b64 }}'
+          if ([string]::IsNullOrWhiteSpace($payloadB64)) {
+            throw 'Missing payload_gzip_b64'
+          }
+
+          $raw = [Convert]::FromBase64String($payloadB64)
+          $inStream = New-Object System.IO.MemoryStream(,$raw)
+          $gzipStream = New-Object System.IO.Compression.GzipStream($inStream, [System.IO.Compression.CompressionMode]::Decompress)
+          $reader = New-Object System.IO.StreamReader($gzipStream, [System.Text.Encoding]::UTF8)
+          $json = $reader.ReadToEnd()
+          $reader.Dispose()
+          $gzipStream.Dispose()
+          $inStream.Dispose()
+
+          Set-Content -Path payload.json -Value $json -Encoding UTF8
+          $payload = $json | ConvertFrom-Json
+          $automationId = [string]$payload.automation.id
+          if ([string]::IsNullOrWhiteSpace($automationId)) {
+            throw 'automation.id missing in payload'
+          }
+          Add-Content $env:GITHUB_OUTPUT "automation_id=$automationId"
+
+      - name: Recreate isolated runner database
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mysql = 'C:\xampp\mysql\bin\mysql.exe'
+          & $mysql -uroot -e "DROP DATABASE IF EXISTS video_workflow_runner; CREATE DATABASE video_workflow_runner CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+          $schemaLines = Get-Content '.\database.sql'
+          $cutAt = [Array]::IndexOf($schemaLines, '-- Insert Demo Data')
+          if ($cutAt -gt 0) {
+            $schemaLines = $schemaLines[0..($cutAt - 1)]
+          }
+          $schemaPath = Join-Path $env:RUNNER_TEMP 'schema.sql'
+          Set-Content -Path $schemaPath -Value $schemaLines -Encoding UTF8
+          Get-Content $schemaPath | & $mysql -uroot video_workflow_runner
+          & $mysql -uroot video_workflow_runner -e "ALTER TABLE automation_settings MODIFY COLUMN api_key_id INT NULL;"
+
+      - name: Seed DB from payload
+        shell: powershell
+        env:
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow_runner
+          VW_DB_USER: root
+          VW_DB_PASS: ""
+        run: |
+          & 'C:\xampp\php\php.exe' .\scripts\bootstrap-runner-db.php payload.json
+
+      - name: Run automation job
+        shell: powershell
+        env:
+          VW_DB_HOST: 127.0.0.1
+          VW_DB_NAME: video_workflow_runner
+          VW_DB_USER: root
+          VW_DB_PASS: ""
+          VW_BASE_DATA_DIR: C:/VideoWorkflow
+          RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
+          RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
+        run: |
+          & 'C:\xampp\php\php.exe' .\scripts\github-runner-job.php '${{ steps.payload.outputs.automation_id }}'
+
+      - name: Upload output videos artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-output-${{ steps.payload.outputs.automation_id }}-${{ github.run_id }}
+          path: C:\VideoWorkflow\output\*
+          if-no-files-found: ignore
+          retention-days: 3

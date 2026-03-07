@@ -509,6 +509,24 @@ class YouTubeSource
             return ['--cookies', $cookiesFile];
         }
 
+        $browser = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER') ?: ''));
+        if ($browser === '' && defined('YTDLP_COOKIES_BROWSER')) {
+            $browser = trim((string)YTDLP_COOKIES_BROWSER);
+        }
+
+        $profile = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER_PROFILE') ?: ''));
+        if ($profile === '' && defined('YTDLP_COOKIES_BROWSER_PROFILE')) {
+            $profile = trim((string)YTDLP_COOKIES_BROWSER_PROFILE);
+        }
+
+        if ($browser !== '') {
+            $browserSpec = $browser;
+            if ($profile !== '' && strpos($browserSpec, ':') === false) {
+                $browserSpec .= ':' . $profile;
+            }
+            return ['--cookies-from-browser', $browserSpec];
+        }
+
         return [];
     }
 
