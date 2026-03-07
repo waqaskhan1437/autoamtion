@@ -24,6 +24,7 @@ $serverUrl = getenv('GITHUB_SERVER_URL') ?: 'https://github.com';
 $runUrl = ($repo !== '' && $runId !== '') ? "{$serverUrl}/{$repo}/actions/runs/{$runId}" : '';
 $sequence = 0;
 $knownOutputs = [];
+$terminalSuccess = null;
 
 function normalizeStats(array $stats): array
 {
@@ -279,6 +280,7 @@ while (!feof($handle)) {
 
     if (!empty($event['done'])) {
         $ok = !empty($event['success']);
+        $terminalSuccess = $ok;
         publishEvent(
             $callbackUrl,
             $callbackSecret,
@@ -315,6 +317,9 @@ while (!feof($handle)) {
 
 $exitCode = pclose($handle);
 if ($exitCode === -1) {
+    $exitCode = 1;
+}
+if ($terminalSent && $terminalSuccess === false) {
     $exitCode = 1;
 }
 
