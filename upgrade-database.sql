@@ -13,7 +13,10 @@ ALTER TABLE automation_settings
 ADD COLUMN IF NOT EXISTS manual_video_links LONGTEXT NULL;
 
 ALTER TABLE automation_settings
-MODIFY COLUMN video_source ENUM('ftp', 'bunny', 'manual_links') DEFAULT 'ftp';
+MODIFY COLUMN video_source ENUM('ftp', 'bunny', 'manual_links', 'youtube_channel') DEFAULT 'ftp';
+
+ALTER TABLE automation_settings
+ADD COLUMN IF NOT EXISTS youtube_channel_url VARCHAR(500) NULL AFTER manual_video_links;
 
 -- Update status enum to include new states (including queue)
 ALTER TABLE automation_settings 

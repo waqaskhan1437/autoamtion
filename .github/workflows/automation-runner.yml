@@ -44,6 +44,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg default-mysql-client
+          python3 -m pip install --user yt-dlp
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Decode automation payload
         id: payload

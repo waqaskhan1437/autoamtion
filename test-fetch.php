@@ -2,6 +2,7 @@
 require_once 'config.php';
 require_once 'includes/BunnyAPI.php';
 require_once 'includes/FTPAPI.php';
+require_once 'includes/YouTubeSource.php';
 
 header('Content-Type: application/json');
 
@@ -30,6 +31,18 @@ function parseManualLinksForTest($rawLinks) {
         $links[] = $url;
     }
     return $links;
+}
+
+function getYouTubeChannelUrlForTest($automation) {
+    $url = trim((string)($automation['youtube_channel_url'] ?? ''));
+    if ($url === '') {
+        $fallback = trim((string)($automation['manual_video_links'] ?? ''));
+        if ($fallback !== '') {
+            $parts = preg_split('/[\r\n,]+/', $fallback) ?: [];
+            $url = trim((string)($parts[0] ?? ''));
+        }
+    }
+    return $url;
 }
 
 try {
@@ -152,6 +165,58 @@ try {
             'source' => 'Manual Links',
             'count' => count($links),
             'videos' => array_slice($preview, 0, 10)
+        ], JSON_PRETTY_PRINT);
+    } elseif ($source === 'youtube_channel') {
+        if (!$automationId) {
+            echo json_encode([
+                'success' => false,
+                'error' => 'Automation ID is required for YouTube channel source'
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        $stmt = $pdo->prepare("SELECT youtube_channel_url, manual_video_links, video_days_filter, video_start_date, video_end_date FROM automation_settings WHERE id = ?");
+        $stmt->execute([$automationId]);
+        $automation = $stmt->fetch();
+
+        if (!$automation) {
+            echo json_encode([
+                'success' => false,
+                'error' => 'Automation not found'
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        $channelUrl = getYouTubeChannelUrlForTest($automation);
+        if ($channelUrl === '') {
+            echo json_encode([
+                'success' => false,
+                'error' => 'YouTube channel URL is missing on this automation'
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        $youtube = new YouTubeSource($channelUrl);
+        $daysFilter = intval($automation['video_days_filter'] ?? 30);
+        if ($daysFilter < 1) $daysFilter = 30;
+
+        $startDate = trim((string)($automation['video_start_date'] ?? ''));
+        $endDate = trim((string)($automation['video_end_date'] ?? ''));
+        $useDateRange = ($startDate !== '' && $endDate !== '' && strtotime($startDate) !== false && strtotime($endDate) !== false && strtotime($startDate) <= strtotime($endDate));
+
+        $videos = $youtube->listVideos(
+            $daysFilter,
+            $useDateRange ? $startDate : null,
+            $useDateRange ? $endDate : null,
+            15
+        );
+
+        echo json_encode([
+            'success' => true,
+            'source' => 'YouTube Channel',
+            'channel_url' => $channelUrl,
+            'count' => count($videos),
+            'videos' => array_slice($videos, 0, 10)
         ], JSON_PRETTY_PRINT);
     } else {
         if (!$automationId) {

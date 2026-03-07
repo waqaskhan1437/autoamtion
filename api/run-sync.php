@@ -244,6 +244,23 @@ function downloadManualVideoFromUrl($url, $localPath) {
     return true;
 }
 
+function getYouTubeChannelUrlSync($automation) {
+    $url = trim((string)($automation['youtube_channel_url'] ?? ''));
+    if ($url === '') {
+        $fallback = trim((string)($automation['manual_video_links'] ?? ''));
+        if ($fallback !== '') {
+            $parts = preg_split('/[\r\n,]+/', $fallback) ?: [];
+            $url = trim((string)($parts[0] ?? ''));
+        }
+    }
+
+    if ($url === '') {
+        throw new Exception('YouTube channel URL is not configured for this automation.');
+    }
+
+    return $url;
+}
+
 $automationId = $_GET['id'] ?? null;
 
 if (!$automationId) {
@@ -258,6 +275,7 @@ try {
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
+    require_once __DIR__ . '/../includes/YouTubeSource.php';
     
     // Set global references for database updates
     $globalPdo = $pdo;
@@ -300,10 +318,11 @@ if (!$automation) {
 
 $videoSource = strtolower((string)($automation['video_source'] ?? 'ftp'));
 $isManualSource = ($videoSource === 'manual_links');
+$isYouTubeSource = ($videoSource === 'youtube_channel');
 
 // API key is optional if FTP is configured in Settings
 $useFtpSettings = false;
-if (!$isManualSource && !$automation['api_key_id']) {
+if (!$isManualSource && !$isYouTubeSource && !$automation['api_key_id']) {
     // Check if FTP is configured in global settings
     $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'ftp_host'");
     $ftpHost = $stmt->fetchColumn();
@@ -371,6 +390,7 @@ if (!$ffmpeg->isAvailable()) {
 sendProgress('ffmpeg', 'success', 'FFmpeg OK', 20, $stats);
 
 $ftp = null;
+$youtubeSourceClient = null;
 $videos = [];
 try {
     if ($isManualSource) {
@@ -384,6 +404,61 @@ try {
         }
 
         sendProgress('fetch', 'success', "Loaded {$stats['fetched']} manual link(s) (will process up to {$videosPerRun} this run)", 30, $stats);
+    } elseif ($isYouTubeSource) {
+        $daysFilter = intval($automation['video_days_filter'] ?? 30);
+        if ($daysFilter < 1) $daysFilter = 30;
+
+        $startValue = $automation['video_start_date'] ?? null;
+        $endValue = $automation['video_end_date'] ?? null;
+
+        $startStr = is_string($startValue) ? trim($startValue) : (is_null($startValue) ? '' : trim((string)$startValue));
+        $endStr = is_string($endValue) ? trim($endValue) : (is_null($endValue) ? '' : trim((string)$endValue));
+
+        $hasStart = ($startStr !== '' && strtolower($startStr) !== 'null' && $startStr !== '0000-00-00');
+        $hasEnd = ($endStr !== '' && strtolower($endStr) !== 'null' && $endStr !== '0000-00-00');
+
+        $startTs = $hasStart ? strtotime($startStr) : false;
+        $endTs = $hasEnd ? strtotime($endStr) : false;
+        $usingDateRange = ($startTs !== false && $endTs !== false && $startTs <= $endTs);
+
+        $filterLabel = $usingDateRange
+            ? "Date range {$startStr} to {$endStr}"
+            : "Last {$daysFilter} days";
+
+        if (!$usingDateRange && ($hasStart || $hasEnd)) {
+            if ($startTs === false || $endTs === false) {
+                $filterLabel .= " (invalid date format)";
+            } elseif ($startTs > $endTs) {
+                $filterLabel .= " (end date before start date)";
+            } else {
+                $filterLabel .= " (incomplete date range)";
+            }
+        }
+
+        $channelUrl = getYouTubeChannelUrlSync($automation);
+        sendProgress('fetch', 'info', 'Connecting to YouTube channel...', 25, $stats);
+        sendProgress('fetch', 'info', "Filter: {$filterLabel} (limit {$videosPerRun}/run)", 27, $stats);
+        sendProgress('fetch', 'info', 'Fetching YouTube video list (active live streams are skipped)...', 28, $stats);
+
+        $youtubeSourceClient = new YouTubeSource($channelUrl);
+        $resultLimit = max($videosPerRun * 3, 10);
+        $videos = $youtubeSourceClient->listVideos(
+            $daysFilter,
+            $usingDateRange ? $startStr : null,
+            $usingDateRange ? $endStr : null,
+            $resultLimit
+        );
+        $stats['fetched'] = count($videos);
+
+        if ($stats['fetched'] === 0) {
+            $pdo->prepare("UPDATE automation_settings SET status = 'completed', progress_percent = 100 WHERE id = ?")->execute([$automationId]);
+            $emptyMsg = $usingDateRange
+                ? "No YouTube videos found between {$startStr} and {$endStr}"
+                : "No YouTube videos found in the last {$daysFilter} days";
+            sendDone(true, $emptyMsg, $stats);
+        }
+
+        sendProgress('fetch', 'success', "Found {$stats['fetched']} YouTube video(s) (will process up to {$videosPerRun} this run)", 30, $stats);
     } else {
         sendProgress('fetch', 'info', 'Connecting to Bunny CDN storage...', 25, $stats);
 
@@ -473,6 +548,9 @@ try {
     $pdo->prepare("UPDATE automation_settings SET status = 'error' WHERE id = ?")->execute([$automationId]);
     if ($isManualSource) {
         sendDone(false, 'Manual links error: ' . $e->getMessage());
+    }
+    if ($isYouTubeSource) {
+        sendDone(false, 'YouTube source error: ' . $e->getMessage());
     }
     sendDone(false, 'FTP/API Error: ' . $e->getMessage());
 }
@@ -703,6 +781,14 @@ foreach ($videos as $index => $video) {
         $isManualVideo = is_array($video) && !empty($video['manual_url']);
         if ($isManualVideo) {
             $downloadResult = downloadManualVideoFromUrl($remotePath, $localPath);
+        } elseif ($isYouTubeSource) {
+            if (!$youtubeSourceClient) {
+                $youtubeSourceClient = new YouTubeSource(getYouTubeChannelUrlSync($automation));
+            }
+            $localPath = $youtubeSourceClient->downloadVideo((array)$video, $tempDir);
+            $videoName = basename($localPath);
+            $outputPath = $outputDir . '/short_' . pathinfo($videoName, PATHINFO_FILENAME) . '_' . time() . '.mp4';
+            $downloadResult = file_exists($localPath) && filesize($localPath) > 0;
         } else {
             $downloadResult = $ftp->downloadVideo($remotePath, $localPath);
         }

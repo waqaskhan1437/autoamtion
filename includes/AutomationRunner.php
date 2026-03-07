@@ -12,6 +12,7 @@ require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
+require_once __DIR__ . '/YouTubeSource.php';
 
 class AutomationRunner {
     private $pdo;
@@ -549,6 +550,23 @@ class AutomationRunner {
         }
         return $videos;
     }
+
+    private function getYouTubeChannelUrl(): string {
+        $url = trim((string)($this->automation['youtube_channel_url'] ?? ''));
+        if ($url === '') {
+            $fallback = trim((string)($this->automation['manual_video_links'] ?? ''));
+            if ($fallback !== '') {
+                $parts = preg_split('/[\r\n,]+/', $fallback) ?: [];
+                $url = trim((string)($parts[0] ?? ''));
+            }
+        }
+
+        if ($url === '') {
+            throw new Exception('YouTube channel URL is not configured for this automation.');
+        }
+
+        return $url;
+    }
     
     /**
      * Fetch videos from configured source (FTP or Bunny CDN)
@@ -593,6 +611,21 @@ class AutomationRunner {
             $links = $this->parseManualVideoLinks();
             $videos = $this->toManualVideoEntries($links);
             $this->log('fetch', 'success', 'Loaded ' . count($videos) . ' manual links');
+            return $videos;
+        }
+
+        if ($source === 'youtube_channel') {
+            $channelUrl = $this->getYouTubeChannelUrl();
+            $this->log('fetch', 'info', "Fetching videos from YouTube channel ({$filterLabel})");
+            $youtube = new YouTubeSource($channelUrl);
+            $resultLimit = max((int)($this->automation['videos_per_run'] ?? 5) * 3, 10);
+            $videos = $youtube->listVideos(
+                $daysFilter,
+                $usingDateRange ? $startStr : null,
+                $usingDateRange ? $endStr : null,
+                $resultLimit
+            );
+            $this->log('fetch', 'success', 'Found ' . count($videos) . ' videos on YouTube');
             return $videos;
         }
 
@@ -777,6 +810,13 @@ class AutomationRunner {
             $this->log('download', 'info', "Downloading from manual link: {$filename}");
             $this->downloadManualVideoFromUrl($remoteUrl, $localPath);
             return $localPath;
+        }
+
+        if ($source === 'youtube_channel') {
+            $youtube = new YouTubeSource($this->getYouTubeChannelUrl());
+            $videoTitle = is_array($video) ? ($video['title'] ?? $video['filename'] ?? 'video') : 'video';
+            $this->log('download', 'info', "Downloading from YouTube: {$videoTitle}");
+            return $youtube->downloadVideo((array)$video, $this->tempDir);
         }
         
         if ($source === 'ftp') {

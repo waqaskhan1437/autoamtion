@@ -55,8 +55,9 @@ CREATE TABLE IF NOT EXISTS processing_tasks (
 CREATE TABLE IF NOT EXISTS automation_settings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    video_source ENUM('ftp', 'bunny', 'manual_links') DEFAULT 'ftp',
+    video_source ENUM('ftp', 'bunny', 'manual_links', 'youtube_channel') DEFAULT 'ftp',
     manual_video_links LONGTEXT NULL,
+    youtube_channel_url VARCHAR(500) NULL,
     api_key_id INT NOT NULL,
     run_mode ENUM('local', 'github_runner') DEFAULT 'local',
     enabled BOOLEAN DEFAULT FALSE,

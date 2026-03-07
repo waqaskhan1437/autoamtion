@@ -39,6 +39,23 @@ function normalizeManualVideoLinksInput($rawInput) {
     return implode("\n", $clean);
 }
 
+function normalizeYouTubeChannelUrlInput($rawInput) {
+    $url = trim(is_string($rawInput) ? $rawInput : (string)$rawInput);
+    if ($url === '') {
+        return '';
+    }
+
+    if (strpos($url, '@') === 0) {
+        $url = 'https://www.youtube.com/' . ltrim($url, '/');
+    }
+
+    if (!preg_match('#^https?://#i', $url)) {
+        return '';
+    }
+
+    return $url;
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -50,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -81,11 +98,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $manualVideoLinks = ($videoSource === 'manual_links')
             ? normalizeManualVideoLinksInput($_POST['manual_video_links'] ?? '')
             : null;
+        $youtubeChannelUrl = ($videoSource === 'youtube_channel')
+            ? normalizeYouTubeChannelUrlInput($_POST['youtube_channel_url'] ?? '')
+            : null;
 
         $stmt->execute([
             $_POST['name'],
             $videoSource,
             $manualVideoLinks,
+            $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
             $_POST['api_key_id'] ?: null,
             $enabled,
@@ -162,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -189,11 +210,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $manualVideoLinks = ($videoSource === 'manual_links')
             ? normalizeManualVideoLinksInput($_POST['manual_video_links'] ?? '')
             : null;
+        $youtubeChannelUrl = ($videoSource === 'youtube_channel')
+            ? normalizeYouTubeChannelUrlInput($_POST['youtube_channel_url'] ?? '')
+            : null;
 
         $stmt->execute([
             $_POST['name'],
             $videoSource,
             $manualVideoLinks,
+            $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
             $_POST['api_key_id'] ?: null,
             $videoDaysFilter,
@@ -880,6 +905,7 @@ refreshOutputVideoCount();
                         <option value="ftp">FTP Server</option>
                         <option value="bunny">Bunny CDN</option>
                         <option value="manual_links">Manual Links (Direct URL)</option>
+                        <option value="youtube_channel">YouTube Channel</option>
                     </select>
                 </div>
 
@@ -915,6 +941,17 @@ refreshOutputVideoCount();
                         class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
                         placeholder="Paste one direct video URL per line"></textarea>
                     <p class="text-xs text-gray-500">Supports direct links (Cloudinary, Fiverr CDN, archive/media URLs). One URL per line.</p>
+                </div>
+
+                <div id="youtube_source_section" class="hidden space-y-2">
+                    <label class="block text-sm text-gray-400 mb-1">YouTube Channel URL</label>
+                    <input
+                        type="url"
+                        name="youtube_channel_url"
+                        id="youtube_channel_url"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
+                        placeholder="https://www.youtube.com/@HUMNewsPakistan/videos">
+                    <p class="text-xs text-gray-500">Channel videos tab link dein. System last X days ya selected date range ki uploaded videos fetch karega aur active live streams skip karega.</p>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1339,6 +1376,7 @@ refreshOutputVideoCount();
                         <option value="ftp">FTP Server</option>
                         <option value="bunny">Bunny CDN</option>
                         <option value="manual_links">Manual Links (Direct URL)</option>
+                        <option value="youtube_channel">YouTube Channel</option>
                     </select>
                 </div>
 
@@ -1374,6 +1412,17 @@ refreshOutputVideoCount();
                         class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
                         placeholder="Paste one direct video URL per line"></textarea>
                     <p class="text-xs text-gray-500">One direct URL per line. These links will be downloaded then processed.</p>
+                </div>
+
+                <div id="edit_youtube_source_section" class="hidden space-y-2">
+                    <label class="block text-sm text-gray-400 mb-1">YouTube Channel URL</label>
+                    <input
+                        type="url"
+                        name="youtube_channel_url"
+                        id="edit_youtube_channel_url"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
+                        placeholder="https://www.youtube.com/@HUMNewsPakistan/videos">
+                    <p class="text-xs text-gray-500">Channel videos tab link. Active live streams automatically skip hongi.</p>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1775,9 +1824,11 @@ function toggleVideoSource(select) {
     const bunnySection = document.getElementById('bunny_source_section');
     const ftpSection = document.getElementById('ftp_source_info');
     const manualSection = document.getElementById('manual_source_section');
+    const youtubeSection = document.getElementById('youtube_source_section');
     if (bunnySection) bunnySection.classList.toggle('hidden', select.value !== 'bunny');
     if (ftpSection) ftpSection.classList.toggle('hidden', select.value !== 'ftp');
     if (manualSection) manualSection.classList.toggle('hidden', select.value !== 'manual_links');
+    if (youtubeSection) youtubeSection.classList.toggle('hidden', select.value !== 'youtube_channel');
 }
 
 function togglePostForMe(checkbox) {
@@ -1851,9 +1902,11 @@ function toggleEditVideoSource(select) {
     const bunnySection = document.getElementById('edit_bunny_source_section');
     const ftpSection = document.getElementById('edit_ftp_source_info');
     const manualSection = document.getElementById('edit_manual_source_section');
+    const youtubeSection = document.getElementById('edit_youtube_source_section');
     if (bunnySection) bunnySection.classList.toggle('hidden', select.value !== 'bunny');
     if (ftpSection) ftpSection.classList.toggle('hidden', select.value !== 'ftp');
     if (manualSection) manualSection.classList.toggle('hidden', select.value !== 'manual_links');
+    if (youtubeSection) youtubeSection.classList.toggle('hidden', select.value !== 'youtube_channel');
 }
 
 function toggleEditPostForMe(checkbox) {
@@ -1922,6 +1975,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_branding_text_top').value = automationData.branding_text_top || '';
     document.getElementById('edit_branding_text_bottom').value = automationData.branding_text_bottom || '';
     document.getElementById('edit_manual_video_links').value = automationData.manual_video_links || '';
+    document.getElementById('edit_youtube_channel_url').value = automationData.youtube_channel_url || '';
     document.getElementById('edit_rotation_enabled').checked = automationData.rotation_enabled == 1;
     document.getElementById('edit_rotation_shuffle').checked = automationData.rotation_shuffle == 1;
     document.getElementById('edit_rotation_auto_reset').checked = automationData.rotation_auto_reset == 1;
@@ -3234,7 +3288,6 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 </script>
-
 
 
 
