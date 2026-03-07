@@ -114,6 +114,10 @@ jobs:
           if ($cutAt -gt 0) {
             $schemaLines = $schemaLines[0..($cutAt - 1)]
           }
+          $schemaLines = $schemaLines | Where-Object {
+            $_ -notmatch '^\s*CREATE DATABASE IF NOT EXISTS video_workflow;' -and
+            $_ -notmatch '^\s*USE video_workflow;'
+          }
           $schemaPath = Join-Path $env:RUNNER_TEMP 'schema.sql'
           Set-Content -Path $schemaPath -Value $schemaLines -Encoding UTF8
           Get-Content $schemaPath | & $mysql -uroot video_workflow_runner
