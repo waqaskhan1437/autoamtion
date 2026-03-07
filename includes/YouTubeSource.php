@@ -55,6 +55,7 @@ class YouTubeSource
                     '--print',
                     $metadataTemplate,
                 ],
+                $this->getYouTubeExtractorArgs(),
                 $this->getJsRuntimeArgs(),
                 $urls
             );
@@ -131,9 +132,7 @@ class YouTubeSource
         }
 
         $outputTemplate = $dir . DIRECTORY_SEPARATOR . $baseName . '.%(ext)s';
-        $format = $this->ffmpegPath !== null
-            ? 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best[ext=mp4]/best'
-            : 'b[ext=mp4]/best[ext=mp4]/best';
+        $format = 'b[ext=mp4]/best[ext=mp4]/best';
 
         $command = array_merge(
             [
@@ -146,8 +145,9 @@ class YouTubeSource
                 '--output',
                 $outputTemplate,
             ],
+            $this->getYouTubeExtractorArgs(),
             $this->getJsRuntimeArgs(),
-            $this->ffmpegPath !== null ? ['--ffmpeg-location', $this->ffmpegPath, '--merge-output-format', 'mp4'] : [],
+            $this->ffmpegPath !== null ? ['--ffmpeg-location', $this->ffmpegPath] : [],
             [$videoUrl]
         );
 
@@ -494,6 +494,16 @@ class YouTubeSource
         }
 
         return [];
+    }
+
+    private function getYouTubeExtractorArgs(): array
+    {
+        return [
+            '--extractor-args',
+            'youtube:player-client=tv,mweb;player-skip=webpage,configs;formats=incomplete',
+            '--extractor-args',
+            'youtube:skip=hls,dash',
+        ];
     }
 
     private function resolveExistingBinary(?string $candidate): ?string
