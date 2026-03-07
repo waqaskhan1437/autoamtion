@@ -952,6 +952,9 @@ refreshOutputVideoCount();
                         class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
                         placeholder="https://www.youtube.com/@HUMNewsPakistan/videos">
                     <p class="text-xs text-gray-500">Channel videos tab link dein. System last X days ya selected date range ki uploaded videos fetch karega aur active live streams skip karega.</p>
+                    <div class="p-3 bg-sky-500/10 border border-sky-500/20 rounded text-xs text-sky-100">
+                        Quick test flow: channel `/videos` URL dein, `Date range` choose karein, `From` aur `To` mein same date set karein, aur `Videos per run` ko `1` rakhein.
+                    </div>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1008,22 +1011,29 @@ refreshOutputVideoCount();
                     <div id="days_filter_section">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">Fetch videos from last (days)</label>
-                            <input type="number" name="video_days_filter" value="30" min="1" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                            <input type="number" name="video_days_filter" id="video_days_filter" value="30" min="1" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                            <p class="text-xs text-gray-500 mt-1">Random ya fresh channel test ke liye `7` ya `30` days common choice hai.</p>
                         </div>
                     </div>
                     
                     <!-- Date Range Section -->
                     <div id="date_range_section" class="hidden">
+                        <div class="flex flex-wrap gap-2 mb-3">
+                            <button type="button" onclick="applyCreateYouTubePreset('today')" class="px-3 py-1 text-xs bg-sky-500/15 border border-sky-500/30 rounded hover:bg-sky-500/25">Today + 1 video</button>
+                            <button type="button" onclick="applyCreateYouTubePreset('yesterday')" class="px-3 py-1 text-xs bg-gray-700 border border-gray-600 rounded hover:bg-gray-600">Yesterday + 1 video</button>
+                            <button type="button" onclick="applyCreateYouTubePreset('last7')" class="px-3 py-1 text-xs bg-gray-700 border border-gray-600 rounded hover:bg-gray-600">Last 7 days</button>
+                        </div>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">From Date</label>
-                                <input type="date" name="video_start_date" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                <input type="date" name="video_start_date" id="video_start_date" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                             </div>
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">To Date</label>
-                                <input type="date" name="video_end_date" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                <input type="date" name="video_end_date" id="video_end_date" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                             </div>
                         </div>
+                        <p class="text-xs text-gray-500 mt-1">Single exact date ke liye `From` aur `To` dono mein same date rakhein.</p>
                     </div>
                 </div>
                 
@@ -1051,12 +1061,12 @@ refreshOutputVideoCount();
                             Auto-reset when all videos used (start new cycle)
                         </label>
                     </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">Videos per run</label>
-                            <input type="number" name="videos_per_run" value="5" min="1" max="500" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
-                            <p class="text-xs text-gray-500 mt-1">Process/post this many videos each scheduled run</p>
-                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Videos per run</label>
+                                <input type="number" name="videos_per_run" id="videos_per_run" value="5" min="1" max="500" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                <p class="text-xs text-gray-500 mt-1">Process/post this many videos each scheduled run</p>
+                            </div>
                         <div class="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded text-xs text-indigo-300 flex items-center">
                             Oldest videos are processed first (sequence batches)
                         </div>
@@ -1423,6 +1433,9 @@ refreshOutputVideoCount();
                         class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg"
                         placeholder="https://www.youtube.com/@HUMNewsPakistan/videos">
                     <p class="text-xs text-gray-500">Channel videos tab link. Active live streams automatically skip hongi.</p>
+                    <div class="p-3 bg-sky-500/10 border border-sky-500/20 rounded text-xs text-sky-100">
+                        Quick test flow: `Date range` choose karein, same `From/To` date set karein, aur `Videos per run` ko `1` rakhein.
+                    </div>
                 </div>
                 
                 <div class="grid grid-cols-2 gap-4">
@@ -1480,11 +1493,17 @@ refreshOutputVideoCount();
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">Fetch videos from last (days)</label>
                             <input type="number" name="video_days_filter" id="edit_video_days_filter" min="1" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                            <p class="text-xs text-gray-500 mt-1">Random ya fresh channel test ke liye `7` ya `30` days common choice hai.</p>
                         </div>
                     </div>
                     
                     <!-- Date Range Section -->
                     <div id="edit_date_range_section" class="hidden">
+                        <div class="flex flex-wrap gap-2 mb-3">
+                            <button type="button" onclick="applyEditYouTubePreset('today')" class="px-3 py-1 text-xs bg-sky-500/15 border border-sky-500/30 rounded hover:bg-sky-500/25">Today + 1 video</button>
+                            <button type="button" onclick="applyEditYouTubePreset('yesterday')" class="px-3 py-1 text-xs bg-gray-700 border border-gray-600 rounded hover:bg-gray-600">Yesterday + 1 video</button>
+                            <button type="button" onclick="applyEditYouTubePreset('last7')" class="px-3 py-1 text-xs bg-gray-700 border border-gray-600 rounded hover:bg-gray-600">Last 7 days</button>
+                        </div>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">From Date</label>
@@ -1495,6 +1514,7 @@ refreshOutputVideoCount();
                                 <input type="date" name="video_end_date" id="edit_video_end_date" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                             </div>
                         </div>
+                        <p class="text-xs text-gray-500 mt-1">Single exact date ke liye `From` aur `To` dono mein same date rakhein.</p>
                     </div>
                 </div>
                 
@@ -1829,6 +1849,12 @@ function toggleVideoSource(select) {
     if (ftpSection) ftpSection.classList.toggle('hidden', select.value !== 'ftp');
     if (manualSection) manualSection.classList.toggle('hidden', select.value !== 'manual_links');
     if (youtubeSection) youtubeSection.classList.toggle('hidden', select.value !== 'youtube_channel');
+    if (select.value === 'youtube_channel') {
+        const videosPerRun = document.getElementById('videos_per_run');
+        if (videosPerRun && (!videosPerRun.value || videosPerRun.value === '5')) {
+            videosPerRun.value = '1';
+        }
+    }
 }
 
 function togglePostForMe(checkbox) {
@@ -1882,6 +1908,38 @@ function toggleVideoSelectionMethod() {
     document.getElementById('date_range_section').classList.toggle('hidden', method === 'days');
     // Update the hidden field to match the selected method
     document.getElementById('video_selection_method_hidden').value = method;
+}
+
+function toLocalDateValue(date) {
+    const tzOffsetMs = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 10);
+}
+
+function applyCreateYouTubePreset(preset) {
+    const videosPerRun = document.getElementById('videos_per_run');
+    const daysInput = document.getElementById('video_days_filter');
+    const startInput = document.getElementById('video_start_date');
+    const endInput = document.getElementById('video_end_date');
+    const daysRadio = document.querySelector('#form_video input[name="video_selection_method"][value="days"]');
+    const dateRangeRadio = document.querySelector('#form_video input[name="video_selection_method"][value="date_range"]');
+    const now = new Date();
+
+    if (preset === 'last7') {
+        if (daysRadio) daysRadio.checked = true;
+        if (daysInput) daysInput.value = '7';
+    } else {
+        const target = new Date(now);
+        if (preset === 'yesterday') {
+            target.setDate(target.getDate() - 1);
+        }
+        const iso = toLocalDateValue(target);
+        if (dateRangeRadio) dateRangeRadio.checked = true;
+        if (startInput) startInput.value = iso;
+        if (endInput) endInput.value = iso;
+    }
+
+    if (videosPerRun) videosPerRun.value = '1';
+    toggleVideoSelectionMethod();
 }
 
 // Edit Form Functions
@@ -1941,6 +1999,33 @@ function toggleEditVideoSelectionMethod() {
     document.getElementById('edit_date_range_section').classList.toggle('hidden', method === 'days');
     // Update the hidden field to match the selected method
     document.getElementById('edit_video_selection_method_hidden').value = method;
+}
+
+function applyEditYouTubePreset(preset) {
+    const videosPerRun = document.getElementById('edit_videos_per_run');
+    const daysInput = document.getElementById('edit_video_days_filter');
+    const startInput = document.getElementById('edit_video_start_date');
+    const endInput = document.getElementById('edit_video_end_date');
+    const daysRadio = document.getElementById('edit_video_selection_days');
+    const dateRangeRadio = document.getElementById('edit_video_selection_date_range');
+    const now = new Date();
+
+    if (preset === 'last7') {
+        if (daysRadio) daysRadio.checked = true;
+        if (daysInput) daysInput.value = '7';
+    } else {
+        const target = new Date(now);
+        if (preset === 'yesterday') {
+            target.setDate(target.getDate() - 1);
+        }
+        const iso = toLocalDateValue(target);
+        if (dateRangeRadio) dateRangeRadio.checked = true;
+        if (startInput) startInput.value = iso;
+        if (endInput) endInput.value = iso;
+    }
+
+    if (videosPerRun) videosPerRun.value = '1';
+    toggleEditVideoSelectionMethod();
 }
 
 // Function to open edit modal and populate with automation data
@@ -3288,7 +3373,6 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 </script>
-
 
 
 
