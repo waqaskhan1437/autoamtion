@@ -134,9 +134,16 @@ class FFmpegProcessor {
         $info = json_decode(implode('', $output), true);
         
         $videoStream = null;
+        $audioStream = null;
         foreach ($info['streams'] ?? [] as $stream) {
             if ($stream['codec_type'] === 'video') {
                 $videoStream = $stream;
+                break;
+            }
+        }
+        foreach ($info['streams'] ?? [] as $stream) {
+            if (($stream['codec_type'] ?? '') === 'audio') {
+                $audioStream = $stream;
                 break;
             }
         }
@@ -156,7 +163,8 @@ class FFmpegProcessor {
             'height' => intval($videoStream['height'] ?? 0),
             'fps' => $fps,
             'codec' => $videoStream['codec_name'] ?? 'unknown',
-            'bitrate' => intval($info['format']['bit_rate'] ?? 0)
+            'bitrate' => intval($info['format']['bit_rate'] ?? 0),
+            'has_audio' => $audioStream !== null
         ];
     }
     
@@ -167,9 +175,15 @@ class FFmpegProcessor {
         $duration = $options['duration'] ?? 60;
         $startTime = $options['startTime'] ?? 0;
         $aspectRatio = $options['aspectRatio'] ?? '9:16';
+        $playbackSpeed = isset($options['playbackSpeed']) ? (float)$options['playbackSpeed'] : 1.0;
         $topText = trim($options['topText'] ?? '');
         $bottomText = trim($options['bottomText'] ?? '');
         $subtitlesPath = $options['subtitlesPath'] ?? null;
+        if ($playbackSpeed < 0.1) $playbackSpeed = 0.1;
+        if ($playbackSpeed > 3.0) $playbackSpeed = 3.0;
+        $playbackSpeedString = number_format($playbackSpeed, 1, '.', '');
+        $mediaInfo = $this->getVideoInfo($inputPath);
+        $hasAudio = !empty($mediaInfo['has_audio']);
         
         // Debug logging
         $debugLog = $this->tempDir . '/ffmpeg_debug.log';
@@ -177,6 +191,7 @@ class FFmpegProcessor {
         file_put_contents($debugLog, "  topText: '{$topText}'\n", FILE_APPEND);
         file_put_contents($debugLog, "  bottomText: '{$bottomText}'\n", FILE_APPEND);
         file_put_contents($debugLog, "  fontPath: '{$this->fontPath}'\n", FILE_APPEND);
+        file_put_contents($debugLog, "  playbackSpeed: '{$playbackSpeedString}'\n", FILE_APPEND);
         
         // Calculate output dimensions based on aspect ratio
         $noCrop = false;
@@ -323,8 +338,16 @@ class FFmpegProcessor {
             $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize=40:fontcolor=black:box=1:boxcolor=white@0.9:boxborderw=12:x=(w-text_w)/2:y=h-120";
             file_put_contents($debugLog, "  Added bottom text filter with file: {$bottomTextFilePath}\n", FILE_APPEND);
         }
+
+        if (abs($playbackSpeed - 1.0) > 0.0001) {
+            $filters[] = 'setpts=PTS/' . $playbackSpeedString;
+        }
         
         $filterString = implode(',', $filters);
+        $audioFilter = null;
+        if ($hasAudio && abs($playbackSpeed - 1.0) > 0.0001) {
+            $audioFilter = implode(',', $this->buildAtempoFilterChain($playbackSpeed));
+        }
         
         // Convert paths for Windows
         $inputPathSafe = str_replace('\\', '/', $inputPath);
@@ -346,27 +369,29 @@ class FFmpegProcessor {
             // Filter complex: apply video filters, then overlay emoji PNG
             // Emoji size 48x48 to match font size, position at end of text line
             $command = sprintf(
-                '"%s" -y -ss %s -i "%s" -i "%s" -t %d -filter_complex "[0:v]%s[text];[1:v]scale=48:48[emoji];[text][emoji]overlay=x=(main_w/2)+%d:y=%d" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
+                '"%s" -y -ss %s -t %d -i "%s" -i "%s" -filter_complex "[0:v]%s[text];[1:v]scale=48:48[emoji];[text][emoji]overlay=x=(main_w/2)+%d:y=%d" %s -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
                 $this->ffmpegPath,
                 $startTime,
+                $duration,
                 $inputPathSafe,
                 $emojiPngInput,
-                $duration,
                 $filterString,
                 (int)$emojiXOffset,
                 (int)$emojiY,
+                $audioFilter !== null ? '-af "' . $audioFilter . '"' : '',
                 $outputPathSafe
             );
             file_put_contents($debugLog, "  COLORFUL EMOJI: {$emojiPngInput} at x=w/2+{$emojiXOffset}, y={$emojiY}\n", FILE_APPEND);
         } else {
             // Standard command without emoji
             $command = sprintf(
-                '"%s" -y -ss %s -i "%s" -t %d -vf "%s" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
+                '"%s" -y -ss %s -t %d -i "%s" -vf "%s" %s -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
                 $this->ffmpegPath,
                 $startTime,
-                $inputPathSafe,
                 $duration,
+                $inputPathSafe,
                 $filterString,
+                $audioFilter !== null ? '-af "' . $audioFilter . '"' : '',
                 $outputPathSafe
             );
             file_put_contents($debugLog, "  No emoji PNG available\n", FILE_APPEND);
@@ -432,13 +457,35 @@ class FFmpegProcessor {
             }
         }
         
+        $outputInfo = $this->getVideoInfo($outputPath);
+        $outputDuration = isset($outputInfo['duration']) ? (float)$outputInfo['duration'] : (float)$duration;
+
         return [
             'success' => true,
             'output' => $outputPath,
-            'duration' => $duration,
+            'duration' => $outputDuration,
             'width' => $width,
             'height' => $height
         ];
+    }
+
+    private function buildAtempoFilterChain(float $playbackSpeed): array {
+        $factors = $this->factorTempoForAtempo($playbackSpeed);
+        return array_map(static function ($factor): string {
+            return 'atempo=' . rtrim(rtrim(number_format((float)$factor, 5, '.', ''), '0'), '.');
+        }, $factors);
+    }
+
+    private function factorTempoForAtempo(float $tempo): array {
+        if ($tempo >= 0.5 && $tempo <= 2.0) {
+            return [$tempo];
+        }
+
+        $root = sqrt($tempo);
+        return array_merge(
+            $this->factorTempoForAtempo($root),
+            $this->factorTempoForAtempo($root)
+        );
     }
     
     /**

@@ -192,6 +192,9 @@ try {
         if (!in_array('videos_per_run', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN videos_per_run INT DEFAULT 5");
         }
+        if (!in_array('playback_speed', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN playback_speed DECIMAL(3,1) DEFAULT 1.0");
+        }
         if (!in_array('source_shorts_mode', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single'");
         }
@@ -370,6 +373,7 @@ try {
                 video_start_date DATE NULL,
                 video_end_date DATE NULL,
                 videos_per_run INT DEFAULT 5,
+                playback_speed DECIMAL(3,1) DEFAULT 1.0,
                 source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single',
                 source_shorts_max_count INT DEFAULT 1,
                 process_id VARCHAR(20) NULL,

@@ -398,6 +398,7 @@ for ($i = 0; $i < $maxVideos; $i++) {
         $options = [
             'duration' => $automation['short_duration'] ?? 60,
             'aspectRatio' => $automation['short_aspect_ratio'] ?? '9:16',
+            'playbackSpeed' => (float)($automation['playback_speed'] ?? 1.0),
             'topText' => $topText,
             'bottomText' => $bottomText
         ];

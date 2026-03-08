@@ -788,6 +788,7 @@ class AutomationRunner {
                     'startTime' => (int)($segment['start'] ?? 0),
                     'clipIndex' => $clipIndex,
                     'clipTotal' => $segmentTotal,
+                    'playbackSpeed' => (float)($this->automation['playback_speed'] ?? 1.0),
                     'aspectRatio' => $this->automation['short_aspect_ratio'] ?? '9:16',
                     'topText' => $topText,
                     'bottomText' => $bottomText,
@@ -1007,6 +1008,7 @@ class AutomationRunner {
         $result = $ffmpeg->createShort($inputPath, $outputPath, [
             'duration' => $options['duration'],
             'startTime' => $startTime,
+            'playbackSpeed' => (float)($options['playbackSpeed'] ?? 1.0),
             'aspectRatio' => $options['aspectRatio'],
             'topText' => $options['topText'],
             'bottomText' => $options['bottomText'],

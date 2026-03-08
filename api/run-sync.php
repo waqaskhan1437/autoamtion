@@ -922,6 +922,7 @@ foreach ($videos as $index => $video) {
             [
                 'duration' => $clipDuration,
                 'startTime' => $clipStart,
+                'playbackSpeed' => (float)($automation['playback_speed'] ?? 1.0),
                 'aspectRatio' => $automation['short_aspect_ratio'] ?? '9:16',
                 'topText' => $topText,
                 'bottomText' => $bottomText,

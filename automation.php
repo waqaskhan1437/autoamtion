@@ -76,6 +76,17 @@ function normalizeSourceShortsMaxCountInput($rawInput, $mode = 'single') {
     return $count;
 }
 
+function normalizePlaybackSpeedInput($rawInput) {
+    $speed = is_numeric($rawInput) ? (float)$rawInput : 1.0;
+    if ($speed < 0.1) {
+        $speed = 0.1;
+    }
+    if ($speed > 3.0) {
+        $speed = 3.0;
+    }
+    return number_format($speed, 1, '.', '');
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -87,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -105,6 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $videosPerRun = intval($_POST['videos_per_run'] ?? 5);
         if ($videosPerRun < 1) $videosPerRun = 1;
         if ($videosPerRun > 500) $videosPerRun = 500;
+        $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
         
@@ -137,6 +149,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $videoEndDate,
             $videosPerRun,
             $_POST['short_duration'] ?? 60,
+            $playbackSpeed,
             $sourceShortsMode,
             $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
@@ -207,7 +220,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -225,6 +238,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $videosPerRun = intval($_POST['videos_per_run'] ?? 5);
         if ($videosPerRun < 1) $videosPerRun = 1;
         if ($videosPerRun > 500) $videosPerRun = 500;
+        $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
         $scheduleType = $_POST['schedule_type'] ?? 'daily';
@@ -252,6 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $videoEndDate,
             $videosPerRun,
             $_POST['short_duration'] ?? 60,
+            $playbackSpeed,
             $sourceShortsMode,
             $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
@@ -588,6 +603,7 @@ refreshOutputVideoCount();
                                 | <?= (($automation['source_shorts_mode'] ?? 'single') === 'single')
                                     ? '1 short/source'
                                     : ('up to ' . intval($automation['source_shorts_max_count'] ?? 1) . ' shorts/source') ?>
+                                | Speed <?= number_format((float)($automation['playback_speed'] ?? 1.0), 1) ?>x
                             </div>
                         </div>
                     </div>
@@ -1108,11 +1124,16 @@ refreshOutputVideoCount();
                 </div>
                 </div>
                 
-                <div class="grid grid-cols-2 gap-4">
+                <div class="grid grid-cols-3 gap-4">
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Short Duration (sec)</label>
                         <input type="number" name="short_duration" value="60" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                         <p class="text-xs text-gray-500 mt-1">Each short clip length. Example: `60` means 60-second shorts.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Playback Speed</label>
+                        <input type="number" name="playback_speed" id="playback_speed" value="1.0" min="0.1" max="3.0" step="0.1" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Applies to video and audio together. `1.0` normal, `0.8` slow, `1.3` fast.</p>
                     </div>
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Aspect Ratio</label>
@@ -1609,11 +1630,16 @@ refreshOutputVideoCount();
                     </div>
                 </div>
                 
-                <div class="grid grid-cols-2 gap-4">
+                <div class="grid grid-cols-3 gap-4">
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Short Duration (sec)</label>
                         <input type="number" name="short_duration" id="edit_short_duration" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                         <p class="text-xs text-gray-500 mt-1">Each short clip length. Example: `60` means 60-second shorts.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Playback Speed</label>
+                        <input type="number" name="playback_speed" id="edit_playback_speed" min="0.1" max="3.0" step="0.1" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Applies to video and audio together. `1.0` normal, `0.8` slow, `1.3` fast.</p>
                     </div>
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Aspect Ratio</label>
@@ -2155,6 +2181,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_video_end_date').value = automationData.video_end_date || '';
     document.getElementById('edit_videos_per_run').value = automationData.videos_per_run || 5;
     document.getElementById('edit_short_duration').value = automationData.short_duration || 60;
+    document.getElementById('edit_playback_speed').value = automationData.playback_speed || 1.0;
     document.getElementById('edit_source_shorts_mode').value = automationData.source_shorts_mode || 'single';
     document.getElementById('edit_source_shorts_max_count').value = automationData.source_shorts_max_count || 1;
     document.getElementById('edit_short_aspect_ratio').value = automationData.short_aspect_ratio || '9:16';
@@ -3483,6 +3510,3 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 </script>
-
-
-
