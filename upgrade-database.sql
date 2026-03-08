@@ -24,6 +24,8 @@ ADD COLUMN IF NOT EXISTS ai_tagline_prompt TEXT,
 ADD COLUMN IF NOT EXISTS video_start_date DATE NULL,
 ADD COLUMN IF NOT EXISTS video_end_date DATE NULL,
 ADD COLUMN IF NOT EXISTS videos_per_run INT DEFAULT 5,
+ADD COLUMN IF NOT EXISTS source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single',
+ADD COLUMN IF NOT EXISTS source_shorts_max_count INT DEFAULT 1,
 ADD COLUMN IF NOT EXISTS schedule_every_minutes INT DEFAULT 10,
 ADD COLUMN IF NOT EXISTS process_id VARCHAR(20) NULL;
 

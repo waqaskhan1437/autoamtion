@@ -56,6 +56,26 @@ function normalizeYouTubeChannelUrlInput($rawInput) {
     return $url;
 }
 
+function normalizeSourceShortsModeInput($rawInput) {
+    $mode = strtolower(trim(is_string($rawInput) ? $rawInput : (string)$rawInput));
+    $allowed = ['single', 'duration_based', 'fixed_count'];
+    return in_array($mode, $allowed, true) ? $mode : 'single';
+}
+
+function normalizeSourceShortsMaxCountInput($rawInput, $mode = 'single') {
+    $count = intval($rawInput ?? 1);
+    if ($count < 1) {
+        $count = 1;
+    }
+    if ($count > 20) {
+        $count = 20;
+    }
+    if ($mode === 'single') {
+        return 1;
+    }
+    return $count;
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -67,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -85,6 +105,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $videosPerRun = intval($_POST['videos_per_run'] ?? 5);
         if ($videosPerRun < 1) $videosPerRun = 1;
         if ($videosPerRun > 500) $videosPerRun = 500;
+        $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
+        $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
         
         $nextRunAt = null;
         if ($enabled) {
@@ -115,6 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $videoEndDate,
             $videosPerRun,
             $_POST['short_duration'] ?? 60,
+            $sourceShortsMode,
+            $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
             isset($_POST['ai_taglines_enabled']) ? 1 : 0,
             $_POST['ai_tagline_prompt'] ?? null,
@@ -183,7 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -201,6 +225,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $videosPerRun = intval($_POST['videos_per_run'] ?? 5);
         if ($videosPerRun < 1) $videosPerRun = 1;
         if ($videosPerRun > 500) $videosPerRun = 500;
+        $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
+        $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
         $scheduleType = $_POST['schedule_type'] ?? 'daily';
         $scheduleHour = intval($_POST['schedule_hour'] ?? 9);
         $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
@@ -226,6 +252,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $videoEndDate,
             $videosPerRun,
             $_POST['short_duration'] ?? 60,
+            $sourceShortsMode,
+            $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
             isset($_POST['ai_taglines_enabled']) ? 1 : 0,
             $_POST['ai_tagline_prompt'] ?? null,
@@ -557,6 +585,9 @@ refreshOutputVideoCount();
                                 }
                                 ?>
                                 | Process <?= intval($automation['videos_per_run'] ?? 5) ?>/run
+                                | <?= (($automation['source_shorts_mode'] ?? 'single') === 'single')
+                                    ? '1 short/source'
+                                    : ('up to ' . intval($automation['source_shorts_max_count'] ?? 1) . ' shorts/source') ?>
                             </div>
                         </div>
                     </div>
@@ -1081,6 +1112,7 @@ refreshOutputVideoCount();
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Short Duration (sec)</label>
                         <input type="number" name="short_duration" value="60" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Each short clip length. Example: `60` means 60-second shorts.</p>
                     </div>
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Aspect Ratio</label>
@@ -1098,6 +1130,25 @@ refreshOutputVideoCount();
                         </select>
                         <p class="text-xs text-gray-500 mt-1">Crop fills frame, No Crop keeps full video with black bars</p>
                     </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Shorts Per Source Video</label>
+                        <select name="source_shorts_mode" id="source_shorts_mode" onchange="toggleSourceShortsMode(this.value)" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                            <option value="single">Single short</option>
+                            <option value="duration_based">Auto by duration</option>
+                            <option value="fixed_count">Fixed count</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Auto mode makes sequential clips from one source video using the short duration above.</p>
+                    </div>
+                    <div id="source_shorts_max_count_wrap" class="hidden">
+                        <label class="block text-sm text-gray-400 mb-1">Max Shorts Per Source</label>
+                        <input type="number" name="source_shorts_max_count" id="source_shorts_max_count" value="5" min="1" max="20" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Example: 5-minute video + 60s duration + max 5 = up to 5 shorts.</p>
+                    </div>
+                </div>
+                <div class="p-2 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-200">
+                    Research-based default: keep this on <span class="font-semibold">Single short</span> unless the source video has multiple strong moments. Official YouTube guidance favors concise clips with a strong opening hook; exact clip count is an inference, so this setting stays user-controlled.
                 </div>
                 
                 <div class="border-t border-gray-800 pt-4 mt-4">
@@ -1562,6 +1613,7 @@ refreshOutputVideoCount();
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Short Duration (sec)</label>
                         <input type="number" name="short_duration" id="edit_short_duration" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Each short clip length. Example: `60` means 60-second shorts.</p>
                     </div>
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Aspect Ratio</label>
@@ -1579,6 +1631,25 @@ refreshOutputVideoCount();
                         </select>
                         <p class="text-xs text-gray-500 mt-1">Crop fills frame, No Crop keeps full video with black bars</p>
                     </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Shorts Per Source Video</label>
+                        <select name="source_shorts_mode" id="edit_source_shorts_mode" onchange="toggleEditSourceShortsMode(this.value)" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                            <option value="single">Single short</option>
+                            <option value="duration_based">Auto by duration</option>
+                            <option value="fixed_count">Fixed count</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Auto mode makes sequential clips from one source video using the short duration above.</p>
+                    </div>
+                    <div id="edit_source_shorts_max_count_wrap" class="hidden">
+                        <label class="block text-sm text-gray-400 mb-1">Max Shorts Per Source</label>
+                        <input type="number" name="source_shorts_max_count" id="edit_source_shorts_max_count" min="1" max="20" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <p class="text-xs text-gray-500 mt-1">Example: 5-minute video + 60s duration + max 5 = up to 5 shorts.</p>
+                    </div>
+                </div>
+                <div class="p-2 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-200">
+                    Research-based default: keep this on <span class="font-semibold">Single short</span> unless the source video has multiple strong moments. Official YouTube guidance favors concise clips with a strong opening hook; exact clip count is an inference, so this setting stays user-controlled.
                 </div>
                 
                 <div class="border-t border-gray-800 pt-4 mt-4">
@@ -1910,6 +1981,22 @@ function toggleVideoSelectionMethod() {
     document.getElementById('video_selection_method_hidden').value = method;
 }
 
+function toggleSourceShortsMode(mode) {
+    const wrap = document.getElementById('source_shorts_max_count_wrap');
+    const input = document.getElementById('source_shorts_max_count');
+    const normalized = (mode || 'single').toString();
+    const isSingle = normalized === 'single';
+    if (wrap) wrap.classList.toggle('hidden', isSingle);
+    if (input) {
+        input.disabled = isSingle;
+        if (isSingle) {
+            input.value = '1';
+        } else if (!input.value || input.value === '1') {
+            input.value = '5';
+        }
+    }
+}
+
 function toLocalDateValue(date) {
     const tzOffsetMs = date.getTimezoneOffset() * 60000;
     return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 10);
@@ -2001,6 +2088,22 @@ function toggleEditVideoSelectionMethod() {
     document.getElementById('edit_video_selection_method_hidden').value = method;
 }
 
+function toggleEditSourceShortsMode(mode) {
+    const wrap = document.getElementById('edit_source_shorts_max_count_wrap');
+    const input = document.getElementById('edit_source_shorts_max_count');
+    const normalized = (mode || 'single').toString();
+    const isSingle = normalized === 'single';
+    if (wrap) wrap.classList.toggle('hidden', isSingle);
+    if (input) {
+        input.disabled = isSingle;
+        if (isSingle) {
+            input.value = '1';
+        } else if (!input.value || input.value === '1') {
+            input.value = '5';
+        }
+    }
+}
+
 function applyEditYouTubePreset(preset) {
     const videosPerRun = document.getElementById('edit_videos_per_run');
     const daysInput = document.getElementById('edit_video_days_filter');
@@ -2052,6 +2155,8 @@ function openEditModal(automationData) {
     document.getElementById('edit_video_end_date').value = automationData.video_end_date || '';
     document.getElementById('edit_videos_per_run').value = automationData.videos_per_run || 5;
     document.getElementById('edit_short_duration').value = automationData.short_duration || 60;
+    document.getElementById('edit_source_shorts_mode').value = automationData.source_shorts_mode || 'single';
+    document.getElementById('edit_source_shorts_max_count').value = automationData.source_shorts_max_count || 1;
     document.getElementById('edit_short_aspect_ratio').value = automationData.short_aspect_ratio || '9:16';
     document.getElementById('edit_whisper_enabled').checked = automationData.whisper_enabled == 1;
     document.getElementById('edit_whisper_language').value = automationData.whisper_language || 'en';
@@ -2110,6 +2215,7 @@ function openEditModal(automationData) {
     toggleEditPostForMe(document.getElementById('edit_postforme_enabled'));
     toggleEditScheduleMode(automationData.postforme_schedule_mode || 'immediate');
     toggleEditVideoSelectionMethod(); // Apply the selection method toggle
+    toggleEditSourceShortsMode(automationData.source_shorts_mode || 'single');
     
     // Show basic tab initially
     showEditFormTab('basic');
@@ -2825,6 +2931,10 @@ document.addEventListener('DOMContentLoaded', function() {
         resumePolling(<?= $auto['id'] ?>);
         <?php endif; ?>
     <?php endforeach; ?>
+    const sourceShortsMode = document.getElementById('source_shorts_mode');
+    if (sourceShortsMode) {
+        toggleSourceShortsMode(sourceShortsMode.value || 'single');
+    }
     startLiveDebugBanner();
 });
 
@@ -3373,10 +3483,6 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 </script>
-
-
-
-
 
 
 

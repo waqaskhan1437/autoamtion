@@ -192,6 +192,12 @@ try {
         if (!in_array('videos_per_run', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN videos_per_run INT DEFAULT 5");
         }
+        if (!in_array('source_shorts_mode', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single'");
+        }
+        if (!in_array('source_shorts_max_count', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN source_shorts_max_count INT DEFAULT 1");
+        }
         if (!in_array('schedule_every_minutes', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN schedule_every_minutes INT DEFAULT 10");
         }
@@ -364,6 +370,8 @@ try {
                 video_start_date DATE NULL,
                 video_end_date DATE NULL,
                 videos_per_run INT DEFAULT 5,
+                source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single',
+                source_shorts_max_count INT DEFAULT 1,
                 process_id VARCHAR(20) NULL,
                 short_duration INT DEFAULT 60,
                 short_aspect_ratio VARCHAR(10) DEFAULT '9:16',

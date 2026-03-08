@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     video_start_date DATE NULL,
     video_end_date DATE NULL,
     videos_per_run INT DEFAULT 5,
+    source_shorts_mode ENUM('single', 'duration_based', 'fixed_count') DEFAULT 'single',
+    source_shorts_max_count INT DEFAULT 1,
     process_id VARCHAR(20) NULL,
     
     -- Short Conversion Settings

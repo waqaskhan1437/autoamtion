@@ -12,6 +12,7 @@ require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
+require_once __DIR__ . '/ShortSegmentPlanner.php';
 require_once __DIR__ . '/YouTubeSource.php';
 
 class AutomationRunner {
@@ -152,6 +153,7 @@ class AutomationRunner {
                 $this->log('batch_shuffle', 'info', 'Batch shuffled for random order');
             }
             
+            $downloaded = 0;
             $processed = 0;
             $scheduled = 0;
             $posted = 0;
@@ -161,7 +163,8 @@ class AutomationRunner {
                 try {
                     $result = $this->processVideo($video, $randomWords);
                     if ($result['success']) {
-                        $processed++;
+                        $downloaded += (int)($result['downloaded'] ?? 1);
+                        $processed += (int)($result['processed'] ?? 1);
                         $scheduled += (int)($result['scheduled'] ?? 0);
                         $posted += (int)($result['posted'] ?? 0);
                         // Mark video as processed in rotation tracker
@@ -182,7 +185,7 @@ class AutomationRunner {
             
             return [
                 'fetched' => $fetchedForStats,
-                'downloaded' => $processed, // download happens for each processed item in this runner
+                'downloaded' => $downloaded,
                 'processed' => $processed,
                 'scheduled' => $scheduled,
                 'posted' => $posted
@@ -759,35 +762,74 @@ class AutomationRunner {
             $subtitlesPath = $this->transcribeVideo($localPath, $openaiKey, $whisperLanguage);
         }
         
-        // Step 4: Create short
-        $shortPath = $this->createShort($localPath, $videoId, [
-            'duration' => $this->automation['short_duration'] ?? 60,
-            'aspectRatio' => $this->automation['short_aspect_ratio'] ?? '9:16',
-            'topText' => $topText,
-            'bottomText' => $bottomText,
-            'subtitlesPath' => $subtitlesPath,
-            'emoji' => $emoji,
-            'emojiPng' => $emojiPng
-        ]);
-        
-        // Step 5: Create database job
-        $jobId = $this->createJob($videoTitle, $videoId, $topText);
-        
-        // Step 6: Post to social media
-        $caption = $topText ?: $videoTitle;
-        $postStats = $this->postToSocialMedia($shortPath, $caption, $videoId);
+        $shortPlan = $this->buildShortSegmentPlan($localPath);
+        $segmentTotal = count($shortPlan['segments']);
+        $this->log(
+            'short_plan',
+            'info',
+            "Short plan: {$segmentTotal} clip(s) using {$shortPlan['mode']} mode",
+            $videoId
+        );
+
+        $jobIds = [];
+        $processedCount = 0;
+        $scheduled = 0;
+        $posted = 0;
+
+        foreach ($shortPlan['segments'] as $segment) {
+            $clipIndex = (int)($segment['index'] ?? ($processedCount + 1));
+            $segmentVideoId = $segmentTotal > 1 ? "{$videoId}#clip{$clipIndex}" : $videoId;
+            $segmentLabel = $segmentTotal > 1 ? "Clip {$clipIndex}/{$segmentTotal}" : 'Clip 1/1';
+            $segmentTitle = $segmentTotal > 1 ? "{$videoTitle} ({$segmentLabel})" : $videoTitle;
+
+            try {
+                $shortPath = $this->createShort($localPath, $segmentVideoId, [
+                    'duration' => (int)($segment['duration'] ?? ($this->automation['short_duration'] ?? 60)),
+                    'startTime' => (int)($segment['start'] ?? 0),
+                    'clipIndex' => $clipIndex,
+                    'clipTotal' => $segmentTotal,
+                    'aspectRatio' => $this->automation['short_aspect_ratio'] ?? '9:16',
+                    'topText' => $topText,
+                    'bottomText' => $bottomText,
+                    'subtitlesPath' => $subtitlesPath,
+                    'emoji' => $emoji,
+                    'emojiPng' => $emojiPng
+                ]);
+
+                $jobIds[] = $this->createJob($segmentTitle, $segmentVideoId, $topText);
+
+                $caption = $topText ?: $videoTitle;
+                if ($segmentTotal > 1) {
+                    $caption .= ' Part ' . $clipIndex;
+                }
+                $postStats = $this->postToSocialMedia($shortPath, $caption, $segmentVideoId);
+
+                $processedCount++;
+                $scheduled += (int)($postStats['scheduled'] ?? 0);
+                $posted += (int)($postStats['posted'] ?? 0);
+                $this->log('video_clip_completed', 'success', "{$segmentLabel} completed", $segmentVideoId);
+            } catch (Exception $e) {
+                $this->log('video_clip_error', 'error', "{$segmentLabel} failed: " . $e->getMessage(), $segmentVideoId);
+            }
+        }
         
         // Clean up temp files
         @unlink($localPath);
         if ($subtitlesPath) @unlink($subtitlesPath);
+
+        if ($processedCount < 1) {
+            throw new Exception('No short clips were created for this source video.');
+        }
         
         $this->log('video_completed', 'success', "Completed: {$videoTitle}", $videoId);
         
         return [
             'success' => true,
-            'jobId' => $jobId,
-            'scheduled' => (int)($postStats['scheduled'] ?? 0),
-            'posted' => (int)($postStats['posted'] ?? 0)
+            'jobIds' => $jobIds,
+            'downloaded' => 1,
+            'processed' => $processedCount,
+            'scheduled' => $scheduled,
+            'posted' => $posted
         ];
     }
     
@@ -950,10 +992,16 @@ class AutomationRunner {
         
         // Create safe filename (alphanumeric only)
         $safeId = preg_replace('/[^a-zA-Z0-9]/', '', $videoId);
-        $outputPath = $this->outputDir . '/short_' . $safeId . '_' . time() . '.mp4';
+        $clipIndex = max(1, (int)($options['clipIndex'] ?? 1));
+        $clipTotal = max(1, (int)($options['clipTotal'] ?? 1));
+        $clipSuffix = $clipTotal > 1 ? '_part' . str_pad((string)$clipIndex, 2, '0', STR_PAD_LEFT) : '';
+        $uniqueSuffix = str_replace('.', '', (string)microtime(true));
+        $outputPath = $this->outputDir . '/short_' . $safeId . $clipSuffix . '_' . $uniqueSuffix . '.mp4';
         
-        // Find best segment to use
-        $startTime = $ffmpeg->findBestSegment($inputPath, $options['duration']);
+        // Find best segment to use when caller did not already plan a segment.
+        $startTime = isset($options['startTime'])
+            ? max(0, (int)$options['startTime'])
+            : $ffmpeg->findBestSegment($inputPath, $options['duration']);
         $this->log('ffmpeg_segment', 'info', "Using segment starting at {$startTime}s");
         
         $result = $ffmpeg->createShort($inputPath, $outputPath, [
@@ -980,6 +1028,21 @@ class AutomationRunner {
         $this->log('short_created', 'success', "Short created: " . basename($outputPath) . " ({$fileSize} MB)");
         
         return $outputPath;
+    }
+
+    private function buildShortSegmentPlan($inputPath) {
+        $ffmpeg = new FFmpegProcessor();
+        $videoInfo = $ffmpeg->getVideoInfo($inputPath);
+        $shortDuration = (int)($this->automation['short_duration'] ?? 60);
+        $singleStartTime = $ffmpeg->findBestSegment($inputPath, $shortDuration);
+
+        return ShortSegmentPlanner::buildPlan(
+            (float)($videoInfo['duration'] ?? 0),
+            $shortDuration,
+            $this->automation['source_shorts_mode'] ?? 'single',
+            $this->automation['source_shorts_max_count'] ?? 1,
+            $singleStartTime
+        );
     }
     
     /**

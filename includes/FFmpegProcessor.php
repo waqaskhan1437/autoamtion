@@ -408,15 +408,27 @@ class FFmpegProcessor {
         
         // Add subtitles if provided
         if ($subtitlesPath && file_exists($subtitlesPath)) {
+            $preparedSubtitlesPath = $this->prepareSegmentSubtitles($subtitlesPath, (float)$startTime, (int)$duration);
             $tempOutput = $this->tempDir . '/' . uniqid('temp_') . '.mp4';
-            rename($outputPath, $tempOutput);
-            
-            $subResult = $this->addSubtitles($tempOutput, $subtitlesPath, $outputPath);
-            @unlink($tempOutput);
-            
-            if (!$subResult) {
-                // If subtitles fail, restore original
-                rename($tempOutput, $outputPath);
+
+            if (!@rename($outputPath, $tempOutput)) {
+                return [
+                    'success' => false,
+                    'error' => 'Failed to prepare output for subtitle overlay'
+                ];
+            }
+
+            $subResult = $this->addSubtitles($tempOutput, $preparedSubtitlesPath, $outputPath);
+
+            if ($preparedSubtitlesPath !== $subtitlesPath && file_exists($preparedSubtitlesPath)) {
+                @unlink($preparedSubtitlesPath);
+            }
+
+            if ($subResult) {
+                @unlink($tempOutput);
+            } else {
+                @unlink($outputPath);
+                @rename($tempOutput, $outputPath);
             }
         }
         
@@ -455,6 +467,96 @@ class FFmpegProcessor {
         exec($command, $output, $returnCode);
         
         return $returnCode === 0 && file_exists($outputPath);
+    }
+
+    private function prepareSegmentSubtitles($subtitlesPath, float $startTime, int $segmentDuration) {
+        if ($startTime <= 0) {
+            return $subtitlesPath;
+        }
+
+        if (strtolower(pathinfo($subtitlesPath, PATHINFO_EXTENSION)) !== 'ass') {
+            return $subtitlesPath;
+        }
+
+        $lines = @file($subtitlesPath, FILE_IGNORE_NEW_LINES);
+        if (!is_array($lines) || empty($lines)) {
+            return $subtitlesPath;
+        }
+
+        $segmentEnd = $startTime + max(1, $segmentDuration);
+        $shifted = [];
+
+        foreach ($lines as $line) {
+            if (strpos($line, 'Dialogue:') !== 0) {
+                $shifted[] = $line;
+                continue;
+            }
+
+            $parts = explode(',', $line, 10);
+            if (count($parts) < 10) {
+                $shifted[] = $line;
+                continue;
+            }
+
+            $lineStart = $this->parseAssTime($parts[1]);
+            $lineEnd = $this->parseAssTime($parts[2]);
+            if ($lineStart === null || $lineEnd === null) {
+                continue;
+            }
+
+            if ($lineEnd <= $startTime || $lineStart >= $segmentEnd) {
+                continue;
+            }
+
+            $shiftedStart = max(0.0, $lineStart - $startTime);
+            $shiftedEnd = min((float)$segmentDuration, $lineEnd - $startTime);
+            if ($shiftedEnd <= $shiftedStart) {
+                continue;
+            }
+
+            $parts[1] = $this->formatAssTime($shiftedStart);
+            $parts[2] = $this->formatAssTime($shiftedEnd);
+            $shifted[] = implode(',', $parts);
+        }
+
+        $tempPath = $this->tempDir . '/' . uniqid('segment_subs_') . '.ass';
+        @file_put_contents($tempPath, implode(PHP_EOL, $shifted));
+
+        return file_exists($tempPath) ? $tempPath : $subtitlesPath;
+    }
+
+    private function parseAssTime($value) {
+        $value = trim((string)$value);
+        if (!preg_match('/^(\d+):(\d{2}):(\d{2})\.(\d{2})$/', $value, $m)) {
+            return null;
+        }
+
+        return (((int)$m[1] * 3600) + ((int)$m[2] * 60) + (int)$m[3]) + (((int)$m[4]) / 100);
+    }
+
+    private function formatAssTime(float $seconds): string {
+        $seconds = max(0.0, $seconds);
+        $hours = (int)floor($seconds / 3600);
+        $seconds -= $hours * 3600;
+        $minutes = (int)floor($seconds / 60);
+        $seconds -= $minutes * 60;
+        $wholeSeconds = (int)floor($seconds);
+        $centiseconds = (int)round(($seconds - $wholeSeconds) * 100);
+
+        if ($centiseconds >= 100) {
+            $wholeSeconds++;
+            $centiseconds = 0;
+        }
+        if ($wholeSeconds >= 60) {
+            $minutes++;
+            $wholeSeconds -= 60;
+        }
+        if ($minutes >= 60) {
+            $hours++;
+            $minutes -= 60;
+        }
+
+        return sprintf('%d:%02d:%02d.%02d', $hours, $minutes, $wholeSeconds, $centiseconds);
     }
     
     /**

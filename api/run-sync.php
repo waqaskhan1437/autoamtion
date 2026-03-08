@@ -275,6 +275,7 @@ try {
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
+    require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
     
     // Set global references for database updates
@@ -327,7 +328,7 @@ if (!$isManualSource && !$isYouTubeSource && !$automation['api_key_id']) {
     $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'ftp_host'");
     $ftpHost = $stmt->fetchColumn();
     if (!$ftpHost) {
-        sendDone(false, 'No API key selected and FTP not configured in Settings! Please either select an API key or configure FTP in Settings → FTP Server.');
+        sendDone(false, 'No API key selected and FTP not configured in Settings! Please either select an API key or configure FTP in Settings â†’ FTP Server.');
     }
     $useFtpSettings = true;
 }
@@ -369,15 +370,15 @@ sendProgress('init', 'success', "Starting: {$automation['name']}", 10, $stats);
 // Show Post for Me status
 if ($pfEnabled) {
     if ($willPost) {
-        sendProgress('postforme', 'success', "✓ Post for Me: ENABLED (" . count($pfAccounts) . " account(s))", 11, $stats);
+        sendProgress('postforme', 'success', "âœ“ Post for Me: ENABLED (" . count($pfAccounts) . " account(s))", 11, $stats);
     } else {
         $missing = [];
         if (empty($pfAccounts)) $missing[] = 'no accounts selected';
         if (empty($postformeApiKey)) $missing[] = 'API key not set';
-        sendProgress('postforme', 'warning', "⚠ Post for Me enabled but: " . implode(', ', $missing), 11, $stats);
+        sendProgress('postforme', 'warning', "âš  Post for Me enabled but: " . implode(', ', $missing), 11, $stats);
     }
 } else {
-    sendProgress('postforme', 'info', "○ Post for Me: Not enabled for this automation", 11, $stats);
+    sendProgress('postforme', 'info', "â—‹ Post for Me: Not enabled for this automation", 11, $stats);
 }
 
 // Check FFmpeg
@@ -740,6 +741,7 @@ if (!is_dir($outputDir)) @mkdir($outputDir, 0777, true);
 // Process each video
 $totalVideos = count($videos);
 $progressPerVideo = 60 / max($totalVideos, 1); // 60% of progress for video processing
+$postSpreadIndex = 0;
 
 foreach ($videos as $index => $video) {
     // Check if stopped
@@ -887,97 +889,109 @@ foreach ($videos as $index => $video) {
         }
     }
     
-    $processResult = $ffmpeg->createShort(
-        $localPath,
-        $outputPath,
-        [
-            'duration' => $automation['short_duration'] ?? 60,
-            'aspectRatio' => $automation['short_aspect_ratio'] ?? '9:16',
-            'topText' => $topText,
-            'bottomText' => $bottomText,
-            'emoji' => $emoji ?? '',  // Emoji character to add at end of text
-            'emojiPng' => $emojiPng   // Colorful emoji PNG overlay (fallback)
-        ]
+    $shortDuration = (int)($automation['short_duration'] ?? 60);
+    $videoInfo = $ffmpeg->getVideoInfo($localPath);
+    $shortPlan = ShortSegmentPlanner::buildPlan(
+        (float)($videoInfo['duration'] ?? 0),
+        $shortDuration,
+        $automation['source_shorts_mode'] ?? 'single',
+        $automation['source_shorts_max_count'] ?? 1,
+        $ffmpeg->findBestSegment($localPath, $shortDuration)
     );
-    
-    // Check if processing was actually successful (result is array with success key)
-    $processSuccess = is_array($processResult) ? ($processResult['success'] ?? false) : (bool)$processResult;
-    
-    if ($processSuccess && file_exists($outputPath)) {
+    $segmentTotal = count($shortPlan['segments']);
+    sendProgress('process', 'info', "Short plan: {$segmentTotal} clip(s) for {$videoName}", $currentProgress + ($progressPerVideo * 0.55), $stats);
+
+    $sourceHadSuccess = false;
+
+    foreach ($shortPlan['segments'] as $segment) {
+        $clipIndex = (int)($segment['index'] ?? 1);
+        $clipStart = (int)($segment['start'] ?? 0);
+        $clipDuration = (int)($segment['duration'] ?? $shortDuration);
+        $clipLabel = $segmentTotal > 1 ? "Clip {$clipIndex}/{$segmentTotal}" : 'Clip 1/1';
+        $segmentVideoName = $segmentTotal > 1
+            ? pathinfo($videoName, PATHINFO_FILENAME) . " Clip {$clipIndex}"
+            : $videoName;
+        $outputPath = $outputDir . '/short_' . pathinfo($videoName, PATHINFO_FILENAME) . '_part' . str_pad((string)$clipIndex, 2, '0', STR_PAD_LEFT) . '_' . str_replace('.', '', (string)microtime(true)) . '.mp4';
+        $clipProgressBase = $currentProgress + ($progressPerVideo * 0.6) + (($clipIndex - 1) * (($progressPerVideo * 0.3) / max($segmentTotal, 1)));
+
+        sendProgress('process', 'info', "Creating {$clipLabel} from {$clipStart}s for {$clipDuration}s", $clipProgressBase, $stats);
+
+        $processResult = $ffmpeg->createShort(
+            $localPath,
+            $outputPath,
+            [
+                'duration' => $clipDuration,
+                'startTime' => $clipStart,
+                'aspectRatio' => $automation['short_aspect_ratio'] ?? '9:16',
+                'topText' => $topText,
+                'bottomText' => $bottomText,
+                'emoji' => $emoji ?? '',
+                'emojiPng' => $emojiPng
+            ]
+        );
+
+        $processSuccess = is_array($processResult) ? ($processResult['success'] ?? false) : (bool)$processResult;
+        if (!$processSuccess || !file_exists($outputPath)) {
+            $stats['errors']++;
+            $errorMsg = is_array($processResult) ? ($processResult['error'] ?? 'Unknown error') : 'FFmpeg failed';
+            sendProgress('process', 'warning', "Failed {$clipLabel}: {$videoName} - {$errorMsg}", $clipProgressBase, $stats);
+            try {
+                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
+                $stmt->execute([$automationId, 'video_processed', 'error', "{$clipLabel} error: {$errorMsg}", $segmentVideoName]);
+            } catch (Exception $e) {}
+            continue;
+        }
+
+        $sourceHadSuccess = true;
         $stats['processed']++;
         $outputSize = round(filesize($outputPath) / 1024 / 1024, 1);
-        sendProgress('process', 'success', "Created: " . basename($outputPath) . " ({$outputSize}MB)", $currentProgress + $progressPerVideo, $stats);
-        
-        // Mark video as processed in rotation tracker
-        if ($rotationEnabled) {
-            $rotCycle = intval($automation['rotation_cycle'] ?? 1);
-            $rotVideoIds = $getRotationIdentifierCandidates($video);
-            $rotVideoId = $rotVideoIds[0] ?? (is_array($video) ? ($video['guid'] ?? $video['ObjectName'] ?? $video['filename'] ?? $video['name'] ?? md5(json_encode($video))) : basename($video));
-            $rotFileSize = is_array($video) ? intval($video['Length'] ?? $video['size'] ?? $video['ContentLength'] ?? 0) : 0;
-            $rotHash = $getRotationFingerprint($video);
-            try {
-                $rotStmt = $pdo->prepare("INSERT INTO processed_videos (automation_id, video_identifier, video_filename, file_size, cycle_number, processed_at) VALUES (?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE processed_at = NOW()");
-                foreach ($rotVideoIds as $candidateId) {
-                    $rotStmt->execute([$automationId, $candidateId, $videoName, $rotFileSize, $rotCycle]);
-                }
-                if ($rotHash !== '') {
-                    $rotHashStmt = $pdo->prepare("UPDATE processed_videos SET content_hash = ? WHERE automation_id = ? AND cycle_number = ? AND video_identifier = ?");
-                    $rotHashStmt->execute([$rotHash, $automationId, $rotCycle, $rotVideoId]);
-                }
-            } catch (Exception $e) {}
-        }
-        
-        // Log to database with output path
+        sendProgress('process', 'success', "Created {$clipLabel}: " . basename($outputPath) . " ({$outputSize}MB)", $clipProgressBase + ($progressPerVideo * 0.1), $stats);
+
         try {
             $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$automationId, 'video_processed', 'success', "Output: " . basename($outputPath), $videoName]);
+            $stmt->execute([$automationId, 'video_processed', 'success', "Output: " . basename($outputPath), $segmentVideoName]);
         } catch (Exception $e) {}
-        
-        // =====================================================
-        // POST TO SOCIAL MEDIA VIA POST FOR ME
-        // =====================================================
+
         if ($willPost) {
-            sendProgress('posting', 'info', "🚀 Posting to social media...", $currentProgress + $progressPerVideo + 1, $stats);
-            
+            sendProgress('posting', 'info', "Posting {$clipLabel} to social media...", $clipProgressBase + ($progressPerVideo * 0.12), $stats);
+
             try {
                 $postForMe = new PostForMeAPI($postformeApiKey);
-                
-                // Generate AI-powered social content (title, description, hashtags, tags)
-                sendProgress('posting', 'info', "Generating social content...", $currentProgress + $progressPerVideo + 1.5, $stats);
-                
                 $aiPrompt = $automation['ai_tagline_prompt'] ?? 'Create engaging social media content';
                 $socialContent = [];
-                
+
                 try {
                     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
                     $aiGen = new AITaglineGenerator($pdo);
-                    $socialContent = $aiGen->generateSocialContent($aiPrompt, $videoName, $topText);
+                    $socialContent = $aiGen->generateSocialContent($aiPrompt, $segmentVideoName, $topText);
                 } catch (Exception $e) {
-                    // Use defaults
                     $socialContent = [
-                        'title' => $topText ?: $videoName,
+                        'title' => $topText ?: $segmentVideoName,
                         'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
                         'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
                         'tags' => ['shorts', 'viral', 'trending']
                     ];
                 }
-                
-                // Build caption with hashtags
+
                 $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
-                $caption = ($socialContent['description'] ?? $topText) . "\n\n" . $hashtagStr;
-                
-                sendProgress('posting', 'info', "Title: " . ($socialContent['title'] ?? 'N/A'), $currentProgress + $progressPerVideo + 2, $stats);
-                sendProgress('posting', 'info', "Hashtags: " . $hashtagStr, $currentProgress + $progressPerVideo + 2.5, $stats);
-                sendProgress('posting', 'info', "Uploading to " . count($pfAccounts) . " account(s)...", $currentProgress + $progressPerVideo + 3, $stats);
-                
-                // Platform-specific overrides for ALL platforms
-                $fullDescription = ($socialContent['description'] ?? $topText) . "\n\n" . $hashtagStr;
-                $shortCaption = substr($caption, 0, 280); // For platforms with char limits
-                $youtubeTitle = $socialContent['title'] ?? ($topText ?: $videoName);
+                $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
+                if ($segmentTotal > 1) {
+                    $caption .= "`n`nPart {$clipIndex}/{$segmentTotal}";
+                }
+
+                $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
+                if ($segmentTotal > 1) {
+                    $fullDescription .= "`n`nPart {$clipIndex}/{$segmentTotal}";
+                }
+
+                $shortCaption = substr($caption, 0, 280);
+                $youtubeTitle = $socialContent['title'] ?? ($topText ?: $segmentVideoName);
+                if ($segmentTotal > 1) {
+                    $youtubeTitle .= ' Part ' . $clipIndex;
+                }
                 $youtubeTags = $socialContent['tags'] ?? ['shorts', 'viral', 'trending'];
-                
+
                 $platformOverrides = [
-                    // YouTube Shorts - Title, Description, Tags
                     'youtube' => [
                         'title' => substr($youtubeTitle, 0, 100),
                         'description' => $fullDescription,
@@ -985,62 +999,51 @@ foreach ($videos as $index => $video) {
                         'privacy' => 'public',
                         'shorts' => true
                     ],
-                    // TikTok - Caption with hashtags
                     'tiktok' => [
                         'caption' => $caption,
                         'allow_comments' => true,
                         'allow_duet' => true,
                         'allow_stitch' => true
                     ],
-                    // Instagram Reels - Caption with hashtags
                     'instagram' => [
                         'caption' => $caption,
                         'share_to_feed' => true
                     ],
-                    // Facebook Reels - Caption with hashtags
                     'facebook' => [
                         'caption' => $caption,
                         'description' => $fullDescription
                     ],
-                    // X/Twitter - Short caption (280 char limit)
                     'twitter' => [
                         'caption' => $shortCaption
                     ],
-                    // Threads - Caption with hashtags
                     'threads' => [
                         'caption' => $caption
                     ],
-                    // LinkedIn - Professional caption
                     'linkedin' => [
                         'caption' => $caption,
                         'title' => $youtubeTitle
                     ],
-                    // Pinterest - Pin with description
                     'pinterest' => [
                         'title' => $youtubeTitle,
                         'description' => $fullDescription,
                         'link' => ''
                     ],
-                    // Bluesky - Short caption
                     'bluesky' => [
                         'caption' => $shortCaption
                     ]
                 ];
-                
-                sendProgress('posting', 'info', "Platforms: YouTube, TikTok, Instagram, FB, X, Threads, LinkedIn, Pinterest", $currentProgress + $progressPerVideo + 2.7, $stats);
-                
+
                 $postOptions = [
                     'platform_overrides' => $platformOverrides
                 ];
-                
-                $scheduledAt = computeScheduleDateForSync($automation, $index);
+
+                $scheduledAt = computeScheduleDateForSync($automation, $postSpreadIndex);
+                $postSpreadIndex++;
                 if ($scheduledAt) {
                     $postOptions['scheduled_at'] = $scheduledAt;
-                    sendProgress('posting', 'info', "Scheduled for: {$scheduledAt}", $currentProgress + $progressPerVideo + 2.8, $stats);
                 }
-                
+
                 $postResult = $postForMe->postVideo($outputPath, $caption, $pfAccounts, $postOptions);
-                
                 if ($postResult['success']) {
                     $postId = $postResult['post_id'] ?? 'unknown';
                     $dbScheduledAt = null;
@@ -1051,12 +1054,10 @@ foreach ($videos as $index => $video) {
                         }
                     }
 
-                    // Persist post locally so dashboard counts survive refresh.
                     try {
                         $existingStmt = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
                         $existingStmt->execute([$postId]);
                         $existingPostId = $existingStmt->fetchColumn();
-
                         $localStatus = $dbScheduledAt ? 'scheduled' : 'pending';
                         $accountsJson = json_encode(array_values($pfAccounts));
 
@@ -1071,13 +1072,13 @@ foreach ($videos as $index => $video) {
                                     scheduled_at = ?
                                 WHERE id = ?
                             ");
-                            $upStmt->execute([$automationId, $videoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
+                            $upStmt->execute([$automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
                         } else {
                             $insStmt = $pdo->prepare("
                                 INSERT INTO postforme_posts (post_id, automation_id, video_id, caption, account_ids, status, scheduled_at)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
                             ");
-                            $insStmt->execute([$postId, $automationId, $videoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
+                            $insStmt->execute([$postId, $automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
                         }
                     } catch (Exception $e) {
                         error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
@@ -1085,73 +1086,52 @@ foreach ($videos as $index => $video) {
 
                     if ($scheduledAt) {
                         $stats['scheduled']++;
-                        sendProgress('posting', 'success', "✓ SCHEDULED! Post ID: {$postId} (scheduled: {$scheduledAt})", $currentProgress + $progressPerVideo + 4, $stats);
+                        sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                     } else {
                         $stats['posted']++;
-                        sendProgress('posting', 'success', "✓ POSTED! Post ID: {$postId}", $currentProgress + $progressPerVideo + 4, $stats);
+                        sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                     }
-                    
-                    // Log success
+
                     try {
                         $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $videoName, 'postforme']);
+                        $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
                     } catch (Exception $e) {}
-                    
-                    // Get platform results (skip polling for scheduled posts - they haven't posted yet)
-                    if (!$scheduledAt) {
-                        sleep(2);
-                        try {
-                            $platformResults = $postForMe->getPostResults($postId);
-                            if ($platformResults['success'] && !empty($platformResults['results'])) {
-                                foreach ($platformResults['results'] as $pr) {
-                                    $platform = $pr['platform'] ?? 'unknown';
-                                    $pStatus = $pr['status'] ?? 'pending';
-                                    $pUrl = $pr['url'] ?? '';
-                                    
-                                    if (in_array($pStatus, ['success', 'published', 'completed'])) {
-                                        $msg = "✓ " . ucfirst($platform) . ": Posted" . ($pUrl ? " → {$pUrl}" : '');
-                                        sendProgress('platform', 'success', $msg, $currentProgress + $progressPerVideo + 5, $stats);
-                                    } elseif (in_array($pStatus, ['pending', 'processing'])) {
-                                        sendProgress('platform', 'info', "○ " . ucfirst($platform) . ": Processing...", $currentProgress + $progressPerVideo + 5, $stats);
-                                    } else {
-                                        $errMsg = $pr['error'] ?? $pr['message'] ?? 'Unknown error';
-                                        sendProgress('platform', 'warning', "✗ " . ucfirst($platform) . ": {$errMsg}", $currentProgress + $progressPerVideo + 5, $stats);
-                                    }
-                                }
-                            }
-                        } catch (Exception $e) {
-                            sendProgress('platform', 'info', "Platform results pending...", $currentProgress + $progressPerVideo + 5, $stats);
-                        }
-                    } else {
-                        sendProgress('platform', 'info', "Post is scheduled - will be published at {$scheduledAt}", $currentProgress + $progressPerVideo + 5, $stats);
-                    }
                 } else {
                     $errMsg = $postResult['error'] ?? 'Unknown error';
-                    sendProgress('posting', 'error', "✗ Post failed: {$errMsg}", $currentProgress + $progressPerVideo + 4, $stats);
-                    
-                    // Log error
+                    sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                     try {
                         $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $videoName, 'postforme']);
+                        $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
                     } catch (Exception $e) {}
                 }
             } catch (Exception $e) {
-                sendProgress('posting', 'error', "✗ Posting error: " . $e->getMessage(), $currentProgress + $progressPerVideo + 4, $stats);
+                sendProgress('posting', 'error', "Posting error for {$clipLabel}: " . $e->getMessage(), $clipProgressBase + ($progressPerVideo * 0.18), $stats);
             }
         }
-    } else {
-        $stats['errors']++;
-        $errorMsg = is_array($processResult) ? ($processResult['error'] ?? 'Unknown error') : 'FFmpeg failed';
-        sendProgress('process', 'warning', "Failed: $videoName - $errorMsg", $currentProgress + $progressPerVideo, $stats);
-        
-        // Log error
+    }
+
+    if ($sourceHadSuccess && $rotationEnabled) {
+        $rotCycle = intval($automation['rotation_cycle'] ?? 1);
+        $rotVideoIds = $getRotationIdentifierCandidates($video);
+        $rotVideoId = $rotVideoIds[0] ?? (is_array($video) ? ($video['guid'] ?? $video['ObjectName'] ?? $video['filename'] ?? $video['name'] ?? md5(json_encode($video))) : basename($video));
+        $rotFileSize = is_array($video) ? intval($video['Length'] ?? $video['size'] ?? $video['ContentLength'] ?? 0) : 0;
+        $rotHash = $getRotationFingerprint($video);
         try {
-            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$automationId, 'video_processed', 'error', "Error: $errorMsg", $videoName]);
+            $rotStmt = $pdo->prepare("INSERT INTO processed_videos (automation_id, video_identifier, video_filename, file_size, cycle_number, processed_at) VALUES (?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE processed_at = NOW()");
+            foreach ($rotVideoIds as $candidateId) {
+                $rotStmt->execute([$automationId, $candidateId, $videoName, $rotFileSize, $rotCycle]);
+            }
+            if ($rotHash !== '') {
+                $rotHashStmt = $pdo->prepare("UPDATE processed_videos SET content_hash = ? WHERE automation_id = ? AND cycle_number = ? AND video_identifier = ?");
+                $rotHashStmt->execute([$rotHash, $automationId, $rotCycle, $rotVideoId]);
+            }
         } catch (Exception $e) {}
     }
-    
-    // Clean up temp file
+
+    if (!$sourceHadSuccess) {
+        $stats['errors']++;
+        sendProgress('process', 'warning', "No clips created from: {$videoName}", $currentProgress + $progressPerVideo, $stats);
+    }    // Clean up temp file
     @unlink($localPath);
         
     } catch (Exception $e) {
@@ -1167,13 +1147,13 @@ foreach ($videos as $index => $video) {
 $pdo->prepare("UPDATE automation_settings SET status = 'completed', progress_percent = 100, last_run_at = NOW() WHERE id = ?")->execute([$automationId]);
 
 // Summary
-sendProgress('summary', 'success', "✓ Processed: {$stats['processed']}/{$stats['fetched']} videos", 98, $stats);
+sendProgress('summary', 'success', "âœ“ Processed: {$stats['processed']}/{$stats['fetched']} videos", 98, $stats);
 if ($willPost) {
     $postSummary = [];
     if ($stats['scheduled'] > 0) $postSummary[] = "Scheduled: {$stats['scheduled']}";
     if ($stats['posted'] > 0) $postSummary[] = "Posted: {$stats['posted']}";
     $summaryText = implode(', ', $postSummary) ?: 'No posts made';
-    sendProgress('summary', ($stats['posted'] > 0 || $stats['scheduled'] > 0) ? 'success' : 'warning', "✓ {$summaryText}", 99, $stats);
+    sendProgress('summary', ($stats['posted'] > 0 || $stats['scheduled'] > 0) ? 'success' : 'warning', "âœ“ {$summaryText}", 99, $stats);
 }
 sendProgress('complete', 'success', 'Automation Complete!', 100, $stats);
 sendDone(true, "Completed! Processed {$stats['processed']}, Scheduled {$stats['scheduled']}, Posted {$stats['posted']} videos", $stats);
