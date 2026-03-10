@@ -230,21 +230,7 @@ async function handleUsersAction(request, env, adminUser) {
       clientSlug: requestedSlug
     })
 
-    let message = `User #${userId} created.`
-    let magicLink = null
-    if (checkboxValue(form.get('generate_magic_link'))) {
-      const magic = await createMagicLink(env, {
-        userId,
-        createdByUserId: adminUser.id,
-        redirectPath: '/dashboard',
-        expiryHours: toInt(form.get('magic_expiry_hours')) || 24,
-        origin: new URL(request.url).origin
-      })
-      magicLink = magic.url
-      message = `User #${userId} created and magic link generated.`
-    }
-
-    return renderUsersPage(request, env, adminUser, { success: message, magicLink })
+    return renderUsersPage(request, env, adminUser, { success: `User #${userId} created. Share the email and password with the client.` })
   }
 
   if (action === 'toggle_user_status') {
@@ -270,23 +256,7 @@ async function handleUsersAction(request, env, adminUser) {
   }
 
   if (action === 'generate_magic_link') {
-    const userId = toInt(form.get('user_id'))
-    const expiryHours = toInt(form.get('magic_expiry_hours')) || 24
-    const user = await getUserById(env, userId)
-    if (!user) {
-      return renderUsersPage(request, env, adminUser, { error: 'User not found.' })
-    }
-    const magic = await createMagicLink(env, {
-      userId,
-      createdByUserId: adminUser.id,
-      redirectPath: '/dashboard',
-      expiryHours,
-      origin: new URL(request.url).origin
-    })
-    return renderUsersPage(request, env, adminUser, {
-      success: `Magic link generated for ${user.email}.`,
-      magicLink: magic.url
-    })
+    return renderUsersPage(request, env, adminUser, { error: 'Magic links are disabled. Create a user and share the email/password instead.' })
   }
 
   if (action === 'assign_agent') {
@@ -884,7 +854,7 @@ function renderLoginBody({ errorMessage, next, appName }) {
         </label>
         <button type="submit" class="button primary">Login</button>
       </form>
-      <p class="muted compact">Admins can also generate one-time magic links from the users page.</p>
+      <p class="muted compact">Admins create users manually and clients sign in with the email/password you provide.</p>
     </section>
   `
 }
@@ -899,9 +869,6 @@ function renderFeedback(feedback) {
   }
   if (feedback.success) {
     notices.push(`<div class="flash success">${escapeHtml(feedback.success)}</div>`)
-  }
-  if (feedback.magicLink) {
-    notices.push(`<div class="flash info"><strong>Magic Link</strong><div class="mono-block">${escapeHtml(feedback.magicLink)}</div></div>`)
   }
   return notices.join('')
 }
@@ -1092,8 +1059,7 @@ function renderUsersBody({ users, agents, feedback }) {
             </select>
           </label>
           <label class="toggle"><input type="checkbox" name="can_use_github_runner"> <span>Allow GitHub Runner</span></label>
-          <label class="toggle"><input type="checkbox" name="generate_magic_link" checked> <span>Generate Magic Link</span></label>
-          <label class="field"><span>Magic Link Expiry Hours</span><input type="number" name="magic_expiry_hours" min="1" max="168" value="24"></label>
+          <p class="muted compact">Create the user here, then send the client the email and password manually.</p>
           <button type="submit" class="button primary">Create User</button>
         </form>
       </section>
@@ -1128,12 +1094,6 @@ function renderUsersBody({ users, agents, feedback }) {
                     ${agents.map((agent) => `<option value="${agent.id}"${Number(user.assigned_local_agent_id || 0) === Number(agent.id) ? ' selected' : ''}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`).join('')}
                   </select>
                   <button class="button" type="submit">Save Agent</button>
-                </form>
-                <form method="POST" action="/admin/users" class="inline-form">
-                  <input type="hidden" name="action" value="generate_magic_link">
-                  <input type="hidden" name="user_id" value="${user.id}">
-                  <input type="number" name="magic_expiry_hours" value="24" min="1" max="168">
-                  <button class="button primary" type="submit">Generate Magic Link</button>
                 </form>
               </div>
             </article>
