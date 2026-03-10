@@ -1,0 +1,14 @@
+{
+  "name": "video-workflow-cloudflare-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8788",
+    "deploy": "wrangler deploy",
+    "db:apply:local": "wrangler d1 execute DB --local --file schema.sql",
+    "db:apply:remote": "wrangler d1 execute DB --remote --file schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}

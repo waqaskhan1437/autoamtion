@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "video-workflow-control-plane",
+  "main": "src/index.js",
+  "compatibility_date": "2026-03-10",
+  "workers_dev": true,
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "video-workflow",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "Video Workflow Control",
+    "DEFAULT_ADMIN_EMAIL": "admin@local",
+    "DEFAULT_ADMIN_PASSWORD": "ChangeMe@123",
+    "DEFAULT_PAIRING_TOKEN": "",
+    "AGENT_PACKAGE_URL": "",
+    "GITHUB_REPO_SLUG": "waqaskhan1437/autoamtion",
+    "GITHUB_REF": "main",
+    "DEFAULT_WORKER_DB_NAME": "video_workflow_agent",
+    "DEFAULT_WORKER_BASE_DIR": "C:/VideoWorkflowAgentData",
+    "DEFAULT_POLL_INTERVAL": "10",
+    "PHP_WINDOWS_ZIP_URL": "",
+    "R2_PUBLIC_BASE_URL": ""
+  }
+}

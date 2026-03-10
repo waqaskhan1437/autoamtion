@@ -6,7 +6,16 @@
  */
 header('Content-Type: application/json');
 
-require_once __DIR__ . '/../includes/LocalTaglineGenerator.php';
+try {
+    require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
+    require_once __DIR__ . '/../includes/LocalTaglineGenerator.php';
+} catch (Exception $e) {
+    echo json_encode(['success' => false, 'error' => 'Config error: ' . $e->getMessage()]);
+    exit;
+}
+
+vwm_require_app_user($pdo);
 
 $input = json_decode(file_get_contents('php://input'), true);
 $instructions = $input['prompt'] ?? $input['instructions'] ?? '';

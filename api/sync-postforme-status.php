@@ -2,9 +2,11 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
 
 header('Content-Type: application/json');
+vwm_require_app_user($pdo);
 
 function vwm_now_utc(): string
 {
@@ -41,6 +43,13 @@ try {
     $automationId = isset($_GET['automation_id']) ? (int)$_GET['automation_id'] : 0;
     if ($automationId <= 0) {
         echo json_encode(['ok' => false, 'error' => 'Missing automation_id']);
+        exit;
+    }
+
+    $automation = vwm_fetch_accessible_automation($pdo, $automationId);
+    if (!$automation) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'Access denied for this automation']);
         exit;
     }
 

@@ -1,6 +1,9 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/AutomationRunner.php';
+
+vwm_require_app_user($pdo);
 
 $message = '';
 $messageType = 'success';
@@ -12,6 +15,12 @@ $hasOpenAI = !empty($aiSettings['openai_api_key']);
 $selectedProvider = $aiSettings['ai_provider'] ?? 'gemini';
 $activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : ($hasGemini ? 'Gemini (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')));
 $hasAnyAI = $hasGemini || $hasOpenAI;
+$currentUserId = vwm_current_user_id();
+$isAdmin = vwm_is_admin();
+$canUseGithubRunner = vwm_current_user_can_use_github_runner();
+$assignedLocalAgentId = vwm_current_user_assigned_local_agent_id();
+$automationOwnerSql = $isAdmin ? '' : ' AND owner_user_id = ?';
+$automationOwnerParams = $isAdmin ? [] : [$currentUserId];
 
 function normalizeManualVideoLinksInput($rawInput) {
     $raw = is_string($rawInput) ? $rawInput : (string)$rawInput;
@@ -87,18 +96,42 @@ function normalizePlaybackSpeedInput($rawInput) {
     return number_format($speed, 1, '.', '');
 }
 
+function normalizeAutomationRunModeInput($rawInput, $canUseGithubRunner) {
+    $mode = strtolower(trim(is_string($rawInput) ? $rawInput : (string)$rawInput));
+    if ($canUseGithubRunner && $mode === 'github_runner') {
+        return 'github_runner';
+    }
+    return 'local';
+}
+
+function normalizeAutomationLocalAgentInput($rawInput, $isAdmin, $assignedLocalAgentId) {
+    if (!$isAdmin) {
+        return $assignedLocalAgentId > 0 ? $assignedLocalAgentId : null;
+    }
+
+    $agentId = intval($rawInput ?? 0);
+    return $agentId > 0 ? $agentId : null;
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $redirectMsg = '';
     
     if ($action === 'create') {
+        if (!$isAdmin && $assignedLocalAgentId <= 0) {
+            header('Location: automation.php?msg=no_agent');
+            exit;
+        }
+
         $randomWords = array_filter(array_map('trim', explode(',', $_POST['random_words'] ?? '')));
+        $runMode = normalizeAutomationRunModeInput($_POST['run_mode'] ?? 'local', $canUseGithubRunner);
+        $localAgentId = normalizeAutomationLocalAgentInput($_POST['local_agent_id'] ?? null, $isAdmin, $assignedLocalAgentId);
         
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, local_agent_id, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, local_agent_id, owner_user_id, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -141,8 +174,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $videoSource,
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
-            $_POST['run_mode'] ?? 'local',
-            !empty($_POST['local_agent_id']) ? (int)$_POST['local_agent_id'] : null,
+            $runMode,
+            $localAgentId,
+            $currentUserId,
             $_POST['api_key_id'] ?: null,
             $enabled,
             $videoDaysFilter,
@@ -191,37 +225,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: automation.php?msg=created');
         exit;
     } elseif ($action === 'toggle') {
+        $automationId = (int)($_POST['id'] ?? 0);
         $newStatus = $_POST['current_enabled'] == '1' ? 0 : 1;
         $statusText = $newStatus ? 'running' : 'stopped';
         
         if ($newStatus) {
             // When enabling, calculate next_run_at based on schedule
-            $stmt = $pdo->prepare("SELECT schedule_type, schedule_hour, schedule_every_minutes FROM automation_settings WHERE id = ?");
-            $stmt->execute([$_POST['id']]);
+            $stmt = $pdo->prepare("SELECT schedule_type, schedule_hour, schedule_every_minutes FROM automation_settings WHERE id = ?" . $automationOwnerSql);
+            $stmt->execute(array_merge([$automationId], $automationOwnerParams));
             $automation = $stmt->fetch();
+            if (!$automation) {
+                header('Location: automation.php?msg=forbidden');
+                exit;
+            }
             
             $scheduleType = $automation['schedule_type'] ?? 'daily';
             $scheduleHour = $automation['schedule_hour'] ?? 9;
             $scheduleEveryMinutes = $automation['schedule_every_minutes'] ?? 10;
             $nextRunAt = calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes);
             
-            $stmt = $pdo->prepare("UPDATE automation_settings SET enabled = ?, status = ?, next_run_at = ? WHERE id = ?");
-            $stmt->execute([$newStatus, $statusText, $nextRunAt, $_POST['id']]);
+            $stmt = $pdo->prepare("UPDATE automation_settings SET enabled = ?, status = ?, next_run_at = ? WHERE id = ?" . $automationOwnerSql);
+            $stmt->execute(array_merge([$newStatus, $statusText, $nextRunAt, $automationId], $automationOwnerParams));
         } else {
             // When disabling, clear next_run_at
-            $stmt = $pdo->prepare("UPDATE automation_settings SET enabled = ?, status = ?, next_run_at = NULL WHERE id = ?");
-            $stmt->execute([$newStatus, $statusText, $_POST['id']]);
+            $stmt = $pdo->prepare("UPDATE automation_settings SET enabled = ?, status = ?, next_run_at = NULL WHERE id = ?" . $automationOwnerSql);
+            $stmt->execute(array_merge([$newStatus, $statusText, $automationId], $automationOwnerParams));
         }
         
         header('Location: automation.php?msg=toggled');
         exit;
     } elseif ($action === 'update') {
+        if (!$isAdmin && $assignedLocalAgentId <= 0) {
+            header('Location: automation.php?msg=no_agent');
+            exit;
+        }
+
+        $automationId = (int)($_POST['id'] ?? 0);
+        if ($automationId <= 0 || (!$isAdmin && !vwm_fetch_accessible_automation($pdo, $automationId))) {
+            header('Location: automation.php?msg=forbidden');
+            exit;
+        }
+
         $randomWords = array_filter(array_map('trim', explode(',', $_POST['random_words'] ?? '')));
+        $runMode = normalizeAutomationRunModeInput($_POST['run_mode'] ?? 'local', $canUseGithubRunner);
+        $localAgentId = normalizeAutomationLocalAgentInput($_POST['local_agent_id'] ?? null, $isAdmin, $assignedLocalAgentId);
         
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, local_agent_id=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, local_agent_id=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?" . $automationOwnerSql);
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -255,13 +307,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ? normalizeYouTubeChannelUrlInput($_POST['youtube_channel_url'] ?? '')
             : null;
 
-        $stmt->execute([
+        $stmt->execute(array_merge([
             $_POST['name'],
             $videoSource,
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
-            $_POST['run_mode'] ?? 'local',
-            !empty($_POST['local_agent_id']) ? (int)$_POST['local_agent_id'] : null,
+            $runMode,
+            $localAgentId,
             $_POST['api_key_id'] ?: null,
             $videoDaysFilter,
             $videoStartDate,
@@ -305,25 +357,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $status,
             $enabled,
             $nextRunAt,
-            $_POST['id']
-        ]);
+            $automationId
+        ], $automationOwnerParams));
         
         header('Location: automation.php?msg=updated');
         exit;
     } elseif ($action === 'reset_rotation') {
         $id = intval($_POST['id']);
-        $pdo->prepare("UPDATE automation_settings SET rotation_cycle = 1 WHERE id = ?")->execute([$id]);
-        $pdo->prepare("DELETE FROM processed_videos WHERE automation_id = ?")->execute([$id]);
+        $stmt = $pdo->prepare("UPDATE automation_settings SET rotation_cycle = 1 WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$id], $automationOwnerParams));
+        if ($stmt->rowCount() > 0) {
+            $pdo->prepare("DELETE FROM processed_videos WHERE automation_id = ?")->execute([$id]);
+        }
         header('Location: automation.php?msg=rotation_reset');
         exit;
     } elseif ($action === 'stop') {
         // Get the process ID before updating status
-        $stmt = $pdo->prepare("SELECT process_id FROM automation_settings WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
+        $automationId = (int)($_POST['id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT process_id FROM automation_settings WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$automationId], $automationOwnerParams));
         $automation = $stmt->fetch();
+        if (!$automation) {
+            header('Location: automation.php?msg=forbidden');
+            exit;
+        }
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET status = 'stopped', enabled = 0 WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
+        $stmt = $pdo->prepare("UPDATE automation_settings SET status = 'stopped', enabled = 0 WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$automationId], $automationOwnerParams));
         
         // Attempt to kill the associated process if it exists
         if ($automation && $automation['process_id']) {
@@ -338,12 +398,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     } elseif ($action === 'delete') {
         // Get the process ID before deleting
-        $stmt = $pdo->prepare("SELECT process_id FROM automation_settings WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
+        $automationId = (int)($_POST['id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT process_id FROM automation_settings WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$automationId], $automationOwnerParams));
         $automation = $stmt->fetch();
+        if (!$automation) {
+            header('Location: automation.php?msg=forbidden');
+            exit;
+        }
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET status = 'stopped' WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
+        $stmt = $pdo->prepare("UPDATE automation_settings SET status = 'stopped' WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$automationId], $automationOwnerParams));
         usleep(500000);
         
         // Attempt to kill the associated process if it exists
@@ -355,8 +420,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        $stmt = $pdo->prepare("DELETE FROM automation_settings WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
+        $stmt = $pdo->prepare("DELETE FROM automation_settings WHERE id = ?" . $automationOwnerSql);
+        $stmt->execute(array_merge([$automationId], $automationOwnerParams));
         header('Location: automation.php?msg=deleted');
         exit;
     } elseif ($action === 'run') {
@@ -373,6 +438,8 @@ if (isset($_GET['msg'])) {
         case 'toggled': $message = 'Automation updated'; break;
         case 'stopped': $message = 'Process stopped'; break;
         case 'deleted': $message = 'Automation deleted'; break;
+        case 'no_agent': $message = 'Admin must assign a local agent to this user before local-only automation can be saved or run.'; $messageType = 'error'; break;
+        case 'forbidden': $message = 'You do not have access to that automation.'; $messageType = 'error'; break;
     }
 }
 
@@ -403,13 +470,16 @@ function calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEve
     return $nextRun->format('Y-m-d H:i:s');
 }
 
-$stmt = $pdo->query("
+$automationListSql = "
     SELECT a.*, k.name AS key_name, ag.display_name AS local_agent_name, ag.machine_name AS local_agent_machine
     FROM automation_settings a
     LEFT JOIN api_keys k ON a.api_key_id = k.id
     LEFT JOIN local_agents ag ON ag.id = a.local_agent_id
+    WHERE " . ($isAdmin ? "1=1" : "a.owner_user_id = ?") . "
     ORDER BY a.created_at DESC
-");
+";
+$stmt = $pdo->prepare($automationListSql);
+$stmt->execute($isAdmin ? [] : [$currentUserId]);
 $automations = $stmt->fetchAll();
 
 foreach ($automations as &$automation) {
@@ -445,15 +515,28 @@ unset($automation);
 $stmt = $pdo->query("SELECT * FROM api_keys WHERE status = 'active'");
 $keys = $stmt->fetchAll();
 
-$stmt = $pdo->query("SELECT id, display_name, machine_name, status FROM local_agents WHERE status <> 'disabled' ORDER BY display_name ASC, machine_name ASC");
-$localAgents = $stmt->fetchAll();
+if ($isAdmin) {
+    $stmt = $pdo->query("SELECT id, display_name, machine_name, status FROM local_agents WHERE status <> 'disabled' ORDER BY display_name ASC, machine_name ASC");
+    $localAgents = $stmt->fetchAll();
+} elseif ($assignedLocalAgentId > 0) {
+    $stmt = $pdo->prepare("SELECT id, display_name, machine_name, status FROM local_agents WHERE id = ? AND status <> 'disabled' ORDER BY display_name ASC, machine_name ASC");
+    $stmt->execute([$assignedLocalAgentId]);
+    $localAgents = $stmt->fetchAll();
+} else {
+    $localAgents = [];
+}
 
 $selectedLogs = [];
 $selectedLogAutomationId = isset($_GET['logs']) ? intval($_GET['logs']) : 0;
 if ($selectedLogAutomationId > 0) {
-    $stmt = $pdo->prepare("SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 50");
-    $stmt->execute([$selectedLogAutomationId]);
-    $selectedLogs = $stmt->fetchAll();
+    $accessibleAutomation = vwm_fetch_accessible_automation($pdo, $selectedLogAutomationId);
+    if ($accessibleAutomation) {
+        $stmt = $pdo->prepare("SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 50");
+        $stmt->execute([$selectedLogAutomationId]);
+        $selectedLogs = $stmt->fetchAll();
+    } else {
+        $selectedLogAutomationId = 0;
+    }
 }
 
 include 'includes/header.php';
@@ -486,6 +569,7 @@ include 'includes/header.php';
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             View Processed Videos
         </a>
+        <?php if ($isAdmin): ?>
         <button onclick="openAllScheduledModal()" class="px-3 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg flex items-center gap-2 text-sm" title="View/Delete scheduled posts across all automations">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
             Scheduled Queue
@@ -494,7 +578,8 @@ include 'includes/header.php';
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
             Stop All
         </button>
-        <button onclick="document.getElementById('createModal').classList.remove('hidden')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-2">
+        <?php endif; ?>
+        <button onclick="document.getElementById('createModal').classList.remove('hidden')" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-2 <?= (!$isAdmin && $assignedLocalAgentId <= 0) ? 'opacity-50 cursor-not-allowed' : '' ?>" <?= (!$isAdmin && $assignedLocalAgentId <= 0) ? 'disabled title="Admin must assign a local agent first"' : '' ?>>
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
             Create Automation
         </button>
@@ -517,9 +602,11 @@ include 'includes/header.php';
             <div id="output_video_count">
                 <span class="text-gray-500 text-sm">Loading...</span>
             </div>
+            <?php if ($isAdmin): ?>
             <button id="delete_output_videos_btn" onclick="deleteAllOutputVideos()" class="hidden px-3 py-1 bg-red-600 hover:bg-red-700 rounded-lg text-sm">
                 Delete All Output Videos
             </button>
+            <?php endif; ?>
         </div>
     </div>
 </div>
@@ -530,10 +617,14 @@ function renderOutputVideoCount(data) {
 
     if (data.success && Number(data.total) > 0) {
         countEl.innerHTML = `<a href="player.php" class="px-3 py-1 bg-green-600 rounded-lg text-sm hover:bg-green-700">${data.total} videos ready to view</a>`;
-        deleteBtn.classList.remove('hidden');
+        if (deleteBtn) {
+            deleteBtn.classList.remove('hidden');
+        }
     } else {
         countEl.innerHTML = '<span class="text-gray-500 text-sm">No processed videos yet</span>';
-        deleteBtn.classList.add('hidden');
+        if (deleteBtn) {
+            deleteBtn.classList.add('hidden');
+        }
     }
 }
 
@@ -543,7 +634,10 @@ function refreshOutputVideoCount() {
         .then(renderOutputVideoCount)
         .catch(() => {
             document.getElementById('output_video_count').innerHTML = '<span class="text-gray-500 text-sm">-</span>';
-            document.getElementById('delete_output_videos_btn').classList.add('hidden');
+            const deleteBtn = document.getElementById('delete_output_videos_btn');
+            if (deleteBtn) {
+                deleteBtn.classList.add('hidden');
+            }
         });
 }
 
@@ -885,7 +979,7 @@ refreshOutputVideoCount();
                             <div class="text-lg font-bold text-green-400" id="stat-processed-<?= $automation['id'] ?>"><?= intval($lastStats['processed']) ?></div>
                             <div class="text-gray-500">Processed</div>
                         </div>
-                        <div class="p-2 bg-gradient-to-r from-indigo-900/30 to-blue-900/30 rounded border border-indigo-500/20 cursor-pointer hover:bg-indigo-900/50 transition-colors" onclick="openScheduledModal(<?= $automation['id'] ?>, '<?= htmlspecialchars($automation['name'], ENT_QUOTES) ?>')">
+                        <div class="p-2 bg-gradient-to-r from-indigo-900/30 to-blue-900/30 rounded border border-indigo-500/20 <?= $isAdmin ? 'cursor-pointer hover:bg-indigo-900/50 transition-colors' : '' ?>" <?= $isAdmin ? "onclick=\"openScheduledModal(" . (int)$automation['id'] . ", '" . htmlspecialchars($automation['name'], ENT_QUOTES) . "')\"" : '' ?>>
                             <div class="text-lg font-bold text-indigo-400" id="stat-scheduled-<?= $automation['id'] ?>"><?= intval($lastStats['scheduled']) ?></div>
                             <div class="text-gray-500 text-xs flex items-center justify-center gap-1">
                                 Scheduled <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
@@ -974,20 +1068,38 @@ refreshOutputVideoCount();
                     <label class="block text-sm text-gray-400 mb-1">Runner Mode *</label>
                     <select name="run_mode" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                         <option value="local" selected>Local Runner</option>
+                        <?php if ($canUseGithubRunner): ?>
                         <option value="github_runner">GitHub Runner</option>
+                        <?php endif; ?>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Local runs on the machine hosting this app and can auto-install FFmpeg on first run. GitHub Runner dispatches workflow in your GitHub repo.</p>
+                    <p class="text-xs text-gray-500 mt-1">
+                        <?php if ($canUseGithubRunner): ?>
+                            Local runs on the machine hosting this app and can auto-install FFmpeg on first run. GitHub Runner dispatches workflow in your GitHub repo.
+                        <?php else: ?>
+                            This account is restricted to local execution only. GitHub runner is disabled.
+                        <?php endif; ?>
+                    </p>
                 </div>
 
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Local Agent Device</label>
                     <select name="local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <?php if ($isAdmin): ?>
                         <option value="">Server machine (current host)</option>
+                        <?php elseif (empty($localAgents)): ?>
+                        <option value="">No local agent assigned</option>
+                        <?php endif; ?>
                         <?php foreach ($localAgents as $agent): ?>
-                            <option value="<?= (int)$agent['id'] ?>"><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
+                            <option value="<?= (int)$agent['id'] ?>" <?= (!$isAdmin && (int)$agent['id'] === $assignedLocalAgentId) ? 'selected' : '' ?>><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
                         <?php endforeach; ?>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.</p>
+                    <p class="text-xs text-gray-500 mt-1">
+                        <?php if ($isAdmin): ?>
+                            Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.
+                        <?php else: ?>
+                            Admin-assigned device for this user. Local jobs will run only on this paired PC.
+                        <?php endif; ?>
+                    </p>
                 </div>
                 
                 <div id="bunny_source_section" class="hidden">
@@ -1491,20 +1603,38 @@ refreshOutputVideoCount();
                     <label class="block text-sm text-gray-400 mb-1">Runner Mode *</label>
                     <select name="run_mode" id="edit_run_mode" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
                         <option value="local">Local Runner</option>
+                        <?php if ($canUseGithubRunner): ?>
                         <option value="github_runner">GitHub Runner</option>
+                        <?php endif; ?>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Local runs on the machine hosting this app and can auto-install FFmpeg on first run. Use GitHub Runner to dispatch a workflow instead.</p>
+                    <p class="text-xs text-gray-500 mt-1">
+                        <?php if ($canUseGithubRunner): ?>
+                            Local runs on the machine hosting this app and can auto-install FFmpeg on first run. Use GitHub Runner to dispatch a workflow instead.
+                        <?php else: ?>
+                            This account is restricted to local execution only. GitHub runner is disabled.
+                        <?php endif; ?>
+                    </p>
                 </div>
 
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Local Agent Device</label>
                     <select name="local_agent_id" id="edit_local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <?php if ($isAdmin): ?>
                         <option value="">Server machine (current host)</option>
+                        <?php elseif (empty($localAgents)): ?>
+                        <option value="">No local agent assigned</option>
+                        <?php endif; ?>
                         <?php foreach ($localAgents as $agent): ?>
-                            <option value="<?= (int)$agent['id'] ?>"><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
+                            <option value="<?= (int)$agent['id'] ?>" <?= (!$isAdmin && (int)$agent['id'] === $assignedLocalAgentId) ? 'selected' : '' ?>><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
                         <?php endforeach; ?>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.</p>
+                    <p class="text-xs text-gray-500 mt-1">
+                        <?php if ($isAdmin): ?>
+                            Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.
+                        <?php else: ?>
+                            Admin-assigned device for this user. Local jobs will run only on this paired PC.
+                        <?php endif; ?>
+                    </p>
                 </div>
                 
                 <div id="edit_bunny_source_section" class="hidden">
@@ -2091,6 +2221,9 @@ function applyCreateYouTubePreset(preset) {
     toggleVideoSelectionMethod();
 }
 
+const USER_CAN_USE_GITHUB_RUNNER = <?= $canUseGithubRunner ? 'true' : 'false' ?>;
+const USER_ASSIGNED_LOCAL_AGENT_ID = <?= (int)$assignedLocalAgentId ?>;
+
 // Edit Form Functions
 function showEditFormTab(tab) {
     // Hide all tabs
@@ -2206,8 +2339,8 @@ function openEditModal(automationData) {
     document.getElementById('edit_automation_id').value = automationData.id;
     document.getElementById('edit_name').value = automationData.name || '';
     document.getElementById('edit_video_source').value = automationData.video_source || 'ftp';
-    document.getElementById('edit_run_mode').value = automationData.run_mode || 'local';
-    document.getElementById('edit_local_agent_id').value = automationData.local_agent_id || '';
+    document.getElementById('edit_run_mode').value = USER_CAN_USE_GITHUB_RUNNER ? (automationData.run_mode || 'local') : 'local';
+    document.getElementById('edit_local_agent_id').value = USER_ASSIGNED_LOCAL_AGENT_ID > 0 ? USER_ASSIGNED_LOCAL_AGENT_ID : (automationData.local_agent_id || '');
     document.getElementById('edit_api_key_id').value = automationData.api_key_id || '';
     document.getElementById('edit_schedule_type').value = automationData.schedule_type || 'daily';
     document.getElementById('edit_schedule_hour').value = automationData.schedule_hour || 9;

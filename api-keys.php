@@ -1,5 +1,8 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
+
+vwm_require_app_user($pdo, true);
 
 $message = '';
 $messageType = 'success';

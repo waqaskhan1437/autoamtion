@@ -1,6 +1,9 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/LocalAgentManager.php';
+
+vwm_require_app_user($pdo, true);
 
 $manager = new LocalAgentManager($pdo);
 $message = '';

@@ -8,10 +8,13 @@ header('Content-Type: application/json');
 
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error: ' . $e->getMessage()]);
     exit;
 }
+
+vwm_require_app_user($pdo);
 
 $input = json_decode(file_get_contents('php://input'), true);
 $prompt = $input['prompt'] ?? 'Generate creative taglines for viral videos';

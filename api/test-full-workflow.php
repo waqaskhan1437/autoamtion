@@ -5,6 +5,10 @@
  */
 header('Content-Type: application/json');
 
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
+vwm_require_app_user($pdo, true);
+
 $results = [
     'timestamp' => date('Y-m-d H:i:s'),
     'tests' => []

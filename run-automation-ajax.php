@@ -18,11 +18,13 @@ ob_implicit_flush(true);
 if (ob_get_level()) ob_end_clean();
 
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/FTPAPI.php';
 require_once 'includes/FFmpegProcessor.php';
 require_once 'includes/RuntimeBootstrap.php';
 require_once 'includes/AITaglineGenerator.php';
 require_once 'includes/PostForMeAPI.php';
+vwm_require_app_user($pdo, true);
 
 $automationId = $_GET['id'] ?? $_POST['id'] ?? null;
 

@@ -37,7 +37,21 @@ define('FFPROBE_PATH', $ffprobePathFromEnv !== false && trim($ffprobePathFromEnv
 // ============================================
 // Change this password before production use.
 // On local hosts (localhost / 127.0.0.1 / private LAN IPs), auth is bypassed.
-define('APP_ACCESS_PASSWORD', 'ChangeMe@123');
+$appAccessPasswordFromEnv = getenv('VW_APP_ACCESS_PASSWORD');
+define(
+    'APP_ACCESS_PASSWORD',
+    $appAccessPasswordFromEnv !== false && trim($appAccessPasswordFromEnv) !== ''
+        ? $appAccessPasswordFromEnv
+        : 'ChangeMe@123'
+);
+define('DEFAULT_ADMIN_EMAIL', getenv('VW_DEFAULT_ADMIN_EMAIL') ?: 'admin@local');
+$defaultAdminPasswordFromEnv = getenv('VW_DEFAULT_ADMIN_PASSWORD');
+define(
+    'DEFAULT_ADMIN_PASSWORD',
+    $defaultAdminPasswordFromEnv !== false && trim($defaultAdminPasswordFromEnv) !== ''
+        ? $defaultAdminPasswordFromEnv
+        : APP_ACCESS_PASSWORD
+);
 
 // ============================================
 // FILE PATHS (Outside Code Directory)
@@ -210,6 +224,9 @@ try {
         if (!in_array('local_agent_id', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN local_agent_id INT NULL");
         }
+        if (!in_array('owner_user_id', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN owner_user_id INT NULL");
+        }
 
         // Ensure schedule_type supports minutes testing mode
         try {
@@ -278,6 +295,55 @@ try {
                 error_message TEXT NULL,
                 FOREIGN KEY (agent_id) REFERENCES local_agents(id) ON DELETE CASCADE,
                 FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                display_name VARCHAR(255) NULL,
+                client_slug VARCHAR(120) NULL,
+                role ENUM('admin', 'user') DEFAULT 'user',
+                status ENUM('active', 'disabled') DEFAULT 'active',
+                can_use_github_runner TINYINT(1) DEFAULT 0,
+                assigned_local_agent_id INT NULL,
+                last_login_at TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ");
+
+        try {
+            $userColumns = $pdo->query("SHOW COLUMNS FROM app_users")->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('client_slug', $userColumns, true)) {
+                $pdo->exec("ALTER TABLE app_users ADD COLUMN client_slug VARCHAR(120) NULL");
+            }
+            $slugIndexExists = $pdo->query("SHOW INDEX FROM app_users WHERE Key_name = 'uniq_app_users_client_slug'")->rowCount() > 0;
+            if (!$slugIndexExists) {
+                $pdo->exec("CREATE UNIQUE INDEX uniq_app_users_client_slug ON app_users (client_slug)");
+            }
+        } catch (Exception $e) {
+            // Continue even if slug migration fails.
+        }
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS magic_login_tokens (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                redirect_path VARCHAR(255) NULL,
+                expires_at DATETIME NOT NULL,
+                one_time TINYINT(1) DEFAULT 1,
+                used_at DATETIME NULL,
+                revoked_at DATETIME NULL,
+                created_by_user_id INT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL,
+                INDEX idx_magic_user_active (user_id, expires_at),
+                INDEX idx_magic_active_lookup (revoked_at, used_at, expires_at)
             )
         ");
         
@@ -364,6 +430,39 @@ try {
     if (!$tablesExist) {
         // Create all tables automatically
         $pdo->exec("
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                display_name VARCHAR(255) NULL,
+                client_slug VARCHAR(120) NULL,
+                role ENUM('admin', 'user') DEFAULT 'user',
+                status ENUM('active', 'disabled') DEFAULT 'active',
+                can_use_github_runner TINYINT(1) DEFAULT 0,
+                assigned_local_agent_id INT NULL,
+                last_login_at TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_app_users_client_slug (client_slug)
+            );
+
+            CREATE TABLE IF NOT EXISTS magic_login_tokens (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                redirect_path VARCHAR(255) NULL,
+                expires_at DATETIME NOT NULL,
+                one_time TINYINT(1) DEFAULT 1,
+                used_at DATETIME NULL,
+                revoked_at DATETIME NULL,
+                created_by_user_id INT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL,
+                INDEX idx_magic_user_active (user_id, expires_at),
+                INDEX idx_magic_active_lookup (revoked_at, used_at, expires_at)
+            );
+
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
@@ -410,6 +509,7 @@ try {
                 youtube_channel_url VARCHAR(500) NULL,
                 run_mode ENUM('local', 'github_runner') DEFAULT 'local',
                 local_agent_id INT NULL,
+                owner_user_id INT NULL,
                 api_key_id INT,
                 enabled TINYINT(1) DEFAULT 1,
                 video_days_filter INT DEFAULT 30,
@@ -461,6 +561,7 @@ try {
                 next_run_at TIMESTAMP NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_user_id) REFERENCES app_users(id) ON DELETE SET NULL,
                 FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL
             );
             
@@ -607,6 +708,80 @@ if (isset($pdo)) {
         }
     } catch (Exception $e) {
         // Continue with existing settings if default seeding fails.
+    }
+
+    try {
+        $userTableExists = $pdo->query("SHOW TABLES LIKE 'app_users'")->rowCount() > 0;
+        if ($userTableExists) {
+            $userCount = (int)$pdo->query("SELECT COUNT(*) FROM app_users")->fetchColumn();
+            if ($userCount === 0) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO app_users (
+                        email, password_hash, display_name, client_slug, role, status, can_use_github_runner
+                    ) VALUES (?, ?, ?, ?, 'admin', 'active', 1)
+                ");
+                $stmt->execute([
+                    DEFAULT_ADMIN_EMAIL,
+                    password_hash(DEFAULT_ADMIN_PASSWORD, PASSWORD_DEFAULT),
+                    'Administrator',
+                    'administrator'
+                ]);
+            }
+
+            $slugRows = $pdo->query("
+                SELECT id, email, display_name
+                FROM app_users
+                WHERE client_slug IS NULL OR TRIM(client_slug) = ''
+                ORDER BY id ASC
+            ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            foreach ($slugRows as $slugRow) {
+                $base = trim((string)($slugRow['display_name'] ?? ''));
+                if ($base === '') {
+                    $base = (string)($slugRow['email'] ?? '');
+                }
+                $base = strtolower($base);
+                if (function_exists('iconv')) {
+                    $converted = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $base);
+                    if (is_string($converted) && $converted !== '') {
+                        $base = strtolower($converted);
+                    }
+                }
+                $base = preg_replace('/[^a-z0-9]+/', '-', $base) ?? '';
+                $base = trim($base, '-');
+                if ($base === '') {
+                    $base = 'client';
+                }
+                $base = substr($base, 0, 80);
+                $slug = $base;
+                $suffix = 2;
+
+                while (true) {
+                    $check = $pdo->prepare("SELECT COUNT(*) FROM app_users WHERE client_slug = ? AND id <> ?");
+                    $check->execute([$slug, (int)$slugRow['id']]);
+                    if ((int)$check->fetchColumn() === 0) {
+                        break;
+                    }
+                    $slug = substr($base, 0, 70) . '-' . $suffix;
+                    $suffix++;
+                }
+
+                $updateSlug = $pdo->prepare("UPDATE app_users SET client_slug = ? WHERE id = ?");
+                $updateSlug->execute([$slug, (int)$slugRow['id']]);
+            }
+
+            $firstAdminId = (int)$pdo->query("SELECT id FROM app_users ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, id ASC LIMIT 1")->fetchColumn();
+            if ($firstAdminId > 0) {
+                $stmt = $pdo->prepare("
+                    UPDATE automation_settings
+                    SET owner_user_id = ?
+                    WHERE owner_user_id IS NULL
+                ");
+                $stmt->execute([$firstAdminId]);
+            }
+        }
+    } catch (Exception $e) {
+        // Continue even if user bootstrap fails.
     }
 }
 

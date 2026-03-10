@@ -7,6 +7,10 @@ error_reporting(0);
 ini_set('display_errors', 0);
 header('Content-Type: application/json');
 
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
+vwm_require_app_user($pdo, true);
+
 $results = [];
 
 // Check PHP path

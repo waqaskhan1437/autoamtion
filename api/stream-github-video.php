@@ -9,6 +9,9 @@ ini_set('display_errors', 0);
 set_time_limit(0);
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
+
+vwm_require_app_user($pdo);
 
 function sgvGithubSettings(PDO $pdo): array
 {
@@ -226,12 +229,18 @@ if (!in_array($ext, ['mp4', 'mov', 'mkv', 'webm', 'avi'], true)) {
     exit;
 }
 
-$stmt = $pdo->prepare("SELECT run_mode, progress_data FROM automation_settings WHERE id = ? LIMIT 1");
+$stmt = $pdo->prepare("SELECT owner_user_id, run_mode, progress_data FROM automation_settings WHERE id = ? LIMIT 1");
 $stmt->execute([$automationId]);
 $automation = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$automation || (string)($automation['run_mode'] ?? '') !== 'github_runner') {
     http_response_code(404);
     echo 'Automation not found for GitHub stream';
+    exit;
+}
+
+if (!vwm_can_access_automation($automation)) {
+    http_response_code(403);
+    echo 'Access denied';
     exit;
 }
 

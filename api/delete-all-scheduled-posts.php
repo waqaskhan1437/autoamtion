@@ -2,9 +2,11 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
 
 header('Content-Type: application/json');
+vwm_require_app_user($pdo, true);
 
 function vwmBulkIsActiveScheduledStatus(string $status): bool
 {

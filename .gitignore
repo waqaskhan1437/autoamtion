@@ -1,0 +1,9 @@
+cloudflare-worker/node_modules/
+cloudflare-worker/.wrangler/
+cloudflare-worker/.wrangler-dev.out.log
+cloudflare-worker/.wrangler-dev.err.log
+.wrangler/
+.wrangler-dev.out.log
+.wrangler-dev.err.log
+.wrangler-root-dev.out.log
+.wrangler-root-dev.err.log

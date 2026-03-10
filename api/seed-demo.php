@@ -1,5 +1,7 @@
 <?php
 require_once '../config.php';
+require_once '../includes/auth_gate.php';
+vwm_require_app_user($pdo, true);
 
 try {
     $stmt = $pdo->query("SELECT id FROM api_keys WHERE name = 'Demo Bunny Account'");

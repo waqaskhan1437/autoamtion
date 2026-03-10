@@ -2,7 +2,9 @@
 header('Content-Type: application/json');
 
 require_once '../config.php';
+require_once '../includes/auth_gate.php';
 require_once '../includes/PostForMeAPI.php';
+vwm_require_app_user($pdo, true);
 
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

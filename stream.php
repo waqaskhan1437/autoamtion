@@ -1,4 +1,9 @@
 <?php
+require_once 'config.php';
+require_once 'includes/auth_gate.php';
+
+vwm_require_app_user($pdo);
+
 $outputDir = (PHP_OS_FAMILY === 'Windows') 
     ? 'C:/VideoWorkflow/output/' 
     : getenv('HOME') . '/VideoWorkflow/output/';
@@ -6,7 +11,7 @@ $outputDir = (PHP_OS_FAMILY === 'Windows')
 $file = isset($_GET['file']) ? basename($_GET['file']) : '';
 $filepath = $outputDir . $file;
 
-if (!$file || !file_exists($filepath) || pathinfo($filepath, PATHINFO_EXTENSION) !== 'mp4') {
+if (!$file || !file_exists($filepath) || pathinfo($filepath, PATHINFO_EXTENSION) !== 'mp4' || !vwm_user_can_access_output_file($pdo, $file)) {
     http_response_code(404);
     echo 'Video not found';
     exit;

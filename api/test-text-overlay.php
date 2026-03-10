@@ -7,7 +7,10 @@
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/FFmpegProcessor.php';
+vwm_require_app_user($pdo, true);
 
 try {
     $ffmpeg = new FFmpegProcessor();

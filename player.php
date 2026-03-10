@@ -1,6 +1,9 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/PostForMeAPI.php';
+
+vwm_require_app_user($pdo);
 
 $message = '';
 
@@ -29,16 +32,21 @@ try {
 $videos = [];
 $localCount = 0;
 $githubCount = 0;
+$accessibleOutputs = vwm_is_admin() ? [] : vwm_collect_accessible_output_names($pdo);
 
 if (is_dir($outputDir)) {
     $files = glob($outputDir . '*.mp4');
     foreach ($files as $file) {
+        $baseName = basename($file);
+        if (!vwm_is_admin() && !isset($accessibleOutputs[strtolower($baseName)])) {
+            continue;
+        }
         $videos[] = [
-            'name' => basename($file),
+            'name' => $baseName,
             'path' => $file,
             'size' => (int)filesize($file),
             'date' => (int)filemtime($file),
-            'url' => 'stream.php?file=' . rawurlencode(basename($file)),
+            'url' => 'stream.php?file=' . rawurlencode($baseName),
             'source' => 'local',
             'automation_id' => null
         ];
@@ -48,13 +56,25 @@ if (is_dir($outputDir)) {
 
 // Add GitHub runner outputs as direct stream links (not output folder files).
 try {
-    $stmt = $pdo->query("
-        SELECT id, name, last_run_at, progress_data
-        FROM automation_settings
-        WHERE run_mode = 'github_runner'
-          AND progress_data IS NOT NULL
-    ");
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if (vwm_is_admin()) {
+        $stmt = $pdo->query("
+            SELECT id, name, last_run_at, progress_data
+            FROM automation_settings
+            WHERE run_mode = 'github_runner'
+              AND progress_data IS NOT NULL
+        ");
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT id, name, last_run_at, progress_data
+            FROM automation_settings
+            WHERE owner_user_id = ?
+              AND run_mode = 'github_runner'
+              AND progress_data IS NOT NULL
+        ");
+        $stmt->execute([vwm_current_user_id()]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
     $seenGithub = [];
 
     foreach ($rows as $row) {
@@ -97,7 +117,10 @@ usort($videos, function($a, $b) {
 });
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['delete_all'])) {
+    if (!vwm_is_admin()) {
+        http_response_code(403);
+        $message = 'Only admin can delete output files from the shared server.';
+    } elseif (isset($_POST['delete_all'])) {
         $deleted = 0;
         foreach (glob($outputDir . '*.mp4') as $file) {
             if (@unlink($file)) {
@@ -107,9 +130,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = "Deleted {$deleted} video(s)";
         header('Location: player.php');
         exit;
-    }
-
-    if (isset($_POST['delete'])) {
+    } elseif (isset($_POST['delete'])) {
         $filename = $_POST['delete'];
         $filepath = $outputDir . basename($filename);
         if (file_exists($filepath)) {
@@ -145,12 +166,14 @@ include 'includes/header.php';
         <a href="automation.php" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">
             Back to Automations
         </a>
+        <?php if (vwm_is_admin()): ?>
         <form method="POST" onsubmit="return confirm('Delete all videos from output folder?')">
             <input type="hidden" name="delete_all" value="1">
             <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg">
                 Delete All Local Videos
             </button>
         </form>
+        <?php endif; ?>
         <button onclick="location.reload()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
             Refresh
@@ -214,7 +237,7 @@ include 'includes/header.php';
                         <span><?= date('M d, H:i', $video['date']) ?></span>
                     </div>
                     <div class="flex gap-2 mt-2">
-                        <?php if (($video['source'] ?? 'local') === 'local'): ?>
+                        <?php if (($video['source'] ?? 'local') === 'local' && vwm_is_admin()): ?>
                             <button onclick="openPostModal('<?= htmlspecialchars($video['name']) ?>', '<?= htmlspecialchars($video['path']) ?>')" class="flex-1 py-1 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-700 hover:to-purple-700 rounded text-xs flex items-center justify-center gap-1" <?= empty($postformeAccounts) ? 'disabled title="Sync accounts in Settings first"' : '' ?>>
                                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
                                 Post Now
@@ -229,13 +252,15 @@ include 'includes/header.php';
                         <a href="<?= $video['url'] ?>&download=1" class="flex-1 text-center py-1 bg-indigo-600 hover:bg-indigo-700 rounded text-xs">
                             Download
                         </a>
-                        <?php if (($video['source'] ?? 'local') === 'local'): ?>
+                        <?php if (($video['source'] ?? 'local') === 'local' && vwm_is_admin()): ?>
                             <form method="POST" class="flex-1" onsubmit="return confirm('Delete this video?')">
                                 <input type="hidden" name="delete" value="<?= htmlspecialchars($video['name']) ?>">
                                 <button type="submit" class="w-full py-1 bg-red-600 hover:bg-red-700 rounded text-xs">
                                     Delete
                                 </button>
                             </form>
+                        <?php elseif (($video['source'] ?? 'local') === 'local'): ?>
+                            <div class="flex-1 py-1 bg-gray-800 rounded text-xs text-center text-gray-500">Managed by Admin</div>
                         <?php else: ?>
                             <div class="flex-1 py-1 bg-gray-800 rounded text-xs text-center text-gray-500">Remote</div>
                         <?php endif; ?>

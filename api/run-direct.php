@@ -21,6 +21,8 @@ echo "Automation ID: $automationId\n\n";
 echo "1. Loading config...\n";
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
+    vwm_require_app_user($pdo, true);
     echo "   Config loaded OK\n";
 } catch (Exception $e) {
     die("   ERROR: " . $e->getMessage() . "\n");

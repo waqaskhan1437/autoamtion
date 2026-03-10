@@ -4,6 +4,39 @@
 CREATE DATABASE IF NOT EXISTS video_workflow;
 USE video_workflow;
 
+-- Application Users Table
+CREATE TABLE IF NOT EXISTS app_users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NULL,
+    client_slug VARCHAR(120) NULL UNIQUE,
+    role ENUM('admin', 'user') DEFAULT 'user',
+    status ENUM('active', 'disabled') DEFAULT 'active',
+    can_use_github_runner TINYINT(1) DEFAULT 0,
+    assigned_local_agent_id INT NULL,
+    last_login_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS magic_login_tokens (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    redirect_path VARCHAR(255) NULL,
+    expires_at DATETIME NOT NULL,
+    one_time TINYINT(1) DEFAULT 1,
+    used_at DATETIME NULL,
+    revoked_at DATETIME NULL,
+    created_by_user_id INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id) REFERENCES app_users(id) ON DELETE SET NULL,
+    INDEX idx_magic_user_active (user_id, expires_at),
+    INDEX idx_magic_active_lookup (revoked_at, used_at, expires_at)
+);
+
 -- API Keys Table (Bunny CDN connections)
 CREATE TABLE IF NOT EXISTS api_keys (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -60,6 +93,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     youtube_channel_url VARCHAR(500) NULL,
     run_mode ENUM('local', 'github_runner') DEFAULT 'local',
     local_agent_id INT NULL,
+    owner_user_id INT NULL,
     api_key_id INT NULL,
     enabled BOOLEAN DEFAULT FALSE,
     
@@ -146,6 +180,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
+    FOREIGN KEY (owner_user_id) REFERENCES app_users(id) ON DELETE SET NULL,
     FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL
 );
 

@@ -43,7 +43,10 @@ if ($zip->open($outputPath, ZipArchive::CREATE) !== true) {
 $skipPrefixes = [
     '.git/',
     '.vs/',
-    '.idea/'
+    '.idea/',
+    'cloudflare-worker/node_modules/',
+    'cloudflare-worker/.wrangler/',
+    'node_modules/'
 ];
 
 $iterator = new RecursiveIteratorIterator(

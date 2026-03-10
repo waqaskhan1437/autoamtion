@@ -1,0 +1,11 @@
+.git
+.github
+logs
+tools
+video-workflow-edit-enabled.zip
+*.log
+*.zip
+*.sql
+node_modules
+vendor
+

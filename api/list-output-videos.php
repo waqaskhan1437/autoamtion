@@ -9,6 +9,9 @@ header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
+
+vwm_require_app_user($pdo);
 
 function lovFormatSize($bytes): string
 {
@@ -38,6 +41,7 @@ $videos = [];
 $seen = [];
 $localCount = 0;
 $githubCount = 0;
+$accessibleOutputs = vwm_is_admin() ? [] : vwm_collect_accessible_output_names($pdo);
 
 if (is_dir($outputDir)) {
     $files = scandir($outputDir, SCANDIR_SORT_DESCENDING);
@@ -46,6 +50,9 @@ if (is_dir($outputDir)) {
         $filePath = $outputDir . '/' . $file;
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!is_file($filePath) || !in_array($ext, ['mp4', 'webm', 'mov', 'avi'], true)) {
+            continue;
+        }
+        if (!vwm_is_admin() && !isset($accessibleOutputs[strtolower($file)])) {
             continue;
         }
 
@@ -74,13 +81,25 @@ if (is_dir($outputDir)) {
 
 if (isset($pdo)) {
     try {
-        $stmt = $pdo->query("
-            SELECT id, name, last_run_at, progress_data
-            FROM automation_settings
-            WHERE run_mode = 'github_runner'
-              AND progress_data IS NOT NULL
-        ");
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if (vwm_is_admin()) {
+            $stmt = $pdo->query("
+                SELECT id, name, last_run_at, progress_data
+                FROM automation_settings
+                WHERE run_mode = 'github_runner'
+                  AND progress_data IS NOT NULL
+            ");
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } else {
+            $stmt = $pdo->prepare("
+                SELECT id, name, last_run_at, progress_data
+                FROM automation_settings
+                WHERE owner_user_id = ?
+                  AND run_mode = 'github_runner'
+                  AND progress_data IS NOT NULL
+            ");
+            $stmt->execute([vwm_current_user_id()]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        }
 
         foreach ($rows as $row) {
             $automationId = (int)($row['id'] ?? 0);

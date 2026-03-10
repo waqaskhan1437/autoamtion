@@ -11,6 +11,7 @@ header('Content-Type: application/json');
 
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error']);
     exit;
@@ -20,6 +21,8 @@ if (!isset($pdo)) {
     echo json_encode(['success' => false, 'error' => 'Database not connected']);
     exit;
 }
+
+vwm_require_app_user($pdo);
 
 function cpClampPercent($value): int
 {
@@ -496,12 +499,12 @@ if ($automationId <= 0) {
 }
 
 try {
-    $stmt = $pdo->prepare("SELECT status, progress_percent, progress_data, last_progress_time, next_run_at, enabled, run_mode FROM automation_settings WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT id, owner_user_id, status, progress_percent, progress_data, last_progress_time, next_run_at, enabled, run_mode FROM automation_settings WHERE id = ?");
     $stmt->execute([$automationId]);
     $automation = $stmt->fetch();
 } catch (Exception $e) {
     try {
-        $stmt = $pdo->prepare("SELECT status FROM automation_settings WHERE id = ?");
+        $stmt = $pdo->prepare("SELECT id, owner_user_id, status FROM automation_settings WHERE id = ?");
         $stmt->execute([$automationId]);
         $automation = $stmt->fetch();
         if ($automation) {
@@ -520,6 +523,12 @@ try {
 
 if (!$automation) {
     echo json_encode(['success' => false, 'error' => 'Automation not found']);
+    exit;
+}
+
+if (!vwm_can_access_automation($automation)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Access denied for this automation']);
     exit;
 }
 

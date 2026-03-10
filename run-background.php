@@ -22,10 +22,14 @@ file_put_contents(__DIR__ . '/logs/background.log',
 
 try {
     require_once __DIR__ . '/config.php';
+    require_once __DIR__ . '/includes/auth_gate.php';
     require_once __DIR__ . '/includes/FTPAPI.php';
     require_once __DIR__ . '/includes/FFmpegProcessor.php';
     require_once __DIR__ . '/includes/RuntimeBootstrap.php';
     require_once __DIR__ . '/includes/AITaglineGenerator.php';
+    if (php_sapi_name() !== 'cli') {
+        vwm_require_app_user($pdo, true);
+    }
 } catch (Exception $e) {
     file_put_contents(__DIR__ . '/logs/background-error.log', 
         date('Y-m-d H:i:s') . " - Failed to load: " . $e->getMessage() . "\n", FILE_APPEND);

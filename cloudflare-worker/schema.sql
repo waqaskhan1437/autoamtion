@@ -1,0 +1,123 @@
+CREATE TABLE IF NOT EXISTS settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS app_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    client_slug TEXT UNIQUE,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+    can_use_github_runner INTEGER NOT NULL DEFAULT 0,
+    assigned_local_agent_id INTEGER,
+    last_login_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_app_users_role ON app_users(role, status);
+
+CREATE TABLE IF NOT EXISTS magic_login_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    redirect_path TEXT,
+    expires_at TEXT NOT NULL,
+    one_time INTEGER NOT NULL DEFAULT 1,
+    used_at TEXT,
+    revoked_at TEXT,
+    created_by_user_id INTEGER,
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_magic_tokens_lookup ON magic_login_tokens(token_hash, revoked_at, used_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS local_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER,
+    agent_key TEXT NOT NULL UNIQUE,
+    agent_secret_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    machine_name TEXT,
+    host_name TEXT,
+    platform TEXT,
+    agent_version TEXT,
+    status TEXT NOT NULL DEFAULT 'offline' CHECK (status IN ('online', 'offline', 'disabled')),
+    last_seen_at TEXT,
+    last_ip TEXT,
+    capabilities_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_local_agents_status ON local_agents(status, owner_user_id);
+
+CREATE TABLE IF NOT EXISTS automations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    run_mode TEXT NOT NULL DEFAULT 'local' CHECK (run_mode IN ('local', 'github_runner')),
+    local_agent_id INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'inactive',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    progress_data TEXT,
+    last_progress_at TEXT,
+    last_run_at TEXT,
+    next_run_at TEXT,
+    automation_json TEXT NOT NULL DEFAULT '{}',
+    api_key_json TEXT,
+    settings_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_automations_owner ON automations(owner_user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_automations_agent ON automations(local_agent_id, status);
+
+CREATE TABLE IF NOT EXISTS automation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_automation_logs_lookup ON automation_logs(automation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS local_agent_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id INTEGER NOT NULL,
+    automation_id INTEGER NOT NULL,
+    trigger_source TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'claimed', 'running', 'completed', 'error', 'cancelled')),
+    claim_token TEXT,
+    queued_at TEXT NOT NULL,
+    claimed_at TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    last_heartbeat_at TEXT,
+    result_json TEXT,
+    error_message TEXT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_queue ON local_agent_jobs(agent_id, status, queued_at);
+
+CREATE TABLE IF NOT EXISTS output_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id INTEGER NOT NULL,
+    job_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    object_key TEXT,
+    content_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    stored_in TEXT NOT NULL DEFAULT 'metadata' CHECK (stored_in IN ('metadata', 'r2')),
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_output_files_lookup ON output_files(automation_id, created_at);

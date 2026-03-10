@@ -1,5 +1,8 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
+
+vwm_require_app_user($pdo, true);
 require_once 'includes/RuntimeBootstrap.php';
 require_once 'includes/FFmpegProcessor.php';
 
@@ -175,6 +178,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute(['ytdlp_cookies_file', $_POST['ytdlp_cookies_file'] ?? '']);
         $stmt->execute(['ytdlp_cookies_browser', $_POST['ytdlp_cookies_browser'] ?? '']);
         $stmt->execute(['ytdlp_cookies_browser_profile', $_POST['ytdlp_cookies_browser_profile'] ?? '']);
+        $stmt->execute(['panel_public_base_url', trim((string)($_POST['panel_public_base_url'] ?? ''))]);
         $message = 'GitHub runner settings saved';
         
     } elseif ($action === 'test_github_runner') {
@@ -880,6 +884,12 @@ include 'includes/header.php';
             <div>
                 <label class="block text-sm text-gray-400 mb-1">Callback Secret (optional)</label>
                 <input type="text" name="github_runner_callback_secret" value="<?= htmlspecialchars($settings['github_runner_callback_secret'] ?? '') ?>" placeholder="Used by /api/github-runner-callback.php" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+            </div>
+
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Public Panel Base URL</label>
+                <input type="text" name="panel_public_base_url" value="<?= htmlspecialchars($settings['panel_public_base_url'] ?? '') ?>" placeholder="https://app.example.com/autoamtion-main" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                <p class="text-xs text-gray-500 mt-1">Local agent callbacks aur magic login links isi base URL se generate honge. Blank chhorne par current host use hoga.</p>
             </div>
 
             <div>

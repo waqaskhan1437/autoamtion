@@ -10,10 +10,13 @@ header('Content-Type: application/json');
 
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error']);
     exit;
 }
+
+vwm_require_app_user($pdo, true);
 
 $automationId = $_GET['id'] ?? $_POST['id'] ?? null;
 

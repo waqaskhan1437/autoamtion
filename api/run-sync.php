@@ -300,15 +300,15 @@ function getYouTubeChannelUrlSync($automation) {
 }
 
 $automationId = $_GET['id'] ?? null;
+$isCliRequest = (php_sapi_name() === 'cli');
 
 if (!$automationId) {
     sendDone(false, 'No automation ID provided');
 }
 
-sendProgress('init', 'info', 'Loading configuration...', 5);
-
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
     require_once __DIR__ . '/../includes/FTPAPI.php';
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/RuntimeBootstrap.php';
@@ -316,6 +316,10 @@ try {
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
+
+    if (!$isCliRequest) {
+        vwm_require_app_user($pdo);
+    }
     
     // Set global references for database updates
     $globalPdo = $pdo;
@@ -323,6 +327,8 @@ try {
 } catch (Exception $e) {
     sendDone(false, 'Failed to load: ' . $e->getMessage());
 }
+
+sendProgress('init', 'info', 'Loading configuration...', 5);
 
 // Get automation details
 try {
@@ -354,6 +360,33 @@ try {
 
 if (!$automation) {
     sendDone(false, 'Automation not found');
+}
+
+if (!$isCliRequest) {
+    if (!vwm_can_access_automation($automation)) {
+        http_response_code(403);
+        sendDone(false, 'Access denied for this automation.');
+    }
+
+    if (($automation['run_mode'] ?? 'local') === 'github_runner') {
+        sendDone(false, 'GitHub runner automations must be started through the dispatch API.');
+    }
+
+    $assignedLocalAgentId = vwm_current_user_assigned_local_agent_id();
+    if (!vwm_is_admin()) {
+        if ($assignedLocalAgentId <= 0) {
+            http_response_code(403);
+            sendDone(false, 'Admin must assign a local agent to your account first.');
+        }
+        if ((int)($automation['local_agent_id'] ?? 0) !== $assignedLocalAgentId) {
+            http_response_code(403);
+            sendDone(false, 'This automation is not assigned to your local agent.');
+        }
+    }
+
+    if ((int)($automation['local_agent_id'] ?? 0) > 0) {
+        sendDone(false, 'This automation is assigned to a local agent and must be queued through remote dispatch.');
+    }
 }
 
 $videoSource = strtolower((string)($automation['video_source'] ?? 'ftp'));

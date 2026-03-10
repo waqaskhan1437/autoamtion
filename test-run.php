@@ -8,9 +8,11 @@ ini_set('display_errors', 1);
 set_time_limit(300); // 5 minutes max
 
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/FTPAPI.php';
 require_once 'includes/FFmpegProcessor.php';
 require_once 'includes/AITaglineGenerator.php';
+vwm_require_app_user($pdo, true);
 
 header('Content-Type: text/html; charset=utf-8');
 

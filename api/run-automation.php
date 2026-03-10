@@ -7,7 +7,9 @@
 header('Content-Type: application/json');
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/AutomationRunner.php';
+vwm_require_app_user($pdo, true);
 
 // Get automation ID
 $automationId = $_GET['id'] ?? $_POST['id'] ?? null;

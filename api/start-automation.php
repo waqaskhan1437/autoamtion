@@ -12,6 +12,7 @@ header('Content-Type: application/json');
 
 try {
     require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/auth_gate.php';
     require_once __DIR__ . '/../includes/GitHubRunner.php';
     require_once __DIR__ . '/../includes/LocalAgentManager.php';
 } catch (Exception $e) {
@@ -23,6 +24,8 @@ if (!isset($pdo)) {
     echo json_encode(['success' => false, 'error' => 'Database connection failed']);
     exit;
 }
+
+vwm_require_app_user($pdo);
 
 function calculateNextRunAtStart(string $scheduleType, int $scheduleHour, int $scheduleEveryMinutes = 10): string
 {
@@ -59,7 +62,7 @@ if (!$automationId) {
 }
 
 $stmt = $pdo->prepare("
-    SELECT id, name, status, enabled, run_mode, local_agent_id, schedule_type, schedule_hour, schedule_every_minutes
+    SELECT id, name, owner_user_id, status, enabled, run_mode, local_agent_id, schedule_type, schedule_hour, schedule_every_minutes
     FROM automation_settings
     WHERE id = ?
 ");
@@ -68,6 +71,12 @@ $automation = $stmt->fetch();
 
 if (!$automation) {
     echo json_encode(['success' => false, 'error' => 'Automation not found']);
+    exit;
+}
+
+if (!vwm_can_access_automation($automation)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Access denied for this automation']);
     exit;
 }
 
@@ -82,6 +91,26 @@ if ($automation['status'] === 'queued') {
 }
 
 $runMode = $automation['run_mode'] ?? 'local';
+$assignedLocalAgentId = vwm_current_user_assigned_local_agent_id();
+
+if ($runMode === 'github_runner' && !vwm_current_user_can_use_github_runner()) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Your account is restricted to local execution only']);
+    exit;
+}
+
+if (!vwm_is_admin() && $runMode === 'local') {
+    if ($assignedLocalAgentId <= 0) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Admin must assign a local agent to your account first']);
+        exit;
+    }
+    if ((int)($automation['local_agent_id'] ?? 0) !== $assignedLocalAgentId) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'This automation is not assigned to your local agent']);
+        exit;
+    }
+}
 
 if ($runMode === 'github_runner') {
     $startPayload = json_encode([

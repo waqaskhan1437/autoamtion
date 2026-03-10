@@ -1,8 +1,10 @@
 <?php
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
 
 header('Content-Type: application/json');
+vwm_require_app_user($pdo, true);
 
 try {
     $automationId = isset($_GET['automation_id']) ? (int)$_GET['automation_id'] : 0;

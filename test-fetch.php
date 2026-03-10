@@ -1,8 +1,10 @@
 <?php
 require_once 'config.php';
+require_once 'includes/auth_gate.php';
 require_once 'includes/BunnyAPI.php';
 require_once 'includes/FTPAPI.php';
 require_once 'includes/YouTubeSource.php';
+vwm_require_app_user($pdo, true);
 
 header('Content-Type: application/json');
 
