@@ -4,7 +4,8 @@ import { bootstrapSchemaStatements } from './schema.js'
 const textEncoder = new TextEncoder()
 const sessionCookieName = 'vw_session'
 const defaultSessionTtlSeconds = 60 * 60 * 24 * 7
-const passwordIterations = 210000
+const maxPasswordIterations = 100000
+const passwordIterations = maxPasswordIterations
 let schemaReadyPromise = null
 
 export default {
@@ -1858,8 +1859,9 @@ async function ensureUniqueClientSlug(env, value, excludeUserId) {
 
 async function hashPassword(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16))
-  const key = await derivePasswordKey(password, salt, passwordIterations)
-  return `pbkdf2$${passwordIterations}$${arrayBufferToBase64(salt)}$${arrayBufferToBase64(key)}`
+  const iterations = normalizePasswordIterations(passwordIterations)
+  const key = await derivePasswordKey(password, salt, iterations)
+  return `pbkdf2$${iterations}$${arrayBufferToBase64(salt)}$${arrayBufferToBase64(key)}`
 }
 
 async function verifyPassword(password, storedHash) {
@@ -1867,7 +1869,11 @@ async function verifyPassword(password, storedHash) {
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') {
     return false
   }
-  const iterations = Number(parts[1]) || passwordIterations
+  const requestedIterations = Number(parts[1]) || passwordIterations
+  const iterations = normalizePasswordIterations(requestedIterations)
+  if (iterations !== requestedIterations) {
+    return false
+  }
   const salt = base64ToUint8Array(parts[2])
   const expected = parts[3]
   const key = await derivePasswordKey(password, salt, iterations)
@@ -1877,6 +1883,14 @@ async function verifyPassword(password, storedHash) {
 async function derivePasswordKey(password, salt, iterations) {
   const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits'])
   return await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, keyMaterial, 256)
+}
+
+function normalizePasswordIterations(value) {
+  const iterations = Number(value)
+  if (!Number.isFinite(iterations) || iterations < 1) {
+    return passwordIterations
+  }
+  return Math.min(Math.floor(iterations), maxPasswordIterations)
 }
 
 async function sha256Hex(value) {
