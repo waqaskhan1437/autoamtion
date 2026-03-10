@@ -108,6 +108,27 @@ export default {
         return handleAutomationStatusApi(request, env, session.user)
       }
 
+      if (path === '/api/scheduled-posts' && request.method === 'GET') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleScheduledPostsApi(request, env, session.user)
+      }
+
+      if (path === '/api/delete-scheduled-post' && request.method === 'POST') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleDeleteScheduledPostApi(request, env, session.user)
+      }
+
+      if (path === '/api/delete-all-scheduled-posts' && request.method === 'POST') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleDeleteAllScheduledPostsApi(request, env, session.user)
+      }
+
       if (path === '/' && !session.user) {
         return redirectResponse('/login')
       }
@@ -126,6 +147,10 @@ export default {
 
       if (path === '/dashboard' && request.method === 'POST') {
         return handleAutomationAction(request, env, session.user)
+      }
+
+      if (path === '/jobs' && request.method === 'GET') {
+        return renderJobsPage(request, env, session.user, null)
       }
 
       if (path === '/automation' && request.method === 'GET') {
@@ -174,6 +199,10 @@ export default {
       if (path === '/admin/agents' && request.method === 'POST') {
         requireAdmin(session.user)
         return handleAgentsAction(request, env, session.user)
+      }
+
+      if (path === '/player' && request.method === 'GET') {
+        return renderPlayerPage(request, env, session.user, null)
       }
 
       const outputMatch = path.match(/^\/outputs\/(\d+)$/)
@@ -694,6 +723,53 @@ async function handleAutomationAction(request, env, user) {
     return renderAutomationPage(request, env, user, { success: `Automation ${automation.name} stopped.` })
   }
 
+  if (action === 'stop_all_automations') {
+    requireAdmin(user)
+    const now = isoNow()
+    const rows = await env.DB.prepare(`
+      SELECT id, name, progress_percent
+      FROM automations
+      WHERE status IN ('queued', 'running', 'processing', 'claimed')
+         OR enabled = 1
+    `).all()
+    const automations = rows.results || []
+
+    for (const automation of automations) {
+      await cancelPendingJobsForAutomation(env, Number(automation.id), 'Stopped by admin from Stop All.')
+      await env.DB.batch([
+        env.DB.prepare(`
+          UPDATE automations
+          SET enabled = 0, status = 'stopped', next_run_at = NULL, progress_data = ?, last_progress_at = ?, updated_at = ?
+          WHERE id = ?
+        `).bind(
+          JSON.stringify({
+            step: 'manual_stop',
+            status: 'warning',
+            event_status: 'warning',
+            message: 'Automation stopped by admin from Stop All.',
+            progress: Number(automation.progress_percent || 0),
+            stats: {},
+            outputs: [],
+            time: now
+          }),
+          now,
+          now,
+          Number(automation.id)
+        ),
+        env.DB.prepare(`
+          INSERT INTO automation_logs (automation_id, action, status, message, created_at)
+          VALUES (?, 'manual_stop_all', 'warning', ?, ?)
+        `).bind(Number(automation.id), 'Automation stopped by admin from Stop All.', now)
+      ])
+    }
+
+    return renderAutomationPage(request, env, user, {
+      success: automations.length
+        ? `Stopped ${automations.length} automation(s).`
+        : 'No running or enabled automations were found.'
+    })
+  }
+
   if (action === 'reset_rotation') {
     const automationId = toInt(form.get('automation_id'))
     const automation = await getAutomationById(env, automationId)
@@ -729,6 +805,8 @@ async function handleAutomationAction(request, env, user) {
     if (!automation || !canAccessAutomation(user, automation)) {
       return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
     }
+    await cancelPendingJobsForAutomation(env, automationId, 'Automation deleted.')
+    await env.DB.prepare('DELETE FROM scheduled_posts WHERE automation_id = ?').bind(automationId).run()
     await env.DB.prepare('DELETE FROM automations WHERE id = ?').bind(automationId).run()
     await env.DB.prepare('DELETE FROM automation_logs WHERE automation_id = ?').bind(automationId).run()
     return renderAutomationPage(request, env, user, { success: `Automation ${automation.name} deleted.` })
@@ -1014,6 +1092,7 @@ async function completeJob(env, payload, request) {
     status === 'error' ? String(resultPayload.message || 'Agent execution failed.') : null,
     jobId
   ).run()
+  await syncScheduledPostsFromJobResult(env, job, { ...resultPayload, status }, now)
   await touchAgentByJob(env, job, request)
   return { success: true }
 }
@@ -1072,11 +1151,17 @@ async function renderDashboardPage(request, env, user, feedback) {
   const automations = await listAutomationsForUser(env, user)
   const agents = await listVisibleAgents(env, user)
   const outputs = await listRecentOutputsForUser(env, user, 24)
+  const stats = await getDashboardStats(env, user)
+  const recentJobs = await listRecentJobsForUser(env, user, 10)
+  const scheduledPosts = await listScheduledPostsForUser(env, user, { limit: 12, activeOnly: true })
   const body = renderDashboardBody({
     user,
     automations,
     agents,
     outputs,
+    stats,
+    recentJobs,
+    scheduledPosts,
     feedback
   })
   return htmlResponse(renderPage({
@@ -1087,11 +1172,24 @@ async function renderDashboardPage(request, env, user, feedback) {
   }))
 }
 
+async function renderJobsPage(request, env, user, feedback) {
+  const jobs = await listRecentJobsForUser(env, user, 40)
+  return htmlResponse(renderPage({
+    title: 'Jobs',
+    user,
+    body: renderJobsBody({ jobs, feedback }),
+    currentPath: '/jobs'
+  }))
+}
+
 async function renderAutomationPage(request, env, user, feedback) {
   const url = new URL(request.url)
   const automations = await listAutomationsForUser(env, user)
   const agents = await listVisibleAgents(env, user)
   const apiKeys = await listApiKeys(env)
+  const outputSummary = await getOutputSummaryForUser(env, user)
+  const scheduledPosts = await listScheduledPostsForUser(env, user, { limit: 40, activeOnly: true })
+  const scheduledCounts = await countScheduledPostsByAutomation(env, user)
   const editId = toInt(url.searchParams.get('edit'))
   const createMode = url.searchParams.get('create') === '1'
   const logAutomationId = toInt(url.searchParams.get('logs'))
@@ -1118,6 +1216,9 @@ async function renderAutomationPage(request, env, user, feedback) {
       automations,
       agents,
       apiKeys,
+      outputSummary,
+      scheduledPosts,
+      scheduledCounts,
       feedback,
       editor: buildAutomationEditorState(editingAutomation),
       editorOpen: createMode || !!editingAutomation,
@@ -1175,6 +1276,17 @@ async function renderAgentsPage(request, env, adminUser, feedback) {
       installManifest: manifest
     }),
     currentPath: '/admin/agents'
+  }))
+}
+
+async function renderPlayerPage(request, env, user, feedback) {
+  const outputs = await listRecentOutputsForUser(env, user, 60)
+  const summary = await getOutputSummaryForUser(env, user)
+  return htmlResponse(renderPage({
+    title: 'Player',
+    user,
+    body: renderPlayerBody({ outputs, summary, feedback }),
+    currentPath: '/player'
   }))
 }
 
@@ -1296,6 +1408,68 @@ async function handleAutomationStatusApi(request, env, user) {
   })
 }
 
+async function handleScheduledPostsApi(request, env, user) {
+  const url = new URL(request.url)
+  const automationId = toInt(url.searchParams.get('automation_id'))
+  const posts = await listScheduledPostsForUser(env, user, {
+    automationId: automationId > 0 ? automationId : null,
+    limit: Math.min(100, Math.max(1, toInt(url.searchParams.get('limit')) || 100)),
+    activeOnly: !url.searchParams.has('all')
+  })
+
+  return jsonResponse({
+    success: true,
+    posts,
+    server_time: isoNow()
+  })
+}
+
+async function handleDeleteScheduledPostApi(request, env, user) {
+  requireAdmin(user)
+  const form = await request.formData()
+  const postId = toInt(form.get('id'))
+  if (postId <= 0) {
+    return jsonResponse({ success: false, error: 'Missing scheduled post id.' }, 400)
+  }
+
+  const now = isoNow()
+  const result = await env.DB.prepare(`
+    UPDATE scheduled_posts
+    SET status = 'cancelled', updated_at = ?
+    WHERE id = ? AND status IN ('queued', 'scheduled', 'processing')
+  `).bind(now, postId).run()
+
+  if (Number(result.meta?.changes || 0) === 0) {
+    return jsonResponse({ success: false, error: 'Scheduled post not found or already inactive.' }, 404)
+  }
+
+  return jsonResponse({ success: true, message: 'Scheduled post cancelled.' })
+}
+
+async function handleDeleteAllScheduledPostsApi(request, env, user) {
+  requireAdmin(user)
+  const form = await request.formData()
+  const automationId = toNullableInt(form.get('automation_id'))
+  const now = isoNow()
+  const bindArgs = [now]
+  let sql = `
+    UPDATE scheduled_posts
+    SET status = 'cancelled', updated_at = ?
+    WHERE status IN ('queued', 'scheduled', 'processing')
+  `
+
+  if (automationId) {
+    sql += ' AND automation_id = ?'
+    bindArgs.push(automationId)
+  }
+
+  const result = await env.DB.prepare(sql).bind(...bindArgs).run()
+  return jsonResponse({
+    success: true,
+    message: `${Number(result.meta?.changes || 0)} scheduled post(s) cancelled.`
+  })
+}
+
 function renderLoginBody({ errorMessage, next, appName }) {
   return `
     <section class="panel auth-panel">
@@ -1334,166 +1508,156 @@ function renderFeedback(feedback) {
   return notices.join('')
 }
 
-function renderDashboardBody({ user, automations, agents, outputs, feedback }) {
-  const visibleAgentOptions = agents.map((agent) => `
-    <option value="${agent.id}">${escapeHtml(agent.display_name || `Agent #${agent.id}`)}${agent.status === 'disabled' ? ' (disabled)' : ''}</option>
-  `).join('')
-
-  const cards = automations.map((automation) => {
-    const jsonBody = prettyJson(parseJsonMaybe(automation.automation_json, {}))
-    const apiKeyBody = automation.api_key_json ? prettyJson(parseJsonMaybe(automation.api_key_json, {})) : ''
-    const settingsBody = automation.settings_json ? prettyJson(parseJsonMaybe(automation.settings_json, {})) : ''
-    const progress = Number(automation.progress_percent || 0)
+function renderScheduledPostEntries(posts, { emptyTitle = 'No scheduled posts', emptyMessage = 'Nothing is waiting in the queue.', manageable = false } = {}) {
+  if (!posts.length) {
     return `
-      <article class="panel automation-card">
-        <div class="card-head">
-          <div>
-            <h2>${escapeHtml(automation.name)}</h2>
-            <p class="muted compact">Status: ${escapeHtml(automation.status)} | Run mode: ${escapeHtml(automation.run_mode)} | Agent: ${escapeHtml(automation.agent_name || '-')}</p>
-          </div>
-          <div class="badge">${progress}%</div>
-        </div>
-        <div class="progress-bar"><span style="width:${progress}%"></span></div>
-        <form method="POST" action="/dashboard" class="stack compact-form">
-          <input type="hidden" name="action" value="save_automation">
-          <input type="hidden" name="automation_id" value="${automation.id}">
-          <label class="field"><span>Name</span><input type="text" name="name" value="${escapeHtml(automation.name)}" required></label>
-          <div class="grid two">
-            <label class="field">
-              <span>Run Mode</span>
-              <select name="run_mode">
-                <option value="local"${automation.run_mode === 'local' ? ' selected' : ''}>Local</option>
-                <option value="github_runner"${automation.run_mode === 'github_runner' ? ' selected' : ''}>GitHub Runner</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Local Agent</span>
-              <select name="local_agent_id">
-                <option value="">Unassigned</option>
-                ${agents.map((agent) => `<option value="${agent.id}"${Number(automation.local_agent_id || 0) === Number(agent.id) ? ' selected' : ''}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`).join('')}
-              </select>
-            </label>
-          </div>
-          <label class="toggle"><input type="checkbox" name="enabled"${automation.enabled ? ' checked' : ''}> <span>Enabled</span></label>
-          <label class="field"><span>Automation JSON</span><textarea name="automation_json" rows="12">${escapeHtml(jsonBody)}</textarea></label>
-          <label class="field"><span>API Key JSON</span><textarea name="api_key_json" rows="6">${escapeHtml(apiKeyBody)}</textarea></label>
-          <label class="field"><span>Settings JSON</span><textarea name="settings_json" rows="6">${escapeHtml(settingsBody)}</textarea></label>
-          <div class="toolbar">
-            <button type="submit" class="button">Save</button>
-          </div>
-        </form>
-        <div class="toolbar">
-          <form method="POST" action="/dashboard">
-            <input type="hidden" name="action" value="queue_automation">
-            <input type="hidden" name="automation_id" value="${automation.id}">
-            <button type="submit" class="button primary">Queue Now</button>
-          </form>
-          <form method="POST" action="/dashboard">
-            <input type="hidden" name="action" value="delete_automation">
-            <input type="hidden" name="automation_id" value="${automation.id}">
-            <button type="submit" class="button ghost">Delete</button>
-          </form>
-        </div>
-      </article>
+      <div class="text-center py-12 text-gray-400">
+        <p class="text-lg mb-1">${escapeHtml(emptyTitle)}</p>
+        <p class="text-sm">${escapeHtml(emptyMessage)}</p>
+      </div>
     `
-  }).join('')
+  }
 
-  const outputRows = outputs.map((output) => `
-    <tr>
-      <td>${escapeHtml(output.filename)}</td>
-      <td>${escapeHtml(output.stored_in)}</td>
-      <td>${escapeHtml(output.created_at)}</td>
-      <td>${output.stored_in === 'r2' ? `<a class="inline-link" href="/outputs/${output.id}">Open</a>` : '<span class="muted">Metadata only</span>'}</td>
-    </tr>
+  return posts.map((post) => `
+    <div class="job-row scheduled-row" data-scheduled-post="${post.id}" data-automation-id="${post.automation_id}">
+      <div class="job-main">
+        <div class="font-medium">${escapeHtml(post.caption || post.filename || `Scheduled Post #${post.id}`)}</div>
+        <div class="text-sm text-gray-400">${escapeHtml(post.automation_name || `Automation #${post.automation_id}`)} | ${post.account_count} account(s)</div>
+        <div class="text-xs text-gray-500">${escapeHtml(post.scheduled_at ? formatDisplayDateTime(post.scheduled_at) : 'Waiting for remote schedule time')}</div>
+      </div>
+      <div class="job-side">
+        <div class="status-pill ${automationStatusClass(post.status)}">${escapeHtml(post.status)}</div>
+        ${manageable ? `<button type="button" class="button ghost danger-button" onclick="workerDeleteScheduledPost(${post.id})">Delete</button>` : ''}
+      </div>
+    </div>
   `).join('')
+}
+
+function renderDashboardBody({ user, outputs, stats, recentJobs, scheduledPosts, feedback }) {
+  const totalJobs = Number(stats.totalJobs || 0)
+  const completedJobs = Number(stats.completedJobs || 0)
+  const processingJobs = Number(stats.processingJobs || 0)
+  const failedJobs = Number(stats.failedJobs || 0)
+  const activeKeys = Number(stats.activeKeys || 0)
+  const activeAutomations = Number(stats.automations || 0)
+  const scheduledPostCount = Number(stats.scheduledPosts || 0)
+  const postedPosts = Number(stats.postedPosts || 0)
+
+  const recentJobsMarkup = recentJobs.length
+    ? recentJobs.map((job) => `
+      <div class="job-row">
+        <div class="job-main">
+          <div class="font-medium">${escapeHtml(job.name || `Job #${job.id}`)}</div>
+          <div class="text-sm text-gray-400 font-mono">${escapeHtml(job.type || job.trigger_source || 'local_agent')}</div>
+        </div>
+        <div class="job-side">
+          ${['queued', 'claimed', 'running', 'processing'].includes(String(job.status || '').toLowerCase()) ? `
+            <div class="mini-progress">
+              <div class="mini-progress-bar" style="width:${clampInt(job.progress_percent || 0, 0, 100)}%"></div>
+            </div>
+          ` : ''}
+          <div class="text-sm font-mono w-12 text-right">${clampInt(job.progress_percent || 0, 0, 100)}%</div>
+          <div class="status-pill ${automationStatusClass(job.status)}">${escapeHtml(job.status || 'unknown')}</div>
+        </div>
+      </div>
+    `).join('')
+    : `
+      <div class="text-center py-12 text-gray-400">
+        No jobs yet. Create an automation and run it from the Automation page.
+      </div>
+    `
 
   return `
     ${renderFeedback(feedback)}
-    <section class="dashboard-grid">
-      <section class="panel span-two">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">${escapeHtml(user.role)}</div>
-            <h1>${escapeHtml(user.display_name || user.email)}</h1>
-          </div>
-          <div class="meta-actions">
-            ${user.role === 'admin' ? `<a class="button" href="/admin/users">Users</a><a class="button" href="/admin/agents">Agents</a>` : ''}
-            <form method="POST" action="/logout"><button type="submit" class="button ghost">Logout</button></form>
-          </div>
-        </div>
-        <div class="stats-row">
-          <div class="metric"><span>${automations.length}</span><small>Automations</small></div>
-          <div class="metric"><span>${agents.length}</span><small>Visible agents</small></div>
-          <div class="metric"><span>${outputs.length}</span><small>Recent outputs</small></div>
-        </div>
-      </section>
+    <div class="page-head">
+      <div>
+        <h2 class="text-xl font-semibold">Dashboard Overview</h2>
+        <p class="text-sm text-gray-400 mt-1">Monitor your video workflows and automations</p>
+      </div>
+      ${user.role === 'admin' ? `<a href="/automation?create=1" class="button">Create Automation</a>` : ''}
+    </div>
 
-      <section class="panel">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Create New</div>
-            <h2>Automation</h2>
-          </div>
-        </div>
-        <form method="POST" action="/dashboard" class="stack">
-          <input type="hidden" name="action" value="save_automation">
-          <label class="field"><span>Name</span><input type="text" name="name" placeholder="Client local workflow" required></label>
-          <div class="grid two">
-            <label class="field">
-              <span>Run Mode</span>
-              <select name="run_mode">
-                <option value="local">Local</option>
-                <option value="github_runner"${user.can_use_github_runner || user.role === 'admin' ? '' : ' disabled'}>GitHub Runner</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Local Agent</span>
-              <select name="local_agent_id">
-                <option value="">Unassigned</option>
-                ${visibleAgentOptions}
-              </select>
-            </label>
-          </div>
-          <label class="toggle"><input type="checkbox" name="enabled" checked> <span>Enabled</span></label>
-          <label class="field"><span>Automation JSON</span><textarea name="automation_json" rows="10">{}</textarea></label>
-          <label class="field"><span>API Key JSON</span><textarea name="api_key_json" rows="5"></textarea></label>
-          <label class="field"><span>Settings JSON</span><textarea name="settings_json" rows="5"></textarea></label>
-          <button type="submit" class="button primary">Save Automation</button>
-        </form>
-      </section>
+    <div class="stats-grid stats-grid-six">
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Total Jobs</span></div><div class="stat-value">${totalJobs}</div></div>
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Completed</span></div><div class="stat-value text-green-500">${completedJobs}</div></div>
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Processing</span></div><div class="stat-value text-indigo-500">${processingJobs}</div></div>
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Failed</span></div><div class="stat-value text-red-500">${failedJobs}</div></div>
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Active Keys</span></div><div class="stat-value">${activeKeys}</div></div>
+      <div class="card rounded-lg p-4 stat-card"><div class="stat-head"><span class="text-sm text-gray-400">Active Automations</span></div><div class="stat-value text-yellow-500">${activeAutomations}</div></div>
+    </div>
 
-      <section class="panel span-two">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Queue + Status</div>
-            <h2>Automations</h2>
-          </div>
-        </div>
-        ${cards || '<p class="muted">No automations created yet.</p>'}
-      </section>
+    <div class="stats-grid stats-grid-three">
+      <div class="card rounded-lg p-4 stat-card clickable-card" onclick="workerSwitchDashboardTab('scheduled')">
+        <div class="stat-head"><span class="text-sm text-orange-400 font-medium">Pending Scheduled</span></div>
+        <div class="stat-value text-orange-500">${scheduledPostCount}</div>
+        <div class="text-xs text-gray-500 mt-1">Click to view upcoming posts</div>
+      </div>
+      <div class="card rounded-lg p-4 stat-card clickable-card" onclick="workerSwitchDashboardTab('scheduled')">
+        <div class="stat-head"><span class="text-sm text-pink-400 font-medium">Posted Posts</span></div>
+        <div class="stat-value text-pink-500">${postedPosts}</div>
+        <div class="text-xs text-gray-500 mt-1">Counts uploaded outputs reported by agents</div>
+      </div>
+      <div class="card rounded-lg p-4 stat-card">
+        <div class="stat-head"><span class="text-sm text-sky-400 font-medium">Recent Outputs</span></div>
+        <div class="stat-value text-sky-400">${outputs.length}</div>
+        <div class="text-xs text-gray-500 mt-1">Open full list from Player</div>
+      </div>
+    </div>
 
-      <section class="panel span-two">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Output Feed</div>
-            <h2>Recent Output Reports</h2>
+    <div class="tab-inline-nav">
+      <button onclick="workerSwitchDashboardTab('jobs')" id="tab-jobs" class="tab-inline active">Recent Jobs</button>
+      <button onclick="workerSwitchDashboardTab('scheduled')" id="tab-scheduled" class="tab-inline">
+        Scheduled Posts
+        ${scheduledPostCount > 0 ? `<span class="tab-count">${scheduledPostCount}</span>` : ''}
+      </button>
+    </div>
+
+    <div id="panel-jobs">
+      <div class="card rounded-lg">
+        <div class="p-4 border-b border-gray-800">
+          <h3 class="text-lg font-semibold">Recent Jobs</h3>
+        </div>
+        <div class="p-4">
+          <div class="space-y-2">${recentJobsMarkup}</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-scheduled" class="hidden">
+      <div class="card rounded-lg">
+        <div class="p-4 border-b border-gray-800 flex items-center justify-between">
+          <h3 class="text-lg font-semibold flex items-center gap-2">Scheduled Posts</h3>
+          <button type="button" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm" onclick="window.location.reload()">Refresh</button>
+        </div>
+        <div class="p-4">
+          <div class="space-y-2">
+            ${renderScheduledPostEntries(scheduledPosts, {
+              emptyTitle: 'No scheduled posts',
+              emptyMessage: user.role === 'admin'
+                ? 'Scheduled queue will appear here when Post for Me jobs are queued from automations.'
+                : 'No scheduled items are visible for this account yet.'
+            })}
           </div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Filename</th><th>Storage</th><th>Created</th><th>Access</th></tr></thead>
-            <tbody>${outputRows || '<tr><td colspan="4" class="muted">No output has been uploaded yet.</td></tr>'}</tbody>
-          </table>
-        </div>
-      </section>
-    </section>
+      </div>
+    </div>
+
+    <script>
+      function workerSwitchDashboardTab(tab) {
+        document.getElementById('panel-jobs')?.classList.toggle('hidden', tab !== 'jobs');
+        document.getElementById('panel-scheduled')?.classList.toggle('hidden', tab !== 'scheduled');
+        document.getElementById('tab-jobs')?.classList.toggle('active', tab === 'jobs');
+        document.getElementById('tab-scheduled')?.classList.toggle('active', tab === 'scheduled');
+      }
+    </script>
   `
 }
 
-function renderAutomationBody({ user, automations, agents, apiKeys, feedback, editor, editorOpen, logAutomation }) {
+function renderAutomationBody({ user, automations, agents, apiKeys, outputSummary, scheduledPosts, scheduledCounts, feedback, editor, editorOpen, logAutomation }) {
   const cards = automations.map((automation) => {
     const config = parseJsonMaybe(automation.automation_json, {})
     const progressState = parseJsonMaybe(automation.progress_data, {})
+    const automationNameJs = JSON.stringify(String(automation.name || ''))
     const source = String(config.video_source || 'ftp')
     const schedule = String(config.schedule_type || 'daily')
     const videosPerRun = config.videos_per_run ?? '-'
@@ -1506,6 +1670,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
     const shortsLabel = String(config.source_shorts_mode || 'single') === 'single'
       ? '1 short/source'
       : `up to ${String(config.source_shorts_max_count || 1)} shorts/source`
+    const scheduledCount = Number(scheduledCounts.get(Number(automation.id)) || 0)
     const statusClass = automationStatusClass(automation.status)
     const isRunning = ['queued', 'processing', 'running'].includes(String(automation.status || '').toLowerCase())
     return `
@@ -1572,6 +1737,12 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
             </form>
           ` : ''}
 
+          <button
+            type="button"
+            class="button"
+            onclick='workerOpenScheduledModal(${automation.id}, ${automationNameJs})'
+          >Scheduled Queue${scheduledCount > 0 ? ` (${scheduledCount})` : ''}</button>
+
           <a class="button" href="/automation?edit=${automation.id}">Edit</a>
 
           <form method="POST" action="/automation" onsubmit="return confirm('Delete this automation?')">
@@ -1586,18 +1757,41 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
 
   return `
     ${renderFeedback(feedback)}
+    <div class="page-head">
+      <div>
+        <h2 class="text-xl font-semibold">Video Automations</h2>
+        <p class="text-sm text-gray-400 mt-1">Auto-convert videos to shorts and manage queue, outputs, and local execution from the Worker dashboard.</p>
+      </div>
+      <div class="toolbar wrap">
+        <a class="button" href="/player">View Processed Videos</a>
+        <button type="button" class="button" onclick="workerOpenScheduledModal(0, 'All Automations')">Scheduled Queue</button>
+        ${user.role === 'admin' ? `
+          <form method="POST" action="/automation" onsubmit="return confirm('Stop all running and enabled automations?')">
+            <input type="hidden" name="action" value="stop_all_automations">
+            <button class="button ghost danger-button" type="submit">Stop All</button>
+          </form>
+        ` : ''}
+        <a class="button primary" href="/automation?create=1">Create Automation</a>
+      </div>
+    </div>
+
+    <div class="card rounded-lg p-4 output-summary-card">
+      <div class="section-head">
+        <div>
+          <h3 class="text-lg font-semibold">Output Summary</h3>
+          <p class="text-sm text-gray-400 mt-1">Worker-tracked outputs and scheduled queue visibility.</p>
+        </div>
+        <a class="button ghost" href="/player">Open Player</a>
+      </div>
+      <div class="stats-row">
+        <div class="metric"><span>${Number(outputSummary.total || 0)}</span><small>Total Outputs</small></div>
+        <div class="metric"><span>${Number(outputSummary.r2Count || 0)}</span><small>R2 Ready</small></div>
+        <div class="metric"><span>${Number(outputSummary.metadataCount || 0)}</span><small>Metadata Only</small></div>
+      </div>
+    </div>
+
     <section class="dashboard-grid">
       <section class="panel span-two">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Legacy Automation Shell</div>
-            <h1>Automation Library</h1>
-            <p class="lead">This Worker page mirrors the old automation setup: modal editor, tabbed create/update flow, queue actions, runtime logs, and local-agent dispatch.</p>
-          </div>
-          <div class="toolbar wrap">
-            <a class="button primary" href="/automation?create=1">Create Automation</a>
-          </div>
-        </div>
         ${cards || `
           <div class="note-card empty-state">
             <strong>No automations yet</strong>
@@ -1609,28 +1803,22 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
       <section class="panel">
         <div class="section-head">
           <div>
-            <div class="eyebrow">Parity Notes</div>
-            <h2>Worker View</h2>
+            <div class="eyebrow">Queue Snapshot</div>
+            <h2>Scheduled Posts</h2>
           </div>
+          <button type="button" class="button ghost" onclick="workerOpenScheduledModal(0, 'All Automations')">Manage</button>
         </div>
-        <div class="stack">
-          <div class="note-card">
-            <strong>Local runner</strong>
-            <div class="muted compact">Choose <code>Local Runner</code> plus an assigned agent to keep processing on the customer PC.</div>
-          </div>
-          <div class="note-card">
-            <strong>Tabs + settings</strong>
-            <div class="muted compact">Use <a class="inline-link" href="/settings">Settings</a> and <a class="inline-link" href="/api-keys">API Keys</a> exactly like the old FTP, AI, FFmpeg, storage, and Bunny setup flow.</div>
-          </div>
-          <div class="note-card">
-            <strong>Runner policy</strong>
-            <div class="muted compact">${user.role === 'admin' || user.can_use_github_runner ? 'This account can use both local and GitHub Runner modes.' : 'This account is restricted to local mode only.'}</div>
-          </div>
+        <div class="list-stack compact-stack">
+          ${renderScheduledPostEntries(scheduledPosts.slice(0, 6), {
+            emptyTitle: 'No scheduled posts',
+            emptyMessage: 'When automations queue delayed posts they will appear here.'
+          })}
         </div>
       </section>
     </section>
     ${renderAutomationEditorModal({ user, agents, apiKeys, editor, editorOpen })}
     ${renderAutomationRuntimeModal(logAutomation)}
+    ${renderScheduledPostsModal({ user, posts: scheduledPosts })}
     ${renderAutomationEditorScript()}
   `
 }
@@ -1710,6 +1898,34 @@ function renderAutomationRuntimeModal(logAutomation) {
             </div>
             <div id="runtime-modal-logs" class="runtime-list muted compact">No log activity yet.</div>
           </section>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderScheduledPostsModal({ user, posts }) {
+  return `
+    <div class="modal-backdrop hidden" id="scheduled-posts-modal" data-can-manage="${user.role === 'admin' ? '1' : '0'}">
+      <div class="modal-panel modal-wide">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Scheduled Queue</div>
+            <h2 id="scheduled-posts-title">Scheduled Posts</h2>
+            <p class="muted compact" id="scheduled-posts-subtitle">Upcoming delayed posts across your automations.</p>
+          </div>
+          <div class="toolbar wrap">
+            ${user.role === 'admin' ? `<button type="button" class="button ghost danger-button" onclick="workerDeleteAllScheduledPosts()">Delete All</button>` : ''}
+            <button type="button" class="button ghost" onclick="workerRefreshScheduledPosts()">Refresh</button>
+            <button type="button" class="button ghost" onclick="workerCloseScheduledModal()">Close</button>
+          </div>
+        </div>
+        <div id="scheduled-posts-list" class="list-stack compact-stack">
+          ${renderScheduledPostEntries(posts.slice(0, 12), {
+            emptyTitle: 'No scheduled posts',
+            emptyMessage: 'Queue items will appear here after delayed posting jobs are created.',
+            manageable: user.role === 'admin'
+          })}
         </div>
       </div>
     </div>
@@ -1879,6 +2095,105 @@ function renderApiKeysBody({ keys, feedback }) {
   `
 }
 
+function renderJobsBody({ jobs, feedback }) {
+  const rows = jobs.map((job) => `
+    <div class="job-row">
+      <div class="job-main">
+        <div class="font-medium">${escapeHtml(job.name || `Job #${job.id}`)}</div>
+        <div class="text-sm text-gray-400 font-mono">${escapeHtml(job.type || job.trigger_source || 'local_agent')}</div>
+        <div class="text-xs text-gray-500">${escapeHtml(job.created_at || job.queued_at || '')}</div>
+      </div>
+      <div class="job-side">
+        ${['queued', 'claimed', 'running', 'processing'].includes(String(job.status || '').toLowerCase()) ? `
+          <div class="mini-progress">
+            <div class="mini-progress-bar" style="width:${clampInt(job.progress_percent || 0, 0, 100)}%"></div>
+          </div>
+        ` : ''}
+        <div class="text-sm font-mono w-12 text-right">${clampInt(job.progress_percent || 0, 0, 100)}%</div>
+        <div class="status-pill ${automationStatusClass(job.status)}">${escapeHtml(job.status || 'unknown')}</div>
+      </div>
+    </div>
+  `).join('')
+
+  return `
+    ${renderFeedback(feedback)}
+    <div class="page-head">
+      <div>
+        <h2 class="text-xl font-semibold">Video Jobs</h2>
+        <p class="text-sm text-gray-400 mt-1">Track automation job history and runtime status</p>
+      </div>
+    </div>
+    <div class="card rounded-lg">
+      <div class="p-4 border-b border-gray-800">
+        <h3 class="text-lg font-semibold">Recent Jobs</h3>
+      </div>
+      <div class="p-4">
+        <div class="space-y-2">
+          ${rows || '<div class="text-center py-12 text-gray-400">No jobs yet.</div>'}
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderPlayerBody({ outputs, summary, feedback }) {
+  const cards = outputs.map((output) => `
+    <article class="player-card">
+      <div class="player-card-preview">
+        ${output.stored_in === 'r2'
+          ? `<video controls preload="metadata"><source src="/outputs/${output.id}" type="${escapeHtml(output.content_type || 'video/mp4')}"></video>`
+          : `<div class="player-placeholder">Metadata Only</div>`}
+      </div>
+      <div class="player-card-body">
+        <div class="list-card-head">
+          <div>
+            <strong>${escapeHtml(output.filename)}</strong>
+            <div class="muted compact">${escapeHtml(formatDisplayDateTime(output.created_at))} | ${escapeHtml(output.stored_in)}</div>
+          </div>
+          <div class="status-pill ${output.stored_in === 'r2' ? 'status-success' : 'status-neutral'}">${escapeHtml(output.stored_in)}</div>
+        </div>
+        <div class="toolbar wrap">
+          ${output.stored_in === 'r2'
+            ? `<a class="button primary" href="/outputs/${output.id}" target="_blank" rel="noopener">Open Output</a>`
+            : '<span class="muted compact">Metadata only. Configure object storage for direct streaming.</span>'}
+        </div>
+      </div>
+    </article>
+  `).join('')
+
+  return `
+    ${renderFeedback(feedback)}
+    <div class="page-head">
+      <div>
+        <h2 class="text-xl font-semibold">Processed Shorts</h2>
+        <p class="text-sm text-gray-400 mt-1">Browse processed outputs reported by local agents</p>
+      </div>
+      <div class="toolbar wrap">
+        <a class="button ghost" href="/automation">Back to Automations</a>
+        <button type="button" class="button" onclick="window.location.reload()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card rounded-lg p-4 output-summary-card">
+      <div class="section-head">
+        <div>
+          <h3 class="text-lg font-semibold">Output Directory Snapshot</h3>
+          <p class="text-sm text-gray-400 mt-1">Worker object storage summary for processed videos.</p>
+        </div>
+      </div>
+      <div class="stats-row">
+        <div class="metric"><span>${Number(summary.total || 0)}</span><small>Total</small></div>
+        <div class="metric"><span>${Number(summary.r2Count || 0)}</span><small>R2 Ready</small></div>
+        <div class="metric"><span>${Number(summary.metadataCount || 0)}</span><small>Metadata Only</small></div>
+      </div>
+    </div>
+
+    <div class="player-grid">
+      ${cards || '<div class="card rounded-lg p-12 text-center text-gray-400">No outputs yet.</div>'}
+    </div>
+  `
+}
+
 function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
   const apiKeyOptions = ['<option value="">Select Bunny connection</option>', ...apiKeys.map((key) => `<option value="${key.id}"${selectedAttr(editor.api_key_id, key.id)}>${escapeHtml(key.name)}</option>`)].join('')
   const selectedAgentId = editor.local_agent_id || (user.role !== 'admin' ? (user.assigned_local_agent_id || '') : '')
@@ -1896,7 +2211,7 @@ function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
         <button type="button" class="tab-button active" data-tab-button="basic" onclick="workerShowAutomationTab('basic')">1. Basic</button>
         <button type="button" class="tab-button" data-tab-button="video" onclick="workerShowAutomationTab('video')">2. Video</button>
         <button type="button" class="tab-button" data-tab-button="taglines" onclick="workerShowAutomationTab('taglines')">3. Taglines</button>
-        <button type="button" class="tab-button" data-tab-button="publish" onclick="workerShowAutomationTab('publish')">4. Publish</button>
+        <button type="button" class="tab-button" data-tab-button="publish" onclick="workerShowAutomationTab('publish')">4. Social</button>
       </div>
 
       <section class="tab-pane active" data-tab-pane="basic">
@@ -2316,6 +2631,120 @@ function renderAutomationEditorScript() {
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return String(value);
         return date.toLocaleString();
+      }
+
+      const workerScheduledState = {
+        automationId: 0,
+        automationName: 'All Automations'
+      };
+
+      function workerOpenScheduledModal(automationId, automationName) {
+        const modal = document.getElementById('scheduled-posts-modal');
+        if (!modal) return false;
+        workerScheduledState.automationId = Number(automationId || 0);
+        workerScheduledState.automationName = automationName || 'All Automations';
+        const title = document.getElementById('scheduled-posts-title');
+        const subtitle = document.getElementById('scheduled-posts-subtitle');
+        if (title) title.textContent = workerScheduledState.automationName + ' Scheduled Queue';
+        if (subtitle) subtitle.textContent = workerScheduledState.automationId
+          ? 'Upcoming delayed posts for this automation.'
+          : 'Upcoming delayed posts across all automations.';
+        modal.classList.remove('hidden');
+        workerRefreshScheduledPosts();
+        return false;
+      }
+
+      function workerCloseScheduledModal() {
+        const modal = document.getElementById('scheduled-posts-modal');
+        if (modal) {
+          modal.classList.add('hidden');
+        }
+      }
+
+      async function workerRefreshScheduledPosts() {
+        const list = document.getElementById('scheduled-posts-list');
+        if (!list) return;
+        list.innerHTML = '<div class="muted compact">Loading scheduled posts...</div>';
+        const query = workerScheduledState.automationId
+          ? ('?automation_id=' + encodeURIComponent(String(workerScheduledState.automationId)))
+          : '';
+        try {
+          const response = await fetch('/api/scheduled-posts' + query, {
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store'
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to load scheduled posts.');
+          }
+          workerRenderScheduledPosts(Array.isArray(data.posts) ? data.posts : []);
+        } catch (error) {
+          list.innerHTML = '<div class="flash error">' + workerEscapeHtml(error.message || 'Unable to load scheduled posts.') + '</div>';
+        }
+      }
+
+      function workerRenderScheduledPosts(posts) {
+        const list = document.getElementById('scheduled-posts-list');
+        if (!list) return;
+        const canManage = document.getElementById('scheduled-posts-modal')?.dataset.canManage === '1';
+        if (!posts.length) {
+          list.innerHTML = '<div class="text-center py-12 text-gray-400"><p class="text-lg mb-1">No scheduled posts</p><p class="text-sm">Nothing is currently waiting in the queue.</p></div>';
+          return;
+        }
+        list.innerHTML = posts.map((post) => {
+          const title = workerEscapeHtml(post.caption || post.filename || ('Scheduled Post #' + String(post.id || '')));
+          const meta = workerEscapeHtml((post.automation_name || ('Automation #' + String(post.automation_id || ''))) + ' | ' + String(post.account_count || 0) + ' account(s)');
+          const when = workerEscapeHtml(post.scheduled_at ? workerFormatDate(post.scheduled_at) : 'Waiting for remote schedule time');
+          const manage = canManage
+            ? '<button type="button" class="button ghost danger-button" onclick="workerDeleteScheduledPost(' + String(post.id || 0) + ')">Delete</button>'
+            : '';
+          return '<div class="job-row scheduled-row">' +
+            '<div class="job-main"><div class="font-medium">' + title + '</div><div class="text-sm text-gray-400">' + meta + '</div><div class="text-xs text-gray-500">' + when + '</div></div>' +
+            '<div class="job-side"><div class="status-pill ' + workerStatusClass(post.status || 'scheduled') + '">' + workerEscapeHtml(post.status || 'scheduled') + '</div>' + manage + '</div>' +
+          '</div>';
+        }).join('');
+      }
+
+      async function workerDeleteScheduledPost(postId) {
+        if (!postId || !confirm('Delete this scheduled post?')) return false;
+        try {
+          const response = await fetch('/api/delete-scheduled-post', {
+            method: 'POST',
+            body: new URLSearchParams({ id: String(postId) }),
+            headers: { 'Accept': 'application/json' }
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to delete scheduled post.');
+          }
+          await workerRefreshScheduledPosts();
+        } catch (error) {
+          alert(error.message || 'Unable to delete scheduled post.');
+        }
+        return false;
+      }
+
+      async function workerDeleteAllScheduledPosts() {
+        if (!confirm('Delete all visible scheduled posts?')) return false;
+        try {
+          const body = new URLSearchParams();
+          if (workerScheduledState.automationId) {
+            body.set('automation_id', String(workerScheduledState.automationId));
+          }
+          const response = await fetch('/api/delete-all-scheduled-posts', {
+            method: 'POST',
+            body,
+            headers: { 'Accept': 'application/json' }
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to delete scheduled posts.');
+          }
+          await workerRefreshScheduledPosts();
+        } catch (error) {
+          alert(error.message || 'Unable to delete scheduled posts.');
+        }
+        return false;
       }
 
       document.addEventListener('click', (event) => {
@@ -2782,50 +3211,52 @@ function renderPage({ title, user, body, currentPath = '' }) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeHtml(title)} | Video Workflow Manager</title>
   <style>
     :root {
-      --bg: #090c14;
-      --panel: rgba(17,24,39,0.88);
-      --ink: #f8fafc;
-      --muted: #94a3b8;
-      --line: rgba(148,163,184,0.18);
+      --bg: #0f0f0f;
+      --panel: #1a1a1a;
+      --ink: #e5e5e5;
+      --muted: #9ca3af;
+      --line: #2a2a2a;
       --accent: #4f46e5;
-      --accent-soft: rgba(79,70,229,0.18);
-      --olive: #38bdf8;
-      --shadow: 0 30px 120px rgba(2,6,23,0.45);
+      --accent-soft: rgba(99,102,241,0.18);
+      --olive: #22c55e;
+      --shadow: 0 18px 60px rgba(0,0,0,0.28);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(79,70,229,0.25), transparent 34%),
-        radial-gradient(circle at top right, rgba(14,165,233,0.18), transparent 32%),
-        linear-gradient(180deg, #020617 0%, #0f172a 100%);
+      background: var(--bg);
       font-family: "Segoe UI Variable", "Aptos", "Segoe UI", sans-serif;
       min-height: 100vh;
     }
     a { color: inherit; text-decoration: none; }
-    .shell { max-width: 1320px; margin: 0 auto; padding: 28px 20px 56px; }
+    .shell { max-width: 1280px; margin: 0 auto; padding: 28px 24px 56px; }
     .topbar, .section-head, .list-card-head, .card-head {
       display:flex; justify-content:space-between; align-items:flex-start; gap:16px;
     }
-    .topbar { margin-bottom: 22px; }
-    .brand { font-family: Georgia, "Times New Roman", serif; font-size: 1.35rem; letter-spacing: 0.02em; }
-    .brand small { display:block; font-size:0.82rem; color: var(--muted); font-family: "Aptos", "Segoe UI", sans-serif; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .topbar {
+      margin: -28px -24px 24px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #111827;
+      align-items: center;
+    }
+    .brand { font-size: 1.7rem; font-weight: 700; }
+    .brand small { display:block; font-size:0.84rem; color: var(--muted); font-weight: 400; margin-top: 4px; }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .panel {
       background: var(--panel);
-      backdrop-filter: blur(16px);
       border: 1px solid var(--line);
-      border-radius: 24px;
+      border-radius: 18px;
       padding: 22px;
       box-shadow: var(--shadow);
     }
     .auth-panel { max-width: 540px; margin: 8vh auto 0; }
     h1, h2 { margin: 0 0 10px; line-height: 1.1; }
-    h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 4vw, 3.2rem); }
+    h1 { font-size: clamp(2rem, 4vw, 3rem); }
     h2 { font-size: 1.2rem; }
     .lead, .muted { color: var(--muted); }
     .lead { font-size: 1rem; max-width: 54ch; }
@@ -2838,19 +3269,19 @@ function renderPage({ title, user, body, currentPath = '' }) {
     .field { display:grid; gap:8px; }
     .field span { font-size: 0.86rem; color: var(--muted); }
     .field input, .field select, .field textarea {
-      width: 100%; border: 1px solid rgba(148,163,184,0.18); border-radius: 16px;
-      padding: 12px 14px; background: rgba(15,23,42,0.9); color: var(--ink); font: inherit;
+      width: 100%; border: 1px solid #374151; border-radius: 12px;
+      padding: 12px 14px; background: #1f2937; color: var(--ink); font: inherit;
     }
     .field textarea { resize: vertical; min-height: 120px; font-family: Consolas, "Courier New", monospace; font-size: 0.88rem; }
     .toggle { display:flex; align-items:center; gap:10px; color: var(--muted); }
     .button {
       display:inline-flex; align-items:center; justify-content:center; gap:8px; padding: 11px 15px;
-      border-radius: 999px; border: 1px solid rgba(148,163,184,0.16); background: rgba(15,23,42,0.82);
+      border-radius: 10px; border: 1px solid #374151; background: #1f2937;
       color: var(--ink); cursor:pointer; font: inherit;
     }
-    .button.primary { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: #fff; border-color: transparent; }
+    .button.primary { background: #4f46e5; color: #fff; border-color: #4f46e5; }
     .button.ghost { background: transparent; }
-    .button.nav-active { background: var(--accent-soft); border-color: rgba(99,102,241,0.32); }
+    .button.nav-active { background: #1f2937; border-color: #374151; }
     .toolbar { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
     .toolbar.wrap { row-gap: 10px; }
     .stats-row { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:12px; margin-top: 16px; }
@@ -2905,6 +3336,72 @@ function renderPage({ title, user, body, currentPath = '' }) {
     .runtime-progress { margin-bottom: 10px; }
     .runtime-list { display:grid; gap:10px; max-height: 360px; overflow:auto; padding-right: 6px; }
     .runtime-entry { border:1px solid var(--line); border-radius: 16px; padding: 12px; background: rgba(15,23,42,0.58); }
+    .card { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    .rounded-lg { border-radius: 14px; }
+    .p-4 { padding: 16px; }
+    .p-12 { padding: 48px; }
+    .border-b { border-bottom: 1px solid var(--line); }
+    .border-gray-800 { border-color: var(--line); }
+    .text-xl { font-size: 1.25rem; }
+    .text-lg { font-size: 1.125rem; }
+    .text-sm { font-size: 0.875rem; }
+    .text-xs { font-size: 0.75rem; }
+    .font-semibold { font-weight: 600; }
+    .font-medium { font-weight: 500; }
+    .font-bold { font-weight: 700; }
+    .font-mono { font-family: Consolas, "Courier New", monospace; }
+    .text-center { text-align: center; }
+    .text-right { text-align: right; }
+    .text-gray-400, .text-gray-500 { color: var(--muted); }
+    .text-green-500 { color: #22c55e; }
+    .text-indigo-500 { color: #6366f1; }
+    .text-red-500 { color: #ef4444; }
+    .text-yellow-500 { color: #eab308; }
+    .text-orange-400 { color: #fb923c; }
+    .text-orange-500 { color: #f97316; }
+    .text-pink-400 { color: #f472b6; }
+    .text-pink-500 { color: #ec4899; }
+    .text-sky-400 { color: #38bdf8; }
+    .mt-1 { margin-top: 4px; }
+    .mb-1 { margin-bottom: 4px; }
+    .py-12 { padding-top: 48px; padding-bottom: 48px; }
+    .space-y-2 > * + * { margin-top: 8px; }
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom: 24px; }
+    .stats-grid { display:grid; gap:16px; margin-bottom: 24px; }
+    .stats-grid-six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .stats-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .stat-card { min-height: 126px; }
+    .stat-head { display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px; }
+    .stat-value { font-size: 2rem; font-weight: 700; font-family: Consolas, "Courier New", monospace; }
+    .clickable-card { cursor: pointer; transition: background-color 0.15s ease; }
+    .clickable-card:hover { background: #202020; }
+    .tab-inline-nav { display:flex; gap:6px; margin-bottom: 16px; }
+    .tab-inline {
+      border: 0; background: transparent; color: var(--muted); padding: 10px 18px; border-radius: 10px; cursor:pointer;
+      font-size: 0.9rem; font-weight: 500;
+    }
+    .tab-inline.active { background: #1f2937; color: #fff; }
+    .tab-count { background: rgba(249,115,22,0.18); color: #fb923c; padding: 2px 8px; border-radius: 999px; margin-left: 8px; font-size: 0.75rem; }
+    .job-row {
+      display:flex; justify-content:space-between; align-items:center; gap:16px;
+      padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,0.01);
+    }
+    .job-main { flex:1; min-width: 0; }
+    .job-side { display:flex; align-items:center; gap:12px; flex-wrap: wrap; justify-content:flex-end; }
+    .mini-progress { width: 96px; height: 8px; background: #374151; border-radius: 999px; overflow:hidden; }
+    .mini-progress-bar { height:100%; background: #6366f1; }
+    .status-pill { padding: 4px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: lowercase; }
+    .user-meta { display:flex; align-items:center; gap:12px; }
+    .user-box { text-align:right; }
+    .danger-button { border-color: rgba(239,68,68,0.35); color: #fca5a5; }
+    .output-summary-card { margin-bottom: 24px; }
+    .compact-stack { display:grid; gap: 10px; }
+    .player-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+    .player-card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); }
+    .player-card-preview { background: #020617; aspect-ratio: 9 / 16; display:flex; align-items:center; justify-content:center; }
+    .player-card-preview video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .player-card-body { padding: 16px; display:grid; gap: 12px; }
+    .player-placeholder { color: var(--muted); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
     .status-success { background: rgba(34,197,94,0.18); color: #86efac; }
     .status-queued { background: rgba(59,130,246,0.18); color: #93c5fd; }
     .status-warning { background: rgba(245,158,11,0.18); color: #fcd34d; }
@@ -2914,9 +3411,10 @@ function renderPage({ title, user, body, currentPath = '' }) {
     @media (max-width: 980px) {
       .dashboard-grid { grid-template-columns: 1fr; }
       .span-two { grid-column: span 1; }
-      .grid.two, .stats-row { grid-template-columns: 1fr; }
+      .grid.two, .stats-row, .stats-grid-six, .stats-grid-three { grid-template-columns: 1fr; }
       .topbar, .section-head, .list-card-head, .card-head { flex-direction: column; align-items: stretch; }
       .meta-actions { display:flex; flex-wrap:wrap; gap:10px; }
+      .page-head, .job-row, .user-meta { flex-direction: column; align-items: stretch; }
       .modal-backdrop { padding: 12px; }
       .modal-panel { padding: 18px; }
     }
@@ -2926,17 +3424,25 @@ function renderPage({ title, user, body, currentPath = '' }) {
   <main class="shell">
     <header class="topbar">
       <div class="brand">
-        Video Workflow Control
-        <small>Cloudflare Worker panel with the legacy automation shell</small>
+        Video Workflow Manager
+        <small>Cloudflare Worker clone shell for the legacy automation panel</small>
       </div>
-      <nav class="nav">
-        ${user ? `
-          <a class="button ghost${currentPath === '/dashboard' ? ' nav-active' : ''}" href="/dashboard">Dashboard</a>
-          <a class="button ghost${currentPath === '/automation' ? ' nav-active' : ''}" href="/automation">Automation</a>
-          ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/api-keys' ? ' nav-active' : ''}" href="/api-keys">API Keys</a><a class="button ghost${currentPath === '/settings' ? ' nav-active' : ''}" href="/settings">Settings</a><a class="button ghost${currentPath === '/admin/users' ? ' nav-active' : ''}" href="/admin/users">Users</a><a class="button ghost${currentPath === '/admin/agents' ? ' nav-active' : ''}" href="/admin/agents">Agents</a>` : ''}
+      ${user ? `
+        <div class="user-meta">
+          <nav class="nav">
+            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/dashboard' ? ' nav-active' : ''}" href="/dashboard">Dashboard</a><a class="button ghost${currentPath === '/api-keys' ? ' nav-active' : ''}" href="/api-keys">API Keys</a><a class="button ghost${currentPath === '/jobs' ? ' nav-active' : ''}" href="/jobs">Jobs</a>` : ''}
+            <a class="button ghost${currentPath === '/automation' ? ' nav-active' : ''}" href="/automation">Automation</a>
+            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/admin/agents' ? ' nav-active' : ''}" href="/admin/agents">Agents</a><a class="button ghost${currentPath === '/admin/users' ? ' nav-active' : ''}" href="/admin/users">Users</a>` : ''}
+            <a class="button ghost${currentPath === '/player' ? ' nav-active' : ''}" href="/player">Player</a>
+            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/settings' ? ' nav-active' : ''}" href="/settings">Settings</a>` : ''}
+          </nav>
+          <div class="user-box">
+            <div class="font-medium">${escapeHtml(user.display_name || user.email || 'User')}</div>
+            <div class="text-xs text-gray-400">${user.role === 'admin' ? 'Admin' : 'User'}</div>
+          </div>
           <form method="POST" action="/logout"><button type="submit" class="button ghost">Logout</button></form>
-        ` : '<a class="button ghost" href="/login">Login</a>'}
-      </nav>
+        </div>
+      ` : '<a class="button ghost" href="/login">Login</a>'}
     </header>
     ${body}
   </main>
@@ -3307,6 +3813,211 @@ async function listAutomationsForUser(env, user) {
   }))
 }
 
+async function getDashboardStats(env, user) {
+  const filterSql = user.role === 'admin'
+    ? ''
+    : ' WHERE a.owner_user_id = ? '
+  const bindArgs = user.role === 'admin' ? [] : [user.id]
+
+  const [
+    totalJobsRow,
+    completedJobsRow,
+    processingJobsRow,
+    failedJobsRow,
+    activeKeysRow,
+    automationsRow,
+    scheduledPostsRow,
+    postedPostsRow
+  ] = await Promise.all([
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      ${filterSql}
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      ${filterSql}${filterSql ? " AND " : " WHERE "}j.status = 'completed'
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      ${filterSql}${filterSql ? " AND " : " WHERE "}j.status IN ('queued', 'claimed', 'running')
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      ${filterSql}${filterSql ? " AND " : " WHERE "}j.status IN ('error', 'cancelled')
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM api_keys WHERE status = 'active'`).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM automations a
+      ${user.role === 'admin' ? 'WHERE a.enabled = 1' : 'WHERE a.owner_user_id = ? AND a.enabled = 1'}
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM scheduled_posts sp
+      JOIN automations a ON a.id = sp.automation_id
+      ${filterSql}${filterSql ? " AND " : " WHERE "}sp.status IN ('queued', 'scheduled', 'processing')
+    `).bind(...bindArgs).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM output_files o
+      JOIN automations a ON a.id = o.automation_id
+      ${filterSql}
+    `).bind(...bindArgs).first()
+  ])
+
+  return {
+    totalJobs: Number(totalJobsRow?.count || 0),
+    completedJobs: Number(completedJobsRow?.count || 0),
+    processingJobs: Number(processingJobsRow?.count || 0),
+    failedJobs: Number(failedJobsRow?.count || 0),
+    activeKeys: Number(activeKeysRow?.count || 0),
+    automations: Number(automationsRow?.count || 0),
+    scheduledPosts: Number(scheduledPostsRow?.count || 0),
+    postedPosts: Number(postedPostsRow?.count || 0)
+  }
+}
+
+async function listRecentJobsForUser(env, user, limit = 10) {
+  const sql = user.role === 'admin'
+    ? `
+      SELECT
+        j.id,
+        j.trigger_source,
+        j.status,
+        j.queued_at AS created_at,
+        a.name,
+        a.progress_percent,
+        a.status AS automation_status
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      ORDER BY j.id DESC
+      LIMIT ?
+    `
+    : `
+      SELECT
+        j.id,
+        j.trigger_source,
+        j.status,
+        j.queued_at AS created_at,
+        a.name,
+        a.progress_percent,
+        a.status AS automation_status
+      FROM local_agent_jobs j
+      JOIN automations a ON a.id = j.automation_id
+      WHERE a.owner_user_id = ?
+      ORDER BY j.id DESC
+      LIMIT ?
+    `
+  const rows = user.role === 'admin'
+    ? await env.DB.prepare(sql).bind(limit).all()
+    : await env.DB.prepare(sql).bind(user.id, limit).all()
+  return (rows.results || []).map((row) => ({
+    ...row,
+    id: Number(row.id),
+    progress_percent: Number(row.progress_percent || 0),
+    type: String(row.trigger_source || 'manual')
+  }))
+}
+
+async function listScheduledPostsForUser(env, user, { automationId = null, limit = 100, activeOnly = true } = {}) {
+  const statuses = activeOnly
+    ? ['queued', 'scheduled', 'processing']
+    : ['queued', 'scheduled', 'processing', 'completed', 'cancelled', 'failed']
+  const placeholders = statuses.map(() => '?').join(', ')
+  const bindArgs = [...statuses]
+  let sql = `
+    SELECT sp.*, a.name AS automation_name, a.owner_user_id
+    FROM scheduled_posts sp
+    JOIN automations a ON a.id = sp.automation_id
+    WHERE sp.status IN (${placeholders})
+  `
+
+  if (user.role !== 'admin') {
+    sql += ' AND a.owner_user_id = ?'
+    bindArgs.push(user.id)
+  }
+  if (automationId) {
+    sql += ' AND sp.automation_id = ?'
+    bindArgs.push(automationId)
+  }
+
+  sql += `
+    ORDER BY
+      CASE WHEN sp.scheduled_at IS NULL THEN 1 ELSE 0 END,
+      sp.scheduled_at ASC,
+      sp.id ASC
+    LIMIT ?
+  `
+  bindArgs.push(limit)
+
+  const rows = await env.DB.prepare(sql).bind(...bindArgs).all()
+  return (rows.results || []).map(normalizeScheduledPost)
+}
+
+async function countScheduledPostsByAutomation(env, user) {
+  const sql = user.role === 'admin'
+    ? `
+      SELECT sp.automation_id, COUNT(*) AS total
+      FROM scheduled_posts sp
+      JOIN automations a ON a.id = sp.automation_id
+      WHERE sp.status IN ('queued', 'scheduled', 'processing')
+      GROUP BY sp.automation_id
+    `
+    : `
+      SELECT sp.automation_id, COUNT(*) AS total
+      FROM scheduled_posts sp
+      JOIN automations a ON a.id = sp.automation_id
+      WHERE a.owner_user_id = ?
+        AND sp.status IN ('queued', 'scheduled', 'processing')
+      GROUP BY sp.automation_id
+    `
+  const rows = user.role === 'admin'
+    ? await env.DB.prepare(sql).all()
+    : await env.DB.prepare(sql).bind(user.id).all()
+  const map = new Map()
+  for (const row of rows.results || []) {
+    map.set(Number(row.automation_id), Number(row.total || 0))
+  }
+  return map
+}
+
+async function getOutputSummaryForUser(env, user) {
+  const sql = user.role === 'admin'
+    ? `
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN o.stored_in = 'r2' THEN 1 ELSE 0 END) AS r2_count,
+        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS metadata_count
+      FROM output_files o
+      JOIN automations a ON a.id = o.automation_id
+    `
+    : `
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN o.stored_in = 'r2' THEN 1 ELSE 0 END) AS r2_count,
+        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS metadata_count
+      FROM output_files o
+      JOIN automations a ON a.id = o.automation_id
+      WHERE a.owner_user_id = ?
+    `
+  const row = user.role === 'admin'
+    ? await env.DB.prepare(sql).first()
+    : await env.DB.prepare(sql).bind(user.id).first()
+  return {
+    total: Number(row?.total || 0),
+    r2Count: Number(row?.r2_count || 0),
+    metadataCount: Number(row?.metadata_count || 0)
+  }
+}
+
 async function listRecentOutputsForUser(env, user, limit) {
   const sql = user.role === 'admin'
     ? `
@@ -3328,6 +4039,18 @@ async function listRecentOutputsForUser(env, user, limit) {
     ? await env.DB.prepare(sql).bind(limit).all()
     : await env.DB.prepare(sql).bind(user.id, limit).all()
   return (rows.results || []).map((row) => ({ ...row, id: Number(row.id) }))
+}
+
+function normalizeScheduledPost(row) {
+  const accountIds = parseJsonMaybe(row.account_ids_json, [])
+  return {
+    ...row,
+    id: Number(row.id),
+    automation_id: Number(row.automation_id),
+    job_id: row.job_id === null ? null : Number(row.job_id),
+    account_ids: Array.isArray(accountIds) ? accountIds.map((item) => String(item)) : [],
+    account_count: Array.isArray(accountIds) ? accountIds.length : 0
+  }
 }
 
 async function getAutomationById(env, automationId) {
@@ -3573,6 +4296,169 @@ async function cancelPendingJobsForAutomation(env, automationId, reason) {
     SET status = 'cancelled', completed_at = ?, error_message = ?
     WHERE automation_id = ? AND status IN ('queued', 'claimed', 'running')
   `).bind(now, String(reason || 'Cancelled.'), automationId).run()
+}
+
+async function syncScheduledPostsFromJobResult(env, job, payload, completedAt) {
+  const automation = await getAutomationById(env, Number(job.automation_id))
+  if (!automation) {
+    return
+  }
+
+  const config = parseJsonMaybe(automation.automation_json, {})
+  const postformeEnabled = truthyValue(config.postforme_enabled, false)
+  await env.DB.prepare('DELETE FROM scheduled_posts WHERE job_id = ?').bind(Number(job.id)).run()
+
+  if (!postformeEnabled) {
+    return
+  }
+
+  const stats = isPlainObject(payload.stats) ? payload.stats : {}
+  const scheduledCount = Math.max(0, Number(stats.scheduled || 0))
+  const postedCount = Math.max(0, Number(stats.posted || 0))
+  const scheduleMode = String(config.postforme_schedule_mode || 'immediate').toLowerCase()
+  const outputNames = Array.isArray(payload.outputs)
+    ? payload.outputs.map((item) => sanitizeFileName(String(item || '').trim())).filter(Boolean)
+    : []
+
+  if (scheduledCount <= 0 && postedCount <= 0 && scheduleMode === 'immediate') {
+    return
+  }
+
+  const accountIds = normalizeAccountIdList(config.postforme_account_ids || config.postforme_account_ids_csv || [])
+  const rows = buildScheduledPostRows({
+    automationId: Number(job.automation_id),
+    jobId: Number(job.id),
+    outputNames,
+    scheduledCount,
+    postedCount,
+    scheduleMode,
+    accountIds,
+    config,
+    completedAt
+  })
+
+  for (const row of rows) {
+    await env.DB.prepare(`
+      INSERT INTO scheduled_posts (
+        automation_id, job_id, filename, caption, account_ids_json, remote_post_id,
+        status, scheduled_at, published_at, error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      row.automation_id,
+      row.job_id,
+      row.filename,
+      row.caption,
+      row.account_ids_json,
+      row.remote_post_id,
+      row.status,
+      row.scheduled_at,
+      row.published_at,
+      row.error_message,
+      row.created_at,
+      row.updated_at
+    ).run()
+  }
+}
+
+function buildScheduledPostRows({ automationId, jobId, outputNames, scheduledCount, postedCount, scheduleMode, accountIds, config, completedAt }) {
+  const rows = []
+  const now = completedAt || isoNow()
+  const safeOutputs = outputNames.length ? outputNames : [`job_${jobId}.mp4`]
+
+  if (scheduleMode !== 'immediate' || scheduledCount > 0) {
+    const total = Math.max(safeOutputs.length, scheduledCount || 0, 1)
+    for (let index = 0; index < total; index += 1) {
+      const filename = safeOutputs[index] || `scheduled_${jobId}_${index + 1}.mp4`
+      rows.push({
+        automation_id: automationId,
+        job_id: jobId,
+        filename,
+        caption: buildCaptionFromFilename(filename),
+        account_ids_json: JSON.stringify(accountIds),
+        remote_post_id: null,
+        status: 'scheduled',
+        scheduled_at: computeScheduledPostDate(config, index, now),
+        published_at: null,
+        error_message: null,
+        created_at: now,
+        updated_at: now
+      })
+    }
+    return rows
+  }
+
+  if (postedCount > 0) {
+    const total = Math.max(safeOutputs.length, postedCount, 1)
+    for (let index = 0; index < total; index += 1) {
+      const filename = safeOutputs[index] || `posted_${jobId}_${index + 1}.mp4`
+      rows.push({
+        automation_id: automationId,
+        job_id: jobId,
+        filename,
+        caption: buildCaptionFromFilename(filename),
+        account_ids_json: JSON.stringify(accountIds),
+        remote_post_id: null,
+        status: 'completed',
+        scheduled_at: null,
+        published_at: now,
+        error_message: null,
+        created_at: now,
+        updated_at: now
+      })
+    }
+  }
+
+  return rows
+}
+
+function computeScheduledPostDate(config, index, completedAt) {
+  const mode = String(config.postforme_schedule_mode || 'immediate').toLowerCase()
+  const spreadMinutes = Math.max(0, toInt(config.postforme_schedule_spread_minutes) || 0)
+  const baseDate = new Date(completedAt || isoNow())
+
+  if (mode === 'scheduled') {
+    const raw = String(config.postforme_schedule_datetime || '').trim()
+    if (raw !== '') {
+      const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T')
+      const parsed = new Date(normalized)
+      if (!Number.isNaN(parsed.getTime())) {
+        parsed.setMinutes(parsed.getMinutes() + (spreadMinutes * index))
+        return parsed.toISOString()
+      }
+      return raw
+    }
+  }
+
+  if (mode === 'offset') {
+    const offsetMinutes = Math.max(0, toInt(config.postforme_schedule_offset_minutes) || 0)
+    baseDate.setMinutes(baseDate.getMinutes() + offsetMinutes + (spreadMinutes * index))
+    return baseDate.toISOString()
+  }
+
+  if (mode !== 'immediate') {
+    baseDate.setMinutes(baseDate.getMinutes() + (spreadMinutes * index))
+    return baseDate.toISOString()
+  }
+
+  return null
+}
+
+function normalizeAccountIdList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map((item) => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function buildCaptionFromFilename(filename) {
+  return String(filename || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function resolveSavedAutomationStatus(existingStatus, enabled) {

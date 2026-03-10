@@ -101,6 +101,7 @@ async function main() {
     expect(cookieJar.has('vw_session'), 'Login cookie was not set.')
     const dashboard = await requestText(loginResponse.headers.get('location') || '/dashboard')
     expect(dashboard.text.includes('Administrator'), 'Dashboard did not load after login.')
+    expect(dashboard.text.includes('Scheduled Posts'), 'Dashboard scheduled posts section missing.')
 
     const settingsPage = await requestText('/settings')
     expect(settingsPage.text.includes('GitHub Runner') && settingsPage.text.includes('FFmpeg'), 'Settings tabs missing.')
@@ -112,7 +113,13 @@ async function main() {
     expect(usersPage.text.includes('Create User'), 'Users page missing.')
 
     const createModalPage = await requestText('/automation?create=1')
-    expect(createModalPage.text.includes('automation-editor-modal') && createModalPage.text.includes('Create Automation'), 'Create modal not rendered.')
+    expect(
+      createModalPage.text.includes('automation-editor-modal') &&
+      createModalPage.text.includes('Create Automation') &&
+      createModalPage.text.includes('Scheduled Queue') &&
+      createModalPage.text.includes('View Processed Videos'),
+      'Automation shell parity controls missing.'
+    )
 
     const agentsPage = await requestText('/admin/agents')
     const tokenMatches = [...agentsPage.text.matchAll(/<div class=\"mono-block\">([^<]+)<\/div>/g)]
@@ -166,10 +173,12 @@ async function main() {
       branding_text_bottom: '',
       random_words: '',
       whisper_language: 'en',
-      postforme_schedule_mode: 'immediate',
+      postforme_enabled: 'on',
+      postforme_account_ids_csv: 'acct-1,acct-2',
+      postforme_schedule_mode: 'offset',
       postforme_schedule_timezone: 'UTC',
-      postforme_schedule_offset_minutes: '0',
-      postforme_schedule_spread_minutes: '0'
+      postforme_schedule_offset_minutes: '60',
+      postforme_schedule_spread_minutes: '15'
     })
     const createAutomation = await requestText('/automation', {
       method: 'POST',
@@ -276,6 +285,14 @@ async function main() {
     expect(String(statusDone.data.automation.status) === 'completed', 'Unexpected final status: ' + String(statusDone.data.automation.status))
     expect(statusDone.data.outputs.some((output) => output.filename === 'sample.mp4'), 'Uploaded output missing from status feed.')
     expect(statusDone.data.logs.some((log) => log.message === 'Automation finished cleanly'), 'Completion log missing.')
+
+    const scheduledPosts = await requestJson('/api/scheduled-posts?automation_id=' + automationId)
+    expect(scheduledPosts.data.success, 'Scheduled posts endpoint failed.')
+    expect(Array.isArray(scheduledPosts.data.posts) && scheduledPosts.data.posts.length >= 1, 'Scheduled posts were not generated.')
+    expect(String(scheduledPosts.data.posts[0].status) === 'scheduled', 'Scheduled post did not retain scheduled status.')
+
+    const playerPage = await requestText('/player')
+    expect(playerPage.text.includes('Processed Shorts') && playerPage.text.includes('Back to Automations'), 'Player parity shell missing.')
 
     await request('/automation', {
       method: 'POST',

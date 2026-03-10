@@ -123,7 +123,24 @@ export const bootstrapSchemaStatements = [
     stored_in TEXT NOT NULL DEFAULT 'metadata' CHECK (stored_in IN ('metadata', 'r2')),
     created_at TEXT NOT NULL
   ) STRICT`,
-  `CREATE INDEX IF NOT EXISTS idx_output_files_lookup ON output_files(automation_id, created_at)`
+  `CREATE INDEX IF NOT EXISTS idx_output_files_lookup ON output_files(automation_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS scheduled_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id INTEGER NOT NULL,
+    job_id INTEGER,
+    filename TEXT,
+    caption TEXT,
+    account_ids_json TEXT,
+    remote_post_id TEXT,
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('queued', 'scheduled', 'processing', 'completed', 'cancelled', 'failed')),
+    scheduled_at TEXT,
+    published_at TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_lookup ON scheduled_posts(automation_id, status, scheduled_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_job ON scheduled_posts(job_id, status)`
 ];
 
 export const bootstrapSchemaSql = bootstrapSchemaStatements.join(';\n\n') + ';\n';
