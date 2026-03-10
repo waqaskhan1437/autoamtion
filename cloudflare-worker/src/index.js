@@ -8,6 +8,27 @@ const maxPasswordIterations = 100000
 const passwordIterations = maxPasswordIterations
 let schemaReadyPromise = null
 
+const settingsTabFieldMap = {
+  bunny: ['bunny_api_key', 'bunny_library_id', 'bunny_storage_zone', 'bunny_storage_password'],
+  stream: [
+    'youtube_api_key', 'youtube_client_id', 'youtube_client_secret',
+    'tiktok_client_key', 'tiktok_client_secret',
+    'instagram_app_id', 'instagram_app_secret',
+    'facebook_app_id', 'facebook_app_secret'
+  ],
+  ftp: ['ftp_host', 'ftp_port', 'ftp_username', 'ftp_password', 'ftp_path'],
+  openai: ['ai_provider', 'gemini_api_key', 'openai_api_key', 'default_language'],
+  ffmpeg: ['ffmpeg_path', 'auto_install_local_runtime', 'ffmpeg_auto_download_url_windows'],
+  storage: ['storage_base_path', 'panel_public_base_url', 'ytdlp_cookies_file', 'ytdlp_cookies_browser', 'ytdlp_cookies_browser_profile'],
+  github_runner: [
+    'github_runner_enabled', 'github_runner_owner', 'github_runner_repo', 'github_runner_workflow', 'github_runner_ref',
+    'github_runner_token', 'github_runner_callback_secret', 'github_runner_inputs_json', 'panel_public_base_url'
+  ],
+  postforme: ['postforme_api_key', 'postforme_project_type']
+}
+
+const settingsCheckboxFields = new Set(['auto_install_local_runtime', 'github_runner_enabled'])
+
 export default {
   async fetch(request, env) {
     try {
@@ -90,7 +111,35 @@ export default {
       }
 
       if (path === '/dashboard' && request.method === 'POST') {
-        return handleDashboardAction(request, env, session.user)
+        return handleAutomationAction(request, env, session.user)
+      }
+
+      if (path === '/automation' && request.method === 'GET') {
+        return renderAutomationPage(request, env, session.user, null)
+      }
+
+      if (path === '/automation' && request.method === 'POST') {
+        return handleAutomationAction(request, env, session.user)
+      }
+
+      if (path === '/settings' && request.method === 'GET') {
+        requireAdmin(session.user)
+        return renderSettingsPage(request, env, session.user, null)
+      }
+
+      if (path === '/settings' && request.method === 'POST') {
+        requireAdmin(session.user)
+        return handleSettingsAction(request, env, session.user)
+      }
+
+      if (path === '/api-keys' && request.method === 'GET') {
+        requireAdmin(session.user)
+        return renderApiKeysPage(request, env, session.user, null)
+      }
+
+      if (path === '/api-keys' && request.method === 'POST') {
+        requireAdmin(session.user)
+        return handleApiKeysAction(request, env, session.user)
       }
 
       if (path === '/admin/users' && request.method === 'GET') {
@@ -288,54 +337,165 @@ async function handleAgentsAction(request, env, adminUser) {
   return renderAgentsPage(request, env, adminUser, { error: 'Unknown agents action.' })
 }
 
-async function handleDashboardAction(request, env, user) {
+async function handleSettingsAction(request, env, adminUser) {
+  const form = await request.formData()
+  const action = String(form.get('action') || 'save_settings')
+  const tab = sanitizeSettingsTab(String(form.get('tab') || 'bunny'))
+
+  if (action !== 'save_settings') {
+    return renderSettingsPage(appendQueryToRequest(request, { tab }), env, adminUser, { error: 'Unknown settings action.' })
+  }
+
+  const fields = getSettingsTabFields(tab)
+  for (const key of fields) {
+    if (settingsCheckboxFields.has(key)) {
+      await setSetting(env, key, checkboxValue(form.get(key)) ? '1' : '0')
+      continue
+    }
+    await setSetting(env, key, String(form.get(key) || '').trim())
+  }
+
+  return renderSettingsPage(appendQueryToRequest(request, { tab }), env, adminUser, { success: `Settings saved for ${settingsTabLabel(tab)}.` })
+}
+
+async function handleApiKeysAction(request, env, adminUser) {
+  const form = await request.formData()
+  const action = String(form.get('action') || '')
+
+  if (action === 'create') {
+    const name = String(form.get('name') || '').trim()
+    const apiKey = String(form.get('api_key') || '').trim()
+    const libraryId = String(form.get('library_id') || '').trim()
+    if (name === '' || apiKey === '' || libraryId === '') {
+      return renderApiKeysPage(request, env, adminUser, { error: 'Connection name, API key, and library ID are required.' })
+    }
+    await env.DB.prepare(`
+      INSERT INTO api_keys (
+        name, api_key, library_id, storage_zone, ftp_host, ftp_username,
+        ftp_password, ftp_port, cdn_hostname, pull_zone_id, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).bind(
+      name,
+      apiKey,
+      libraryId,
+      String(form.get('storage_zone') || '').trim() || null,
+      String(form.get('ftp_host') || '').trim() || null,
+      String(form.get('ftp_username') || '').trim() || null,
+      String(form.get('ftp_password') || '').trim() || null,
+      toInt(form.get('ftp_port')) || 21,
+      String(form.get('cdn_hostname') || '').trim() || null,
+      String(form.get('pull_zone_id') || '').trim() || null,
+      isoNow()
+    ).run()
+    return renderApiKeysPage(request, env, adminUser, { success: `Connection ${name} created.` })
+  }
+
+  if (action === 'update') {
+    const id = toInt(form.get('id'))
+    const name = String(form.get('name') || '').trim()
+    const apiKey = String(form.get('api_key') || '').trim()
+    const libraryId = String(form.get('library_id') || '').trim()
+    if (id <= 0 || name === '' || apiKey === '' || libraryId === '') {
+      return renderApiKeysPage(request, env, adminUser, { error: 'Update requires id, connection name, API key, and library ID.' })
+    }
+    await env.DB.prepare(`
+      UPDATE api_keys
+      SET name = ?, api_key = ?, library_id = ?, storage_zone = ?, ftp_host = ?, ftp_username = ?,
+          ftp_password = ?, ftp_port = ?, cdn_hostname = ?, pull_zone_id = ?, status = ?
+      WHERE id = ?
+    `).bind(
+      name,
+      apiKey,
+      libraryId,
+      String(form.get('storage_zone') || '').trim() || null,
+      String(form.get('ftp_host') || '').trim() || null,
+      String(form.get('ftp_username') || '').trim() || null,
+      String(form.get('ftp_password') || '').trim() || null,
+      toInt(form.get('ftp_port')) || 21,
+      String(form.get('cdn_hostname') || '').trim() || null,
+      String(form.get('pull_zone_id') || '').trim() || null,
+      String(form.get('status') || 'active') === 'inactive' ? 'inactive' : 'active',
+      id
+    ).run()
+    return renderApiKeysPage(request, env, adminUser, { success: `Connection ${name} updated.` })
+  }
+
+  if (action === 'toggle') {
+    const id = toInt(form.get('id'))
+    const key = await getApiKeyById(env, id)
+    if (!key) {
+      return renderApiKeysPage(request, env, adminUser, { error: 'Connection not found.' })
+    }
+    const nextStatus = key.status === 'active' ? 'inactive' : 'active'
+    await env.DB.prepare('UPDATE api_keys SET status = ? WHERE id = ?').bind(nextStatus, id).run()
+    return renderApiKeysPage(request, env, adminUser, { success: `Connection ${key.name} marked ${nextStatus}.` })
+  }
+
+  if (action === 'delete') {
+    const id = toInt(form.get('id'))
+    const key = await getApiKeyById(env, id)
+    if (!key) {
+      return renderApiKeysPage(request, env, adminUser, { error: 'Connection not found.' })
+    }
+    await env.DB.prepare('DELETE FROM api_keys WHERE id = ?').bind(id).run()
+    return renderApiKeysPage(request, env, adminUser, { success: `Connection ${key.name} deleted.` })
+  }
+
+  return renderApiKeysPage(request, env, adminUser, { error: 'Unknown API key action.' })
+}
+
+async function handleAutomationAction(request, env, user) {
   const form = await request.formData()
   const action = String(form.get('action') || '')
 
   if (action === 'save_automation') {
     const automationId = toNullableInt(form.get('automation_id'))
-    const name = String(form.get('name') || '').trim()
-    const runMode = sanitizeRunMode(String(form.get('run_mode') || 'local'))
-    const localAgentId = toNullableInt(form.get('local_agent_id'))
-    const enabled = checkboxValue(form.get('enabled')) ? 1 : 0
-    const automationJsonText = String(form.get('automation_json') || '{}').trim() || '{}'
-    const apiKeyJsonText = String(form.get('api_key_json') || '').trim()
-    const settingsJsonText = String(form.get('settings_json') || '').trim()
-
-    if (name === '') {
-      return renderDashboardPage(request, env, user, { error: 'Automation name is required.' })
-    }
-
-    let automationJson
-    let apiKeyJson = null
-    let settingsJson = null
+    let payload
     try {
-      automationJson = parseJsonObject(automationJsonText, 'Automation JSON')
-      if (apiKeyJsonText !== '') {
-        apiKeyJson = parseJsonObject(apiKeyJsonText, 'API Key JSON')
-      }
-      if (settingsJsonText !== '') {
-        settingsJson = parseJsonObject(settingsJsonText, 'Settings JSON')
-      }
+      payload = extractAutomationPayloadFromForm(form)
     } catch (error) {
-      return renderDashboardPage(request, env, user, {
-        error: error instanceof Error ? error.message : 'JSON payload is invalid.'
+      return renderAutomationPage(request, env, user, {
+        error: error instanceof Error ? error.message : 'Automation form is invalid.'
       })
     }
 
+    const {
+      name,
+      runMode,
+      localAgentId,
+      enabled,
+      automationJson,
+      apiKeyJson,
+      settingsJson
+    } = payload
+
+    if (name === '') {
+      return renderAutomationPage(request, env, user, { error: 'Automation name is required.' })
+    }
+
     if (runMode === 'github_runner' && !user.can_use_github_runner && user.role !== 'admin') {
-      return renderDashboardPage(request, env, user, { error: 'This user is not allowed to use GitHub Runner.' })
+      return renderAutomationPage(request, env, user, { error: 'This user is not allowed to use GitHub Runner.' })
     }
 
     if (runMode === 'local' && user.role !== 'admin' && user.assigned_local_agent_id && localAgentId && user.assigned_local_agent_id !== localAgentId) {
-      return renderDashboardPage(request, env, user, { error: 'This user can only use the assigned local agent.' })
+      return renderAutomationPage(request, env, user, { error: 'This user can only use the assigned local agent.' })
     }
 
     if (automationId) {
       const existing = await getAutomationById(env, automationId)
       if (!existing || !canAccessAutomation(user, existing)) {
-        return renderDashboardPage(request, env, user, { error: 'Automation not found.' })
+        return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
       }
+      const mergedAutomationJson = {
+        ...parseJsonMaybe(existing.automation_json, {}),
+        ...automationJson
+      }
+      const mergedApiKeyJson = apiKeyJson
+        ? { ...parseJsonMaybe(existing.api_key_json, {}), ...apiKeyJson }
+        : (existing.api_key_json ? parseJsonMaybe(existing.api_key_json, {}) : null)
+      const mergedSettingsJson = settingsJson
+        ? { ...parseJsonMaybe(existing.settings_json, {}), ...settingsJson }
+        : (existing.settings_json ? parseJsonMaybe(existing.settings_json, {}) : null)
       await env.DB.prepare(`
         UPDATE automations
         SET name = ?, run_mode = ?, local_agent_id = ?, enabled = ?, automation_json = ?, api_key_json = ?, settings_json = ?, updated_at = ?
@@ -345,13 +505,13 @@ async function handleDashboardAction(request, env, user) {
         runMode,
         localAgentId,
         enabled,
-        JSON.stringify(automationJson),
-        apiKeyJson ? JSON.stringify(apiKeyJson) : null,
-        settingsJson ? JSON.stringify(settingsJson) : null,
+        JSON.stringify(mergedAutomationJson),
+        mergedApiKeyJson ? JSON.stringify(mergedApiKeyJson) : null,
+        mergedSettingsJson ? JSON.stringify(mergedSettingsJson) : null,
         isoNow(),
         automationId
       ).run()
-      return renderDashboardPage(request, env, user, { success: `Automation ${name} updated.` })
+      return renderAutomationPage(request, env, user, { success: `Automation ${name} updated.` })
     }
 
     await env.DB.prepare(`
@@ -372,36 +532,36 @@ async function handleDashboardAction(request, env, user) {
       isoNow()
     ).run()
 
-    return renderDashboardPage(request, env, user, { success: `Automation ${name} created.` })
+    return renderAutomationPage(request, env, user, { success: `Automation ${name} created.` })
   }
 
   if (action === 'queue_automation') {
     const automationId = toInt(form.get('automation_id'))
     const automation = await getAutomationById(env, automationId)
     if (!automation || !canAccessAutomation(user, automation)) {
-      return renderDashboardPage(request, env, user, { error: 'Automation not found.' })
+      return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
     }
 
     const result = await queueAutomation(env, automation, 'manual')
     if (!result.success) {
-      return renderDashboardPage(request, env, user, { error: result.error })
+      return renderAutomationPage(request, env, user, { error: result.error })
     }
 
-    return renderDashboardPage(request, env, user, { success: `Automation queued on ${result.agentName}.` })
+    return renderAutomationPage(request, env, user, { success: `Automation queued on ${result.agentName}.` })
   }
 
   if (action === 'delete_automation') {
     const automationId = toInt(form.get('automation_id'))
     const automation = await getAutomationById(env, automationId)
     if (!automation || !canAccessAutomation(user, automation)) {
-      return renderDashboardPage(request, env, user, { error: 'Automation not found.' })
+      return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
     }
     await env.DB.prepare('DELETE FROM automations WHERE id = ?').bind(automationId).run()
     await env.DB.prepare('DELETE FROM automation_logs WHERE automation_id = ?').bind(automationId).run()
-    return renderDashboardPage(request, env, user, { success: `Automation ${automation.name} deleted.` })
+    return renderAutomationPage(request, env, user, { success: `Automation ${automation.name} deleted.` })
   }
 
-  return renderDashboardPage(request, env, user, { error: 'Unknown dashboard action.' })
+  return renderAutomationPage(request, env, user, { error: 'Unknown automation action.' })
 }
 
 async function handleInstallManifest(request, env) {
@@ -749,7 +909,58 @@ async function renderDashboardPage(request, env, user, feedback) {
   return htmlResponse(renderPage({
     title: 'Dashboard',
     user,
-    body
+    body,
+    currentPath: '/dashboard'
+  }))
+}
+
+async function renderAutomationPage(request, env, user, feedback) {
+  const automations = await listAutomationsForUser(env, user)
+  const agents = await listVisibleAgents(env, user)
+  const apiKeys = await listApiKeys(env)
+  const editId = toInt(new URL(request.url).searchParams.get('edit'))
+  let editingAutomation = null
+  if (editId > 0) {
+    const candidate = await getAutomationById(env, editId)
+    if (candidate && canAccessAutomation(user, candidate)) {
+      editingAutomation = candidate
+    }
+  }
+
+  return htmlResponse(renderPage({
+    title: 'Automation',
+    user,
+    body: renderAutomationBody({
+      user,
+      automations,
+      agents,
+      apiKeys,
+      feedback,
+      editor: buildAutomationEditorState(editingAutomation)
+    }),
+    currentPath: '/automation'
+  }))
+}
+
+async function renderSettingsPage(request, env, adminUser, feedback) {
+  const url = new URL(request.url)
+  const tab = sanitizeSettingsTab(url.searchParams.get('tab') || 'bunny')
+  const settings = await getSettingsMap(env)
+  return htmlResponse(renderPage({
+    title: 'Settings',
+    user: adminUser,
+    body: renderSettingsBody({ tab, settings, feedback }),
+    currentPath: '/settings'
+  }))
+}
+
+async function renderApiKeysPage(request, env, adminUser, feedback) {
+  const keys = await listApiKeys(env, true)
+  return htmlResponse(renderPage({
+    title: 'API Keys',
+    user: adminUser,
+    body: renderApiKeysBody({ keys, feedback }),
+    currentPath: '/api-keys'
   }))
 }
 
@@ -759,7 +970,8 @@ async function renderUsersPage(request, env, adminUser, feedback) {
   return htmlResponse(renderPage({
     title: 'Users',
     user: adminUser,
-    body: renderUsersBody({ users, agents, feedback })
+    body: renderUsersBody({ users, agents, feedback }),
+    currentPath: '/admin/users'
   }))
 }
 
@@ -776,7 +988,8 @@ async function renderAgentsPage(request, env, adminUser, feedback) {
       feedback,
       installScriptUrl: `${new URL(request.url).origin}/install/windows.ps1?pairing_token=${encodeURIComponent(pairingToken)}`,
       installManifest: manifest
-    })
+    }),
+    currentPath: '/admin/agents'
   }))
 }
 
@@ -1029,6 +1242,773 @@ function renderDashboardBody({ user, automations, agents, outputs, feedback }) {
   `
 }
 
+function renderAutomationBody({ user, automations, agents, apiKeys, feedback, editor }) {
+  const cards = automations.map((automation) => {
+    const config = parseJsonMaybe(automation.automation_json, {})
+    const source = String(config.video_source || 'ftp')
+    const schedule = String(config.schedule_type || 'daily')
+    const videosPerRun = config.videos_per_run ?? '-'
+    return `
+      <article class="list-card">
+        <div class="list-card-head">
+          <div>
+            <strong>${escapeHtml(automation.name)}</strong>
+            <div class="muted compact">
+              ${escapeHtml(source)} | ${escapeHtml(automation.run_mode)} | ${escapeHtml(schedule)} | ${escapeHtml(String(videosPerRun))}
+              videos/run
+            </div>
+          </div>
+          <div class="badge">${escapeHtml(automation.status)}</div>
+        </div>
+        <div class="toolbar wrap">
+          <a class="button" href="/automation?edit=${automation.id}">Edit</a>
+          <form method="POST" action="/automation">
+            <input type="hidden" name="action" value="queue_automation">
+            <input type="hidden" name="automation_id" value="${automation.id}">
+            <button class="button primary" type="submit">Run Now</button>
+          </form>
+          <form method="POST" action="/automation" onsubmit="return confirm('Delete this automation?')">
+            <input type="hidden" name="action" value="delete_automation">
+            <input type="hidden" name="automation_id" value="${automation.id}">
+            <button class="button ghost" type="submit">Delete</button>
+          </form>
+        </div>
+      </article>
+    `
+  }).join('')
+
+  return `
+    ${renderFeedback(feedback)}
+    <section class="dashboard-grid">
+      <section class="panel span-two">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Legacy Worker UI</div>
+            <h1>${editor.id ? 'Edit Automation' : 'Create Automation'}</h1>
+            <p class="lead">This Worker form stores the same core automation keys used by the old local runner: source, schedule, video processing, taglines, and publish settings.</p>
+          </div>
+          ${editor.id ? `<a class="button" href="/automation">Create New</a>` : ''}
+        </div>
+        ${renderAutomationEditorForm({ user, agents, apiKeys, editor })}
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Quick Notes</div>
+            <h2>Current Setup</h2>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="note-card">
+            <strong>Local runner</strong>
+            <div class="muted compact">Choose <code>Local Runner</code> plus an assigned agent to keep processing on the customer PC.</div>
+          </div>
+          <div class="note-card">
+            <strong>API settings</strong>
+            <div class="muted compact">Use <a class="inline-link" href="/settings">Settings</a> for platform credentials and <a class="inline-link" href="/api-keys">API Keys</a> for Bunny connections.</div>
+          </div>
+          <div class="note-card">
+            <strong>Runner policy</strong>
+            <div class="muted compact">${user.role === 'admin' || user.can_use_github_runner ? 'This account can use both local and GitHub Runner modes.' : 'This account is restricted to local mode only.'}</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel span-two">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Automation Library</div>
+            <h2>Saved Automations</h2>
+          </div>
+        </div>
+        ${cards || '<p class="muted">No automations created yet.</p>'}
+      </section>
+    </section>
+    ${renderAutomationEditorScript()}
+  `
+}
+
+function renderSettingsBody({ tab, settings, feedback }) {
+  const tabs = [
+    ['bunny', 'Bunny'],
+    ['stream', 'Stream APIs'],
+    ['ftp', 'FTP'],
+    ['openai', 'AI'],
+    ['ffmpeg', 'FFmpeg'],
+    ['storage', 'Storage'],
+    ['github_runner', 'GitHub Runner'],
+    ['postforme', 'Post for Me']
+  ]
+
+  const tabLinks = tabs.map(([key, label]) => `
+    <a class="tab-chip${tab === key ? ' active' : ''}" href="/settings?tab=${key}">${label}</a>
+  `).join('')
+
+  return `
+    ${renderFeedback(feedback)}
+    <section class="dashboard-grid">
+      <section class="panel span-two">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Legacy Settings</div>
+            <h1>${escapeHtml(settingsTabLabel(tab))}</h1>
+          </div>
+        </div>
+        <div class="toolbar wrap tabs-wrap">${tabLinks}</div>
+        <form method="POST" action="/settings" class="stack legacy-settings-form">
+          <input type="hidden" name="action" value="save_settings">
+          <input type="hidden" name="tab" value="${escapeHtml(tab)}">
+          ${renderSettingsTabFields(tab, settings)}
+          <button type="submit" class="button primary">Save ${escapeHtml(settingsTabLabel(tab))}</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Worker Notes</div>
+            <h2>How It Applies</h2>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="note-card">
+            <strong>Saved in D1</strong>
+            <div class="muted compact">These values are stored in Worker D1 and included in local-agent payload snapshots.</div>
+          </div>
+          <div class="note-card">
+            <strong>Local processing</strong>
+            <div class="muted compact">FFmpeg, FTP, AI, cookies, and runner settings are pulled into the paired machine when jobs are queued.</div>
+          </div>
+          <div class="note-card">
+            <strong>Parity</strong>
+            <div class="muted compact">This page is the Worker-side equivalent of the old settings.php tabs.</div>
+          </div>
+        </div>
+      </section>
+    </section>
+  `
+}
+
+function renderApiKeysBody({ keys, feedback }) {
+  const cards = keys.map((key) => `
+    <article class="list-card">
+      <div class="list-card-head">
+        <div>
+          <strong>${escapeHtml(key.name)}</strong>
+          <div class="muted compact">Library ${escapeHtml(key.library_id)} | ${escapeHtml(key.cdn_hostname || '-') } | FTP ${escapeHtml(key.ftp_host || '-')}</div>
+        </div>
+        <div class="badge">${escapeHtml(key.status)}</div>
+      </div>
+      <form method="POST" action="/api-keys" class="stack compact-form">
+        <input type="hidden" name="action" value="update">
+        <input type="hidden" name="id" value="${key.id}">
+        <div class="grid two">
+          <label class="field"><span>Name</span><input type="text" name="name" value="${escapeHtml(key.name)}" required></label>
+          <label class="field"><span>Library ID</span><input type="text" name="library_id" value="${escapeHtml(key.library_id)}" required></label>
+        </div>
+        <label class="field"><span>API Key</span><input type="password" name="api_key" value="${escapeHtml(key.api_key)}" required></label>
+        <div class="grid two">
+          <label class="field"><span>Storage Zone</span><input type="text" name="storage_zone" value="${escapeHtml(key.storage_zone || '')}"></label>
+          <label class="field"><span>CDN Hostname</span><input type="text" name="cdn_hostname" value="${escapeHtml(key.cdn_hostname || '')}"></label>
+        </div>
+        <div class="grid two">
+          <label class="field"><span>FTP Host</span><input type="text" name="ftp_host" value="${escapeHtml(key.ftp_host || '')}"></label>
+          <label class="field"><span>FTP Username</span><input type="text" name="ftp_username" value="${escapeHtml(key.ftp_username || '')}"></label>
+        </div>
+        <div class="grid two">
+          <label class="field"><span>FTP Password</span><input type="password" name="ftp_password" value="${escapeHtml(key.ftp_password || '')}"></label>
+          <label class="field"><span>FTP Port</span><input type="number" name="ftp_port" value="${escapeHtml(String(key.ftp_port || 21))}"></label>
+        </div>
+        <div class="grid two">
+          <label class="field"><span>Pull Zone ID</span><input type="text" name="pull_zone_id" value="${escapeHtml(key.pull_zone_id || '')}"></label>
+          <label class="field">
+            <span>Status</span>
+            <select name="status">
+              <option value="active"${key.status === 'active' ? ' selected' : ''}>Active</option>
+              <option value="inactive"${key.status === 'inactive' ? ' selected' : ''}>Inactive</option>
+            </select>
+          </label>
+        </div>
+        <button class="button" type="submit">Save</button>
+      </form>
+      <div class="toolbar wrap">
+        <form method="POST" action="/api-keys">
+          <input type="hidden" name="action" value="toggle">
+          <input type="hidden" name="id" value="${key.id}">
+          <button class="button" type="submit">${key.status === 'active' ? 'Disable' : 'Enable'}</button>
+        </form>
+        <form method="POST" action="/api-keys" onsubmit="return confirm('Delete this connection?')">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="id" value="${key.id}">
+          <button class="button ghost" type="submit">Delete</button>
+        </form>
+      </div>
+    </article>
+  `).join('')
+
+  return `
+    ${renderFeedback(feedback)}
+    <section class="dashboard-grid">
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Bunny Connections</div>
+            <h1>Add API Key</h1>
+          </div>
+        </div>
+        <form method="POST" action="/api-keys" class="stack">
+          <input type="hidden" name="action" value="create">
+          <label class="field"><span>Connection Name</span><input type="text" name="name" required></label>
+          <div class="grid two">
+            <label class="field"><span>API Key</span><input type="password" name="api_key" required></label>
+            <label class="field"><span>Library ID</span><input type="text" name="library_id" required></label>
+          </div>
+          <div class="grid two">
+            <label class="field"><span>Storage Zone</span><input type="text" name="storage_zone"></label>
+            <label class="field"><span>CDN Hostname</span><input type="text" name="cdn_hostname"></label>
+          </div>
+          <div class="grid two">
+            <label class="field"><span>FTP Host</span><input type="text" name="ftp_host"></label>
+            <label class="field"><span>FTP Username</span><input type="text" name="ftp_username"></label>
+          </div>
+          <div class="grid two">
+            <label class="field"><span>FTP Password</span><input type="password" name="ftp_password"></label>
+            <label class="field"><span>FTP Port</span><input type="number" name="ftp_port" value="21"></label>
+          </div>
+          <label class="field"><span>Pull Zone ID</span><input type="text" name="pull_zone_id"></label>
+          <button type="submit" class="button primary">Create Connection</button>
+        </form>
+      </section>
+      <section class="panel span-two">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Saved Connections</div>
+            <h2>API Keys</h2>
+          </div>
+        </div>
+        ${cards || '<p class="muted">No Bunny connections configured yet.</p>'}
+      </section>
+    </section>
+  `
+}
+
+function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
+  const apiKeyOptions = ['<option value="">Select Bunny connection</option>', ...apiKeys.map((key) => `<option value="${key.id}"${selectedAttr(editor.api_key_id, key.id)}>${escapeHtml(key.name)}</option>`)].join('')
+  const agentOptions = [
+    `<option value="">${user.role === 'admin' ? 'Server machine (current host)' : 'Assigned device'}</option>`,
+    ...agents.map((agent) => `<option value="${agent.id}"${selectedAttr(editor.local_agent_id, agent.id)}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`)
+  ].join('')
+  const canUseGithubRunner = user.role === 'admin' || !!user.can_use_github_runner
+
+  return `
+    <form method="POST" action="/automation" class="stack">
+      <input type="hidden" name="action" value="save_automation">
+      ${editor.id ? `<input type="hidden" name="automation_id" value="${editor.id}">` : ''}
+      <div class="tab-strip">
+        <button type="button" class="tab-button active" data-tab-button="basic" onclick="workerShowAutomationTab('basic')">1. Basic</button>
+        <button type="button" class="tab-button" data-tab-button="video" onclick="workerShowAutomationTab('video')">2. Video</button>
+        <button type="button" class="tab-button" data-tab-button="taglines" onclick="workerShowAutomationTab('taglines')">3. Taglines</button>
+        <button type="button" class="tab-button" data-tab-button="publish" onclick="workerShowAutomationTab('publish')">4. Publish</button>
+      </div>
+
+      <section class="tab-pane active" data-tab-pane="basic">
+        <div class="stack">
+          <label class="field"><span>Automation Name</span><input type="text" name="name" value="${escapeHtml(editor.name)}" required></label>
+          <label class="field">
+            <span>Video Source</span>
+            <select name="video_source" id="automation_video_source" onchange="workerToggleAutomationSource()">
+              <option value="ftp"${selectedAttr(editor.video_source, 'ftp')}>FTP Server</option>
+              <option value="bunny"${selectedAttr(editor.video_source, 'bunny')}>Bunny CDN</option>
+              <option value="manual_links"${selectedAttr(editor.video_source, 'manual_links')}>Manual Links</option>
+              <option value="youtube_channel"${selectedAttr(editor.video_source, 'youtube_channel')}>YouTube Channel</option>
+            </select>
+          </label>
+          <div id="automation_api_key_group"${editor.video_source === 'bunny' ? '' : ' class="hidden"'}>
+            <label class="field"><span>Bunny Connection</span><select name="api_key_id">${apiKeyOptions}</select></label>
+          </div>
+          <div id="automation_manual_group"${editor.video_source === 'manual_links' ? '' : ' class="hidden"'}>
+            <label class="field"><span>Manual Video Links</span><textarea name="manual_video_links" rows="4" placeholder="One direct URL per line">${escapeHtml(editor.manual_video_links)}</textarea></label>
+          </div>
+          <div id="automation_youtube_group"${editor.video_source === 'youtube_channel' ? '' : ' class="hidden"'}>
+            <label class="field"><span>YouTube Channel URL</span><input type="url" name="youtube_channel_url" value="${escapeHtml(editor.youtube_channel_url)}" placeholder="https://www.youtube.com/@channel/videos"></label>
+          </div>
+          <div class="grid two">
+            <label class="field">
+              <span>Runner Mode</span>
+              <select name="run_mode">
+                <option value="local"${selectedAttr(editor.run_mode, 'local')}>Local Runner</option>
+                <option value="github_runner"${selectedAttr(editor.run_mode, 'github_runner')}${canUseGithubRunner ? '' : ' disabled'}>GitHub Runner</option>
+              </select>
+            </label>
+            <label class="field"><span>Local Agent Device</span><select name="local_agent_id">${agentOptions}</select></label>
+          </div>
+          <div class="grid two">
+            <label class="field">
+              <span>Schedule</span>
+              <select name="schedule_type">
+                <option value="minutes"${selectedAttr(editor.schedule_type, 'minutes')}>Every X Minutes</option>
+                <option value="hourly"${selectedAttr(editor.schedule_type, 'hourly')}>Hourly</option>
+                <option value="daily"${selectedAttr(editor.schedule_type, 'daily')}>Daily</option>
+                <option value="weekly"${selectedAttr(editor.schedule_type, 'weekly')}>Weekly</option>
+              </select>
+            </label>
+            <label class="field"><span>Hour</span><input type="number" name="schedule_hour" min="0" max="23" value="${escapeHtml(String(editor.schedule_hour))}"></label>
+          </div>
+          <label class="field"><span>Every (minutes)</span><input type="number" name="schedule_every_minutes" min="1" max="1440" value="${escapeHtml(String(editor.schedule_every_minutes))}"></label>
+          <label class="toggle"><input type="checkbox" name="enabled"${checkedAttr(editor.enabled)}> <span>Start automation immediately</span></label>
+        </div>
+      </section>
+
+      <section class="tab-pane" data-tab-pane="video">
+        <div class="stack">
+          <input type="hidden" name="video_selection_method_hidden" id="video_selection_method_hidden" value="${escapeHtml(editor.video_selection_method)}">
+          <div class="toolbar wrap">
+            <label class="toggle"><input type="radio" name="video_selection_method" value="days"${checkedAttr(editor.video_selection_method === 'days')} onchange="workerToggleVideoSelection()"> <span>Last X days</span></label>
+            <label class="toggle"><input type="radio" name="video_selection_method" value="date_range"${checkedAttr(editor.video_selection_method === 'date_range')} onchange="workerToggleVideoSelection()"> <span>Date range</span></label>
+          </div>
+          <div id="video_days_section">
+            <label class="field"><span>Fetch videos from last (days)</span><input type="number" name="video_days_filter" value="${escapeHtml(String(editor.video_days_filter))}" min="1"></label>
+          </div>
+          <div id="video_date_range_section" class="grid two${editor.video_selection_method === 'date_range' ? '' : ' hidden'}">
+            <label class="field"><span>From Date</span><input type="date" name="video_start_date" value="${escapeHtml(editor.video_start_date)}"></label>
+            <label class="field"><span>To Date</span><input type="date" name="video_end_date" value="${escapeHtml(editor.video_end_date)}"></label>
+          </div>
+          <div class="grid two">
+            <label class="toggle"><input type="checkbox" name="rotation_enabled"${checkedAttr(editor.rotation_enabled)}> <span>Smart rotation</span></label>
+            <label class="toggle"><input type="checkbox" name="rotation_shuffle"${checkedAttr(editor.rotation_shuffle)}> <span>Shuffle order</span></label>
+          </div>
+          <label class="toggle"><input type="checkbox" name="rotation_auto_reset"${checkedAttr(editor.rotation_auto_reset)}> <span>Auto reset after full cycle</span></label>
+          <div class="grid two">
+            <label class="field"><span>Videos per run</span><input type="number" name="videos_per_run" value="${escapeHtml(String(editor.videos_per_run))}" min="1" max="500"></label>
+            <label class="field"><span>Short Duration (sec)</span><input type="number" name="short_duration" value="${escapeHtml(String(editor.short_duration))}" min="1"></label>
+          </div>
+          <div class="grid two">
+            <label class="field"><span>Playback Speed</span><input type="number" name="playback_speed" value="${escapeHtml(String(editor.playback_speed))}" step="0.1" min="0.1" max="3"></label>
+            <label class="field">
+              <span>Aspect Ratio</span>
+              <select name="short_aspect_ratio">
+                <option value="9:16"${selectedAttr(editor.short_aspect_ratio, '9:16')}>9:16 Vertical</option>
+                <option value="1:1"${selectedAttr(editor.short_aspect_ratio, '1:1')}>1:1 Square</option>
+                <option value="16:9"${selectedAttr(editor.short_aspect_ratio, '16:9')}>16:9 Horizontal</option>
+                <option value="9:16-fit"${selectedAttr(editor.short_aspect_ratio, '9:16-fit')}>9:16 Fit</option>
+                <option value="1:1-fit"${selectedAttr(editor.short_aspect_ratio, '1:1-fit')}>1:1 Fit</option>
+                <option value="16:9-fit"${selectedAttr(editor.short_aspect_ratio, '16:9-fit')}>16:9 Fit</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid two">
+            <label class="field">
+              <span>Shorts Per Source Video</span>
+              <select name="source_shorts_mode" id="source_shorts_mode" onchange="workerToggleSourceShortsMode()">
+                <option value="single"${selectedAttr(editor.source_shorts_mode, 'single')}>Single short</option>
+                <option value="duration_based"${selectedAttr(editor.source_shorts_mode, 'duration_based')}>Auto by duration</option>
+                <option value="fixed_count"${selectedAttr(editor.source_shorts_mode, 'fixed_count')}>Fixed count</option>
+              </select>
+            </label>
+            <div id="source_shorts_max_wrap"${editor.source_shorts_mode === 'fixed_count' ? '' : ' class="hidden"'}>
+              <label class="field"><span>Fixed short count</span><input type="number" name="source_shorts_max_count" value="${escapeHtml(String(editor.source_shorts_max_count))}" min="1" max="20"></label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane" data-tab-pane="taglines">
+        <div class="stack">
+          <label class="toggle"><input type="checkbox" name="ai_taglines_enabled"${checkedAttr(editor.ai_taglines_enabled)}> <span>Enable taglines</span></label>
+          <label class="field"><span>AI Tagline Prompt</span><textarea name="ai_tagline_prompt" rows="4">${escapeHtml(editor.ai_tagline_prompt)}</textarea></label>
+          <div class="grid two">
+            <label class="field"><span>Branding Text Top</span><input type="text" name="branding_text_top" value="${escapeHtml(editor.branding_text_top)}"></label>
+            <label class="field"><span>Branding Text Bottom</span><input type="text" name="branding_text_bottom" value="${escapeHtml(editor.branding_text_bottom)}"></label>
+          </div>
+          <label class="field"><span>Random Words / Taglines CSV</span><textarea name="random_words" rows="3" placeholder="word1, word2, word3">${escapeHtml(editor.random_words)}</textarea></label>
+          <div class="grid two">
+            <label class="toggle"><input type="checkbox" name="whisper_enabled"${checkedAttr(editor.whisper_enabled)}> <span>Enable Whisper captions</span></label>
+            <label class="field"><span>Whisper Language</span><input type="text" name="whisper_language" value="${escapeHtml(editor.whisper_language)}" placeholder="en"></label>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane" data-tab-pane="publish">
+        <div class="stack">
+          <label class="toggle"><input type="checkbox" name="postforme_enabled" id="postforme_enabled"${checkedAttr(editor.postforme_enabled)} onchange="workerTogglePostForMe()"> <span>Enable Post for Me</span></label>
+          <div id="postforme_settings"${editor.postforme_enabled ? '' : ' class="hidden"'}>
+            <div class="stack">
+              <label class="field"><span>Post for Me Account IDs</span><input type="text" name="postforme_account_ids_csv" value="${escapeHtml(editor.postforme_account_ids_csv)}" placeholder="comma,separated,account,ids"></label>
+              <div class="grid two">
+                <label class="field">
+                  <span>Schedule Mode</span>
+                  <select name="postforme_schedule_mode">
+                    <option value="immediate"${selectedAttr(editor.postforme_schedule_mode, 'immediate')}>Immediate</option>
+                    <option value="scheduled"${selectedAttr(editor.postforme_schedule_mode, 'scheduled')}>Specific date/time</option>
+                    <option value="offset"${selectedAttr(editor.postforme_schedule_mode, 'offset')}>Delay after processing</option>
+                  </select>
+                </label>
+                <label class="field"><span>Schedule Date/Time</span><input type="datetime-local" name="postforme_schedule_datetime" value="${escapeHtml(editor.postforme_schedule_datetime)}"></label>
+              </div>
+              <div class="grid two">
+                <label class="field"><span>Timezone</span><input type="text" name="postforme_schedule_timezone" value="${escapeHtml(editor.postforme_schedule_timezone)}" placeholder="Asia/Karachi"></label>
+                <label class="field"><span>Delay after processing (minutes)</span><input type="number" name="postforme_schedule_offset_minutes" value="${escapeHtml(String(editor.postforme_schedule_offset_minutes))}" min="0"></label>
+              </div>
+              <label class="field"><span>Spread between posts (minutes)</span><input type="number" name="postforme_schedule_spread_minutes" value="${escapeHtml(String(editor.postforme_schedule_spread_minutes))}" min="0"></label>
+            </div>
+          </div>
+          <div class="grid two">
+            <label class="toggle"><input type="checkbox" name="youtube_enabled"${checkedAttr(editor.youtube_enabled)}> <span>YouTube Shorts</span></label>
+            <label class="toggle"><input type="checkbox" name="tiktok_enabled"${checkedAttr(editor.tiktok_enabled)}> <span>TikTok</span></label>
+            <label class="toggle"><input type="checkbox" name="instagram_enabled"${checkedAttr(editor.instagram_enabled)}> <span>Instagram Reels</span></label>
+            <label class="toggle"><input type="checkbox" name="facebook_enabled"${checkedAttr(editor.facebook_enabled)}> <span>Facebook Reels</span></label>
+          </div>
+        </div>
+      </section>
+
+      <div class="toolbar wrap">
+        <button type="submit" class="button primary">${editor.id ? 'Update Automation' : 'Create Automation'}</button>
+      </div>
+    </form>
+  `
+}
+
+function renderAutomationEditorScript() {
+  return `
+    <script>
+      function workerShowAutomationTab(tab) {
+        document.querySelectorAll('[data-tab-pane]').forEach((el) => el.classList.toggle('active', el.getAttribute('data-tab-pane') === tab));
+        document.querySelectorAll('[data-tab-button]').forEach((el) => el.classList.toggle('active', el.getAttribute('data-tab-button') === tab));
+      }
+      function workerToggleAutomationSource() {
+        const source = document.getElementById('automation_video_source')?.value || 'ftp';
+        document.getElementById('automation_api_key_group')?.classList.toggle('hidden', source !== 'bunny');
+        document.getElementById('automation_manual_group')?.classList.toggle('hidden', source !== 'manual_links');
+        document.getElementById('automation_youtube_group')?.classList.toggle('hidden', source !== 'youtube_channel');
+      }
+      function workerToggleVideoSelection() {
+        const selected = document.querySelector('input[name=\"video_selection_method\"]:checked')?.value || 'days';
+        const hidden = document.getElementById('video_selection_method_hidden');
+        if (hidden) hidden.value = selected;
+        document.getElementById('video_days_section')?.classList.toggle('hidden', selected !== 'days');
+        document.getElementById('video_date_range_section')?.classList.toggle('hidden', selected !== 'date_range');
+      }
+      function workerTogglePostForMe() {
+        const enabled = !!document.getElementById('postforme_enabled')?.checked;
+        document.getElementById('postforme_settings')?.classList.toggle('hidden', !enabled);
+      }
+      function workerToggleSourceShortsMode() {
+        const mode = document.getElementById('source_shorts_mode')?.value || 'single';
+        document.getElementById('source_shorts_max_wrap')?.classList.toggle('hidden', mode !== 'fixed_count');
+      }
+      document.addEventListener('DOMContentLoaded', () => {
+        workerToggleAutomationSource();
+        workerToggleVideoSelection();
+        workerTogglePostForMe();
+        workerToggleSourceShortsMode();
+      });
+    </script>
+  `
+}
+
+function renderSettingsTabFields(tab, settings) {
+  if (tab === 'bunny') {
+    return `
+      <label class="field"><span>API Key</span><input type="password" name="bunny_api_key" value="${escapeHtml(settings.bunny_api_key || '')}"></label>
+      <label class="field"><span>Library ID</span><input type="text" name="bunny_library_id" value="${escapeHtml(settings.bunny_library_id || '')}"></label>
+      <div class="grid two">
+        <label class="field"><span>Storage Zone</span><input type="text" name="bunny_storage_zone" value="${escapeHtml(settings.bunny_storage_zone || '')}"></label>
+        <label class="field"><span>Storage Password</span><input type="password" name="bunny_storage_password" value="${escapeHtml(settings.bunny_storage_password || '')}"></label>
+      </div>
+    `
+  }
+  if (tab === 'stream') {
+    return `
+      <div class="subpanel">
+        <h2>YouTube API</h2>
+        <div class="stack">
+          <label class="field"><span>API Key</span><input type="password" name="youtube_api_key" value="${escapeHtml(settings.youtube_api_key || '')}"></label>
+          <div class="grid two">
+            <label class="field"><span>OAuth Client ID</span><input type="text" name="youtube_client_id" value="${escapeHtml(settings.youtube_client_id || '')}"></label>
+            <label class="field"><span>OAuth Client Secret</span><input type="password" name="youtube_client_secret" value="${escapeHtml(settings.youtube_client_secret || '')}"></label>
+          </div>
+        </div>
+      </div>
+      <div class="subpanel">
+        <h2>TikTok API</h2>
+        <div class="grid two">
+          <label class="field"><span>Client Key</span><input type="text" name="tiktok_client_key" value="${escapeHtml(settings.tiktok_client_key || '')}"></label>
+          <label class="field"><span>Client Secret</span><input type="password" name="tiktok_client_secret" value="${escapeHtml(settings.tiktok_client_secret || '')}"></label>
+        </div>
+      </div>
+      <div class="subpanel">
+        <h2>Instagram + Facebook</h2>
+        <div class="grid two">
+          <label class="field"><span>Instagram App ID</span><input type="text" name="instagram_app_id" value="${escapeHtml(settings.instagram_app_id || '')}"></label>
+          <label class="field"><span>Instagram App Secret</span><input type="password" name="instagram_app_secret" value="${escapeHtml(settings.instagram_app_secret || '')}"></label>
+          <label class="field"><span>Facebook App ID</span><input type="text" name="facebook_app_id" value="${escapeHtml(settings.facebook_app_id || '')}"></label>
+          <label class="field"><span>Facebook App Secret</span><input type="password" name="facebook_app_secret" value="${escapeHtml(settings.facebook_app_secret || '')}"></label>
+        </div>
+      </div>
+    `
+  }
+  if (tab === 'ftp') {
+    return `
+      <div class="grid two">
+        <label class="field"><span>FTP Host</span><input type="text" name="ftp_host" value="${escapeHtml(settings.ftp_host || '')}"></label>
+        <label class="field"><span>Port</span><input type="number" name="ftp_port" value="${escapeHtml(settings.ftp_port || '21')}"></label>
+        <label class="field"><span>Username</span><input type="text" name="ftp_username" value="${escapeHtml(settings.ftp_username || '')}"></label>
+        <label class="field"><span>Password</span><input type="password" name="ftp_password" value="${escapeHtml(settings.ftp_password || '')}"></label>
+      </div>
+      <label class="field"><span>Remote Path</span><input type="text" name="ftp_path" value="${escapeHtml(settings.ftp_path || '/')}"></label>
+    `
+  }
+  if (tab === 'openai') {
+    return `
+      <label class="field">
+        <span>AI Provider</span>
+        <select name="ai_provider">
+          <option value="gemini"${selectedAttr(settings.ai_provider || 'gemini', 'gemini')}>Google Gemini</option>
+          <option value="openai"${selectedAttr(settings.ai_provider || '', 'openai')}>OpenAI</option>
+        </select>
+      </label>
+      <label class="field"><span>Gemini API Key</span><input type="password" name="gemini_api_key" value="${escapeHtml(settings.gemini_api_key || '')}"></label>
+      <label class="field"><span>OpenAI API Key</span><input type="password" name="openai_api_key" value="${escapeHtml(settings.openai_api_key || '')}"></label>
+      <label class="field"><span>Default Language</span><input type="text" name="default_language" value="${escapeHtml(settings.default_language || 'en')}"></label>
+    `
+  }
+  if (tab === 'ffmpeg') {
+    return `
+      <label class="field"><span>FFmpeg Path</span><input type="text" name="ffmpeg_path" value="${escapeHtml(settings.ffmpeg_path || 'ffmpeg')}"></label>
+      <label class="toggle"><input type="checkbox" name="auto_install_local_runtime"${truthySetting(settings.auto_install_local_runtime, true) ? ' checked' : ''}> <span>Auto-install FFmpeg locally when Local Runner starts</span></label>
+      <label class="field"><span>Windows Auto-Install URL</span><input type="text" name="ffmpeg_auto_download_url_windows" value="${escapeHtml(settings.ffmpeg_auto_download_url_windows || 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip')}"></label>
+    `
+  }
+  if (tab === 'storage') {
+    return `
+      <label class="field"><span>Storage Base Path</span><input type="text" name="storage_base_path" value="${escapeHtml(settings.storage_base_path || '')}"></label>
+      <label class="field"><span>Public Panel Base URL</span><input type="text" name="panel_public_base_url" value="${escapeHtml(settings.panel_public_base_url || '')}"></label>
+      <label class="field"><span>yt-dlp Cookies File</span><input type="text" name="ytdlp_cookies_file" value="${escapeHtml(settings.ytdlp_cookies_file || '')}"></label>
+      <div class="grid two">
+        <label class="field"><span>yt-dlp Browser</span><input type="text" name="ytdlp_cookies_browser" value="${escapeHtml(settings.ytdlp_cookies_browser || '')}"></label>
+        <label class="field"><span>Browser Profile</span><input type="text" name="ytdlp_cookies_browser_profile" value="${escapeHtml(settings.ytdlp_cookies_browser_profile || '')}"></label>
+      </div>
+    `
+  }
+  if (tab === 'github_runner') {
+    return `
+      <label class="toggle"><input type="checkbox" name="github_runner_enabled"${truthySetting(settings.github_runner_enabled, false) ? ' checked' : ''}> <span>Enable GitHub Runner mode</span></label>
+      <div class="grid two">
+        <label class="field"><span>GitHub Owner</span><input type="text" name="github_runner_owner" value="${escapeHtml(settings.github_runner_owner || '')}"></label>
+        <label class="field"><span>Repository</span><input type="text" name="github_runner_repo" value="${escapeHtml(settings.github_runner_repo || '')}"></label>
+        <label class="field"><span>Workflow File</span><input type="text" name="github_runner_workflow" value="${escapeHtml(settings.github_runner_workflow || 'automation-runner.yml')}"></label>
+        <label class="field"><span>Branch / Ref</span><input type="text" name="github_runner_ref" value="${escapeHtml(settings.github_runner_ref || 'main')}"></label>
+      </div>
+      <label class="field"><span>GitHub Token</span><input type="password" name="github_runner_token" value="${escapeHtml(settings.github_runner_token || '')}"></label>
+      <label class="field"><span>Callback Secret</span><input type="text" name="github_runner_callback_secret" value="${escapeHtml(settings.github_runner_callback_secret || '')}"></label>
+      <label class="field"><span>Extra Inputs JSON</span><textarea name="github_runner_inputs_json" rows="4">${escapeHtml(settings.github_runner_inputs_json || '')}</textarea></label>
+      <label class="field"><span>Public Panel Base URL</span><input type="text" name="panel_public_base_url" value="${escapeHtml(settings.panel_public_base_url || '')}"></label>
+    `
+  }
+  return `
+    <label class="field"><span>Post for Me API Key</span><input type="password" name="postforme_api_key" value="${escapeHtml(settings.postforme_api_key || '')}"></label>
+    <label class="field">
+      <span>Project Type</span>
+      <select name="postforme_project_type">
+        <option value="quickstart"${selectedAttr(settings.postforme_project_type || 'quickstart', 'quickstart')}>Quickstart</option>
+        <option value="whitelabel"${selectedAttr(settings.postforme_project_type || '', 'whitelabel')}>White Label</option>
+      </select>
+    </label>
+  `
+}
+
+function buildAutomationEditorState(automation) {
+  const config = automation ? parseJsonMaybe(automation.automation_json, {}) : {}
+  const postformeAccounts = Array.isArray(config.postforme_account_ids)
+    ? config.postforme_account_ids.map((item) => String(item)).join(',')
+    : String(config.postforme_account_ids || '')
+  return {
+    id: automation ? Number(automation.id) : 0,
+    name: automation?.name || '',
+    run_mode: automation?.run_mode || 'local',
+    local_agent_id: automation?.local_agent_id || '',
+    enabled: automation ? Number(automation.enabled || 0) === 1 : true,
+    video_source: String(config.video_source || 'ftp'),
+    api_key_id: config.api_key_id || '',
+    manual_video_links: String(config.manual_video_links || ''),
+    youtube_channel_url: String(config.youtube_channel_url || ''),
+    schedule_type: String(config.schedule_type || 'daily'),
+    schedule_hour: config.schedule_hour ?? 9,
+    schedule_every_minutes: config.schedule_every_minutes ?? 10,
+    video_selection_method: String(config.video_selection_method_hidden || config.video_selection_method || ((config.video_start_date || config.video_end_date) ? 'date_range' : 'days')),
+    video_days_filter: config.video_days_filter ?? 30,
+    video_start_date: String(config.video_start_date || ''),
+    video_end_date: String(config.video_end_date || ''),
+    rotation_enabled: truthyValue(config.rotation_enabled, true),
+    rotation_shuffle: truthyValue(config.rotation_shuffle, true),
+    rotation_auto_reset: truthyValue(config.rotation_auto_reset, true),
+    videos_per_run: config.videos_per_run ?? 5,
+    short_duration: config.short_duration ?? 60,
+    playback_speed: config.playback_speed ?? 1.0,
+    short_aspect_ratio: String(config.short_aspect_ratio || '9:16'),
+    source_shorts_mode: String(config.source_shorts_mode || 'single'),
+    source_shorts_max_count: config.source_shorts_max_count ?? 1,
+    ai_taglines_enabled: truthyValue(config.ai_taglines_enabled, false),
+    ai_tagline_prompt: String(config.ai_tagline_prompt || 'Generate universal greeting taglines'),
+    branding_text_top: String(config.branding_text_top || ''),
+    branding_text_bottom: String(config.branding_text_bottom || ''),
+    random_words: Array.isArray(config.random_words) ? config.random_words.join(', ') : String(config.random_words || ''),
+    whisper_enabled: truthyValue(config.whisper_enabled, false),
+    whisper_language: String(config.whisper_language || 'en'),
+    postforme_enabled: truthyValue(config.postforme_enabled, false),
+    postforme_account_ids_csv: postformeAccounts,
+    postforme_schedule_mode: String(config.postforme_schedule_mode || 'immediate'),
+    postforme_schedule_datetime: formatDatetimeLocal(config.postforme_schedule_datetime || ''),
+    postforme_schedule_timezone: String(config.postforme_schedule_timezone || 'UTC'),
+    postforme_schedule_offset_minutes: config.postforme_schedule_offset_minutes ?? 0,
+    postforme_schedule_spread_minutes: config.postforme_schedule_spread_minutes ?? 0,
+    youtube_enabled: truthyValue(config.youtube_enabled, false),
+    tiktok_enabled: truthyValue(config.tiktok_enabled, false),
+    instagram_enabled: truthyValue(config.instagram_enabled, false),
+    facebook_enabled: truthyValue(config.facebook_enabled, false)
+  }
+}
+
+function extractAutomationPayloadFromForm(form) {
+  const name = String(form.get('name') || '').trim()
+  const runMode = sanitizeRunMode(String(form.get('run_mode') || 'local'))
+  const localAgentId = toNullableInt(form.get('local_agent_id'))
+  const enabled = checkboxValue(form.get('enabled')) ? 1 : 0
+
+  if (form.has('automation_json')) {
+    const automationJsonText = String(form.get('automation_json') || '{}').trim() || '{}'
+    const apiKeyJsonText = String(form.get('api_key_json') || '').trim()
+    const settingsJsonText = String(form.get('settings_json') || '').trim()
+    return {
+      name,
+      runMode,
+      localAgentId,
+      enabled,
+      automationJson: parseJsonObject(automationJsonText, 'Automation JSON'),
+      apiKeyJson: apiKeyJsonText !== '' ? parseJsonObject(apiKeyJsonText, 'API Key JSON') : null,
+      settingsJson: settingsJsonText !== '' ? parseJsonObject(settingsJsonText, 'Settings JSON') : null
+    }
+  }
+
+  const selectionMethod = String(form.get('video_selection_method_hidden') || form.get('video_selection_method') || 'days')
+  return {
+    name,
+    runMode,
+    localAgentId,
+    enabled,
+    automationJson: {
+      video_source: String(form.get('video_source') || 'ftp'),
+      api_key_id: toNullableInt(form.get('api_key_id')) || 0,
+      manual_video_links: String(form.get('manual_video_links') || '').trim(),
+      youtube_channel_url: String(form.get('youtube_channel_url') || '').trim(),
+      schedule_type: String(form.get('schedule_type') || 'daily'),
+      schedule_hour: toInt(form.get('schedule_hour')) || 9,
+      schedule_every_minutes: toInt(form.get('schedule_every_minutes')) || 10,
+      video_selection_method: selectionMethod,
+      video_selection_method_hidden: selectionMethod,
+      video_days_filter: toInt(form.get('video_days_filter')) || 30,
+      video_start_date: String(form.get('video_start_date') || '').trim(),
+      video_end_date: String(form.get('video_end_date') || '').trim(),
+      rotation_enabled: checkboxValue(form.get('rotation_enabled')) ? 1 : 0,
+      rotation_shuffle: checkboxValue(form.get('rotation_shuffle')) ? 1 : 0,
+      rotation_auto_reset: checkboxValue(form.get('rotation_auto_reset')) ? 1 : 0,
+      videos_per_run: toInt(form.get('videos_per_run')) || 5,
+      short_duration: toInt(form.get('short_duration')) || 60,
+      playback_speed: String(form.get('playback_speed') || '1.0').trim(),
+      short_aspect_ratio: String(form.get('short_aspect_ratio') || '9:16'),
+      source_shorts_mode: String(form.get('source_shorts_mode') || 'single'),
+      source_shorts_max_count: toInt(form.get('source_shorts_max_count')) || 1,
+      ai_taglines_enabled: checkboxValue(form.get('ai_taglines_enabled')) ? 1 : 0,
+      ai_tagline_prompt: String(form.get('ai_tagline_prompt') || '').trim(),
+      branding_text_top: String(form.get('branding_text_top') || '').trim(),
+      branding_text_bottom: String(form.get('branding_text_bottom') || '').trim(),
+      random_words: splitCsvList(String(form.get('random_words') || '')),
+      whisper_enabled: checkboxValue(form.get('whisper_enabled')) ? 1 : 0,
+      whisper_language: String(form.get('whisper_language') || 'en').trim(),
+      postforme_enabled: checkboxValue(form.get('postforme_enabled')) ? 1 : 0,
+      postforme_account_ids: splitCsvList(String(form.get('postforme_account_ids_csv') || '')),
+      postforme_schedule_mode: String(form.get('postforme_schedule_mode') || 'immediate'),
+      postforme_schedule_datetime: String(form.get('postforme_schedule_datetime') || '').trim(),
+      postforme_schedule_timezone: String(form.get('postforme_schedule_timezone') || 'UTC').trim(),
+      postforme_schedule_offset_minutes: toInt(form.get('postforme_schedule_offset_minutes')) || 0,
+      postforme_schedule_spread_minutes: toInt(form.get('postforme_schedule_spread_minutes')) || 0,
+      youtube_enabled: checkboxValue(form.get('youtube_enabled')) ? 1 : 0,
+      tiktok_enabled: checkboxValue(form.get('tiktok_enabled')) ? 1 : 0,
+      instagram_enabled: checkboxValue(form.get('instagram_enabled')) ? 1 : 0,
+      facebook_enabled: checkboxValue(form.get('facebook_enabled')) ? 1 : 0
+    },
+    apiKeyJson: null,
+    settingsJson: null
+  }
+}
+
+function sanitizeSettingsTab(tab) {
+  return Object.prototype.hasOwnProperty.call(settingsTabFieldMap, tab) ? tab : 'bunny'
+}
+
+function getSettingsTabFields(tab) {
+  return settingsTabFieldMap[sanitizeSettingsTab(tab)] || settingsTabFieldMap.bunny
+}
+
+function settingsTabLabel(tab) {
+  const map = {
+    bunny: 'Bunny Settings',
+    stream: 'Stream API Settings',
+    ftp: 'FTP Settings',
+    openai: 'AI Settings',
+    ffmpeg: 'FFmpeg Settings',
+    storage: 'Storage Settings',
+    github_runner: 'GitHub Runner Settings',
+    postforme: 'Post for Me Settings'
+  }
+  return map[sanitizeSettingsTab(tab)]
+}
+
+function selectedAttr(actual, expected) {
+  return String(actual ?? '') === String(expected ?? '') ? ' selected' : ''
+}
+
+function checkedAttr(value) {
+  return value ? ' checked' : ''
+}
+
+function truthySetting(value, defaultValue) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue
+  }
+  return !['0', 'false', 'off', 'no'].includes(String(value).toLowerCase())
+}
+
+function truthyValue(value, defaultValue) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue
+  }
+  return !['0', 'false', 'off', 'no'].includes(String(value).toLowerCase())
+}
+
+function splitCsvList(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function formatDatetimeLocal(value) {
+  const raw = String(value || '').trim()
+  if (raw === '') {
+    return ''
+  }
+  return raw.replace(' ', 'T').slice(0, 16)
+}
+
+function appendQueryToRequest(request, params) {
+  const url = new URL(request.url)
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, String(value))
+  }
+  return new Request(url.toString(), request)
+}
+
 function renderUsersBody({ users, agents, feedback }) {
   return `
     ${renderFeedback(feedback)}
@@ -1148,7 +2128,7 @@ function renderAgentsBody({ agents, pairingToken, feedback, installScriptUrl, in
   `
 }
 
-function renderPage({ title, user, body }) {
+function renderPage({ title, user, body, currentPath = '' }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1157,25 +2137,25 @@ function renderPage({ title, user, body }) {
   <title>${escapeHtml(title)}</title>
   <style>
     :root {
-      --bg: #f1eee6;
-      --panel: rgba(255,255,255,0.78);
-      --ink: #1a1f19;
-      --muted: #5e6458;
-      --line: rgba(26,31,25,0.12);
-      --accent: #b24a2c;
-      --accent-soft: rgba(178,74,44,0.12);
-      --olive: #5e6d47;
-      --shadow: 0 24px 80px rgba(29, 31, 28, 0.12);
+      --bg: #090c14;
+      --panel: rgba(17,24,39,0.88);
+      --ink: #f8fafc;
+      --muted: #94a3b8;
+      --line: rgba(148,163,184,0.18);
+      --accent: #4f46e5;
+      --accent-soft: rgba(79,70,229,0.18);
+      --olive: #38bdf8;
+      --shadow: 0 30px 120px rgba(2,6,23,0.45);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       color: var(--ink);
       background:
-        radial-gradient(circle at top left, rgba(178,74,44,0.18), transparent 34%),
-        radial-gradient(circle at top right, rgba(94,109,71,0.16), transparent 32%),
-        linear-gradient(180deg, #f6f2e9 0%, #ece7dc 100%);
-      font-family: "Aptos", "Segoe UI Variable", "Segoe UI", sans-serif;
+        radial-gradient(circle at top left, rgba(79,70,229,0.25), transparent 34%),
+        radial-gradient(circle at top right, rgba(14,165,233,0.18), transparent 32%),
+        linear-gradient(180deg, #020617 0%, #0f172a 100%);
+      font-family: "Segoe UI Variable", "Aptos", "Segoe UI", sans-serif;
       min-height: 100vh;
     }
     a { color: inherit; text-decoration: none; }
@@ -1184,7 +2164,7 @@ function renderPage({ title, user, body }) {
       display:flex; justify-content:space-between; align-items:flex-start; gap:16px;
     }
     .topbar { margin-bottom: 22px; }
-    .brand { font-family: Georgia, "Times New Roman", serif; font-size: 1.25rem; letter-spacing: 0.02em; }
+    .brand { font-family: Georgia, "Times New Roman", serif; font-size: 1.35rem; letter-spacing: 0.02em; }
     .brand small { display:block; font-size:0.82rem; color: var(--muted); font-family: "Aptos", "Segoe UI", sans-serif; }
     .nav { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .panel {
@@ -1210,35 +2190,36 @@ function renderPage({ title, user, body }) {
     .field { display:grid; gap:8px; }
     .field span { font-size: 0.86rem; color: var(--muted); }
     .field input, .field select, .field textarea {
-      width: 100%; border: 1px solid rgba(26,31,25,0.14); border-radius: 16px;
-      padding: 12px 14px; background: rgba(255,255,255,0.86); color: var(--ink); font: inherit;
+      width: 100%; border: 1px solid rgba(148,163,184,0.18); border-radius: 16px;
+      padding: 12px 14px; background: rgba(15,23,42,0.9); color: var(--ink); font: inherit;
     }
     .field textarea { resize: vertical; min-height: 120px; font-family: Consolas, "Courier New", monospace; font-size: 0.88rem; }
     .toggle { display:flex; align-items:center; gap:10px; color: var(--muted); }
     .button {
       display:inline-flex; align-items:center; justify-content:center; gap:8px; padding: 11px 15px;
-      border-radius: 999px; border: 1px solid rgba(26,31,25,0.12); background: rgba(255,255,255,0.82);
+      border-radius: 999px; border: 1px solid rgba(148,163,184,0.16); background: rgba(15,23,42,0.82);
       color: var(--ink); cursor:pointer; font: inherit;
     }
-    .button.primary { background: var(--accent); color: #fff6f2; border-color: transparent; }
+    .button.primary { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: #fff; border-color: transparent; }
     .button.ghost { background: transparent; }
+    .button.nav-active { background: var(--accent-soft); border-color: rgba(99,102,241,0.32); }
     .toolbar { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
     .toolbar.wrap { row-gap: 10px; }
     .stats-row { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:12px; margin-top: 16px; }
-    .metric { border:1px solid var(--line); border-radius:18px; padding:16px; background: rgba(255,255,255,0.56); }
+    .metric { border:1px solid var(--line); border-radius:18px; padding:16px; background: rgba(15,23,42,0.56); }
     .metric span { display:block; font-size: 1.8rem; font-weight: 700; }
     .metric small { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-    .badge { min-width: 70px; text-align:center; padding: 8px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 0.82rem; }
+    .badge { min-width: 70px; text-align:center; padding: 8px 12px; border-radius: 999px; background: var(--accent-soft); color: #c7d2fe; font-weight: 700; font-size: 0.82rem; }
     .flash { border-radius: 18px; padding: 14px 16px; margin-bottom: 16px; border: 1px solid var(--line); }
-    .flash.error { background: rgba(189, 63, 54, 0.12); color: #8e2d25; }
-    .flash.success { background: rgba(80, 122, 59, 0.12); color: #365826; }
-    .flash.info { background: rgba(55, 92, 116, 0.12); color: #294a5e; }
+    .flash.error { background: rgba(127,29,29,0.34); color: #fecaca; }
+    .flash.success { background: rgba(20,83,45,0.32); color: #bbf7d0; }
+    .flash.info { background: rgba(30,64,175,0.28); color: #bfdbfe; }
     .mono-block {
-      margin-top: 10px; padding: 14px; border-radius: 16px; background: #1a1f19; color: #edf2ea;
+      margin-top: 10px; padding: 14px; border-radius: 16px; background: #020617; color: #edf2ea;
       overflow:auto; font-family: Consolas, "Courier New", monospace; font-size: 0.84rem; white-space: pre-wrap; word-break: break-word;
     }
     .progress-bar { height: 8px; border-radius: 999px; background: rgba(26,31,25,0.08); overflow:hidden; margin: 14px 0 18px; }
-    .progress-bar span { display:block; height:100%; background: linear-gradient(90deg, var(--olive), var(--accent)); border-radius:999px; }
+    .progress-bar span { display:block; height:100%; background: linear-gradient(90deg, #0ea5e9, #4f46e5, #7c3aed); border-radius:999px; }
     .automation-card { display:grid; gap: 10px; margin-bottom: 14px; }
     .compact-form { margin-top: 6px; }
     .table-wrap { overflow:auto; }
@@ -1246,10 +2227,18 @@ function renderPage({ title, user, body }) {
     th, td { text-align:left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
     .list-stack { display:grid; gap: 12px; }
-    .list-card { border:1px solid var(--line); border-radius: 18px; padding: 16px; background: rgba(255,255,255,0.56); }
+    .list-card { border:1px solid var(--line); border-radius: 18px; padding: 16px; background: rgba(15,23,42,0.56); }
     .inline-form { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
     .inline-form select, .inline-form input { min-width: 160px; }
     .inline-link { color: var(--accent); }
+    .hidden { display:none !important; }
+    .tab-strip, .tabs-wrap { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+    .tab-button, .tab-chip { display:inline-flex; align-items:center; justify-content:center; padding:10px 14px; border-radius:14px; border:1px solid var(--line); background: rgba(15,23,42,0.72); color: var(--muted); cursor:pointer; }
+    .tab-button.active, .tab-chip.active { background: var(--accent-soft); color: var(--ink); border-color: rgba(99,102,241,0.38); }
+    .tab-pane { display:none; padding-top:6px; }
+    .tab-pane.active { display:block; }
+    .note-card, .subpanel { border:1px solid var(--line); border-radius:18px; padding:16px; background: rgba(15,23,42,0.52); }
+    code { background: rgba(15,23,42,0.9); padding:2px 6px; border-radius:8px; }
     @media (max-width: 980px) {
       .dashboard-grid { grid-template-columns: 1fr; }
       .span-two { grid-column: span 1; }
@@ -1264,12 +2253,14 @@ function renderPage({ title, user, body }) {
     <header class="topbar">
       <div class="brand">
         Video Workflow Control
-        <small>Cloudflare Worker panel for local automation agents</small>
+        <small>Cloudflare Worker panel with the legacy automation shell</small>
       </div>
       <nav class="nav">
         ${user ? `
-          <a class="button ghost" href="/dashboard">Dashboard</a>
-          ${user.role === 'admin' ? '<a class="button ghost" href="/admin/users">Users</a><a class="button ghost" href="/admin/agents">Agents</a>' : ''}
+          <a class="button ghost${currentPath === '/dashboard' ? ' nav-active' : ''}" href="/dashboard">Dashboard</a>
+          <a class="button ghost${currentPath === '/automation' ? ' nav-active' : ''}" href="/automation">Automation</a>
+          ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/api-keys' ? ' nav-active' : ''}" href="/api-keys">API Keys</a><a class="button ghost${currentPath === '/settings' ? ' nav-active' : ''}" href="/settings">Settings</a><a class="button ghost${currentPath === '/admin/users' ? ' nav-active' : ''}" href="/admin/users">Users</a><a class="button ghost${currentPath === '/admin/agents' ? ' nav-active' : ''}" href="/admin/agents">Agents</a>` : ''}
+          <form method="POST" action="/logout"><button type="submit" class="button ghost">Logout</button></form>
         ` : '<a class="button ghost" href="/login">Login</a>'}
       </nav>
     </header>
@@ -1285,17 +2276,6 @@ async function ensureSchema(env) {
   }
 
   schemaReadyPromise = (async () => {
-    const existing = await env.DB.prepare(`
-      SELECT name
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'app_users'
-      LIMIT 1
-    `).first()
-
-    if (existing) {
-      return
-    }
-
     for (const statement of bootstrapSchemaStatements) {
       await env.DB.prepare(statement).run()
     }
@@ -1453,12 +2433,45 @@ async function listUsers(env) {
   return (rows.results || []).map(normalizeUser)
 }
 
+async function listApiKeys(env, includeInactive = true) {
+  const rows = includeInactive
+    ? await env.DB.prepare('SELECT * FROM api_keys ORDER BY created_at DESC, id DESC').all()
+    : await env.DB.prepare("SELECT * FROM api_keys WHERE status = 'active' ORDER BY created_at DESC, id DESC").all()
+  return (rows.results || []).map(normalizeApiKey)
+}
+
+async function getApiKeyById(env, id) {
+  if (!id) {
+    return null
+  }
+  const row = await env.DB.prepare('SELECT * FROM api_keys WHERE id = ? LIMIT 1').bind(id).first()
+  return row ? normalizeApiKey(row) : null
+}
+
 function normalizeUser(row) {
   return {
     ...row,
     id: Number(row.id),
     can_use_github_runner: Number(row.can_use_github_runner || 0),
     assigned_local_agent_id: row.assigned_local_agent_id === null ? null : Number(row.assigned_local_agent_id)
+  }
+}
+
+function normalizeApiKey(row) {
+  return {
+    id: Number(row.id),
+    name: String(row.name || ''),
+    api_key: String(row.api_key || ''),
+    library_id: String(row.library_id || ''),
+    storage_zone: row.storage_zone === null ? null : String(row.storage_zone || ''),
+    ftp_host: row.ftp_host === null ? null : String(row.ftp_host || ''),
+    ftp_username: row.ftp_username === null ? null : String(row.ftp_username || ''),
+    ftp_password: row.ftp_password === null ? null : String(row.ftp_password || ''),
+    ftp_port: Number(row.ftp_port || 21),
+    cdn_hostname: row.cdn_hostname === null ? null : String(row.cdn_hostname || ''),
+    pull_zone_id: row.pull_zone_id === null ? null : String(row.pull_zone_id || ''),
+    status: String(row.status || 'active'),
+    created_at: String(row.created_at || '')
   }
 }
 
@@ -1704,7 +2717,10 @@ async function queueAutomation(env, automation, triggerSource) {
 
 async function buildCompressedPayload(env, automation) {
   const automationJson = parseJsonMaybe(automation.automation_json, {})
-  const apiKeyJson = automation.api_key_json ? parseJsonMaybe(automation.api_key_json, null) : null
+  let apiKeyJson = automation.api_key_json ? parseJsonMaybe(automation.api_key_json, null) : null
+  if (!apiKeyJson && Number(automationJson.api_key_id || 0) > 0) {
+    apiKeyJson = await getApiKeyById(env, Number(automationJson.api_key_id || 0))
+  }
   const settingsRows = await env.DB.prepare('SELECT setting_key, setting_value FROM settings').all()
   const settings = {}
   for (const row of settingsRows.results || []) {
@@ -1796,6 +2812,15 @@ async function setSetting(env, key, value) {
     VALUES (?, ?, ?)
     ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at
   `).bind(key, String(value || ''), isoNow()).run()
+}
+
+async function getSettingsMap(env) {
+  const rows = await env.DB.prepare('SELECT setting_key, setting_value FROM settings').all()
+  const settings = {}
+  for (const row of rows.results || []) {
+    settings[String(row.setting_key)] = String(row.setting_value || '')
+  }
+  return settings
 }
 
 async function getPairingToken(env) {

@@ -32,6 +32,22 @@ export const bootstrapSchemaStatements = [
     created_at TEXT NOT NULL
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS idx_magic_tokens_lookup ON magic_login_tokens(token_hash, revoked_at, used_at, expires_at)`,
+  `CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    library_id TEXT NOT NULL,
+    storage_zone TEXT,
+    ftp_host TEXT,
+    ftp_username TEXT,
+    ftp_password TEXT,
+    ftp_port INTEGER NOT NULL DEFAULT 21,
+    cdn_hostname TEXT,
+    pull_zone_id TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    created_at TEXT NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status, name)`,
   `CREATE TABLE IF NOT EXISTS local_agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER,
