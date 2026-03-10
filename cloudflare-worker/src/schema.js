@@ -1,11 +1,10 @@
-export const bootstrapSchemaSql = `
-CREATE TABLE IF NOT EXISTS settings (
+export const bootstrapSchemaStatements = [
+  `CREATE TABLE IF NOT EXISTS settings (
     setting_key TEXT PRIMARY KEY,
     setting_value TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS app_users (
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS app_users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
@@ -18,11 +17,9 @@ CREATE TABLE IF NOT EXISTS app_users (
     last_login_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_app_users_role ON app_users(role, status);
-
-CREATE TABLE IF NOT EXISTS magic_login_tokens (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_app_users_role ON app_users(role, status)`,
+  `CREATE TABLE IF NOT EXISTS magic_login_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     token_hash TEXT NOT NULL UNIQUE,
@@ -33,11 +30,9 @@ CREATE TABLE IF NOT EXISTS magic_login_tokens (
     revoked_at TEXT,
     created_by_user_id INTEGER,
     created_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_magic_tokens_lookup ON magic_login_tokens(token_hash, revoked_at, used_at, expires_at);
-
-CREATE TABLE IF NOT EXISTS local_agents (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_magic_tokens_lookup ON magic_login_tokens(token_hash, revoked_at, used_at, expires_at)`,
+  `CREATE TABLE IF NOT EXISTS local_agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER,
     agent_key TEXT NOT NULL UNIQUE,
@@ -53,11 +48,9 @@ CREATE TABLE IF NOT EXISTS local_agents (
     capabilities_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_local_agents_status ON local_agents(status, owner_user_id);
-
-CREATE TABLE IF NOT EXISTS automations (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_local_agents_status ON local_agents(status, owner_user_id)`,
+  `CREATE TABLE IF NOT EXISTS automations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
@@ -75,23 +68,19 @@ CREATE TABLE IF NOT EXISTS automations (
     settings_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_automations_owner ON automations(owner_user_id, updated_at);
-CREATE INDEX IF NOT EXISTS idx_automations_agent ON automations(local_agent_id, status);
-
-CREATE TABLE IF NOT EXISTS automation_logs (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_automations_owner ON automations(owner_user_id, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_automations_agent ON automations(local_agent_id, status)`,
+  `CREATE TABLE IF NOT EXISTS automation_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id INTEGER NOT NULL,
     action TEXT NOT NULL,
     status TEXT NOT NULL,
     message TEXT,
     created_at TEXT NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_automation_logs_lookup ON automation_logs(automation_id, created_at);
-
-CREATE TABLE IF NOT EXISTS local_agent_jobs (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_automation_logs_lookup ON automation_logs(automation_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS local_agent_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id INTEGER NOT NULL,
     automation_id INTEGER NOT NULL,
@@ -105,11 +94,9 @@ CREATE TABLE IF NOT EXISTS local_agent_jobs (
     last_heartbeat_at TEXT,
     result_json TEXT,
     error_message TEXT
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_agent_jobs_queue ON local_agent_jobs(agent_id, status, queued_at);
-
-CREATE TABLE IF NOT EXISTS output_files (
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_jobs_queue ON local_agent_jobs(agent_id, status, queued_at)`,
+  `CREATE TABLE IF NOT EXISTS output_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id INTEGER NOT NULL,
     job_id INTEGER NOT NULL,
@@ -119,7 +106,8 @@ CREATE TABLE IF NOT EXISTS output_files (
     size_bytes INTEGER NOT NULL DEFAULT 0,
     stored_in TEXT NOT NULL DEFAULT 'metadata' CHECK (stored_in IN ('metadata', 'r2')),
     created_at TEXT NOT NULL
-) STRICT;
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_output_files_lookup ON output_files(automation_id, created_at)`
+];
 
-CREATE INDEX IF NOT EXISTS idx_output_files_lookup ON output_files(automation_id, created_at);
-`;
+export const bootstrapSchemaSql = bootstrapSchemaStatements.join(';\n\n') + ';\n';

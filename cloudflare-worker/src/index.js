@@ -1,5 +1,5 @@
 import { renderWindowsInstallScript } from './install-script.js'
-import { bootstrapSchemaSql } from './schema.js'
+import { bootstrapSchemaStatements } from './schema.js'
 
 const textEncoder = new TextEncoder()
 const sessionCookieName = 'vw_session'
@@ -1335,12 +1335,7 @@ async function ensureSchema(env) {
       return
     }
 
-    const statements = bootstrapSchemaSql
-      .split(/;\s*(?:\r?\n|$)/)
-      .map((statement) => statement.trim())
-      .filter(Boolean)
-
-    for (const statement of statements) {
+    for (const statement of bootstrapSchemaStatements) {
       await env.DB.prepare(statement).run()
     }
   })()
