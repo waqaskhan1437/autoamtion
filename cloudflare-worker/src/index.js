@@ -1,9 +1,11 @@
 import { renderWindowsInstallScript } from './install-script.js'
+import { bootstrapSchemaSql } from './schema.js'
 
 const textEncoder = new TextEncoder()
 const sessionCookieName = 'vw_session'
 const defaultSessionTtlSeconds = 60 * 60 * 24 * 7
 const passwordIterations = 210000
+let schemaReadyPromise = null
 
 export default {
   async fetch(request, env) {
@@ -11,6 +13,7 @@ export default {
       const url = new URL(request.url)
       const path = normalizePath(url.pathname)
 
+      await ensureSchema(env)
       await ensureDefaultAdmin(env)
       await ensurePairingToken(env)
 
@@ -1313,6 +1316,41 @@ function renderPage({ title, user, body }) {
   </main>
 </body>
 </html>`
+}
+
+async function ensureSchema(env) {
+  if (schemaReadyPromise) {
+    return schemaReadyPromise
+  }
+
+  schemaReadyPromise = (async () => {
+    const existing = await env.DB.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'app_users'
+      LIMIT 1
+    `).first()
+
+    if (existing) {
+      return
+    }
+
+    const statements = bootstrapSchemaSql
+      .split(/;\s*(?:\r?\n|$)/)
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+
+    for (const statement of statements) {
+      await env.DB.prepare(statement).run()
+    }
+  })()
+
+  try {
+    await schemaReadyPromise
+  } catch (error) {
+    schemaReadyPromise = null
+    throw error
+  }
 }
 
 async function ensureDefaultAdmin(env) {
