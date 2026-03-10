@@ -4,7 +4,8 @@
   "scripts": {
     "cf:deploy": "wrangler deploy --config wrangler.jsonc",
     "cf:d1:local": "wrangler d1 execute DB --config wrangler.jsonc --local --file cloudflare-worker/schema.sql",
-    "cf:d1:remote": "wrangler d1 execute DB --config wrangler.jsonc --remote --file cloudflare-worker/schema.sql"
+    "cf:d1:remote": "wrangler d1 execute DB --config wrangler.jsonc --remote --file cloudflare-worker/schema.sql",
+    "cf:smoke": "node cloudflare-worker/scripts/smoke-worker.mjs"
   },
   "devDependencies": {
     "wrangler": "4.71.0"

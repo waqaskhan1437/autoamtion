@@ -94,6 +94,20 @@ export default {
         return handleMagicLogin(request, env)
       }
 
+      if (path === '/api/automation-run' && request.method === 'POST') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleAutomationRunApi(request, env, session.user)
+      }
+
+      if (path === '/api/automation-status' && request.method === 'GET') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleAutomationStatusApi(request, env, session.user)
+      }
+
       if (path === '/' && !session.user) {
         return redirectResponse('/login')
       }
@@ -450,11 +464,12 @@ async function handleAutomationAction(request, env, user) {
 
   if (action === 'save_automation') {
     const automationId = toNullableInt(form.get('automation_id'))
+    const editorRequest = appendQueryToRequest(request, automationId ? { edit: automationId } : { create: 1 })
     let payload
     try {
       payload = extractAutomationPayloadFromForm(form)
     } catch (error) {
-      return renderAutomationPage(request, env, user, {
+      return renderAutomationPage(editorRequest, env, user, {
         error: error instanceof Error ? error.message : 'Automation form is invalid.'
       })
     }
@@ -468,23 +483,36 @@ async function handleAutomationAction(request, env, user) {
       apiKeyJson,
       settingsJson
     } = payload
+    const effectiveLocalAgentId = user.role !== 'admin' && runMode === 'local'
+      ? (user.assigned_local_agent_id || null)
+      : localAgentId
 
     if (name === '') {
-      return renderAutomationPage(request, env, user, { error: 'Automation name is required.' })
+      return renderAutomationPage(editorRequest, env, user, { error: 'Automation name is required.' })
     }
 
     if (runMode === 'github_runner' && !user.can_use_github_runner && user.role !== 'admin') {
-      return renderAutomationPage(request, env, user, { error: 'This user is not allowed to use GitHub Runner.' })
+      return renderAutomationPage(editorRequest, env, user, { error: 'This user is not allowed to use GitHub Runner.' })
     }
 
-    if (runMode === 'local' && user.role !== 'admin' && user.assigned_local_agent_id && localAgentId && user.assigned_local_agent_id !== localAgentId) {
-      return renderAutomationPage(request, env, user, { error: 'This user can only use the assigned local agent.' })
+    if (runMode === 'local' && user.role !== 'admin' && !user.assigned_local_agent_id) {
+      return renderAutomationPage(editorRequest, env, user, { error: 'Admin must assign a local agent before local automation can be saved.' })
     }
+
+    if (runMode === 'local' && !effectiveLocalAgentId) {
+      return renderAutomationPage(editorRequest, env, user, { error: 'Select a local agent for local automation.' })
+    }
+
+    const scheduleType = String(automationJson.schedule_type || 'daily')
+    const scheduleHour = toInt(automationJson.schedule_hour) || 9
+    const scheduleEveryMinutes = toInt(automationJson.schedule_every_minutes) || 10
+    const nextRunAt = enabled ? calculateAutomationNextRunAt(scheduleType, scheduleHour, scheduleEveryMinutes) : null
+    const now = isoNow()
 
     if (automationId) {
       const existing = await getAutomationById(env, automationId)
       if (!existing || !canAccessAutomation(user, existing)) {
-        return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
+        return renderAutomationPage(editorRequest, env, user, { error: 'Automation not found.' })
       }
       const mergedAutomationJson = {
         ...parseJsonMaybe(existing.automation_json, {}),
@@ -496,19 +524,26 @@ async function handleAutomationAction(request, env, user) {
       const mergedSettingsJson = settingsJson
         ? { ...parseJsonMaybe(existing.settings_json, {}), ...settingsJson }
         : (existing.settings_json ? parseJsonMaybe(existing.settings_json, {}) : null)
+      const nextStatus = resolveSavedAutomationStatus(existing.status, enabled)
+      if (!enabled) {
+        await cancelPendingJobsForAutomation(env, existing.id, 'Disabled while saving automation.')
+      }
       await env.DB.prepare(`
         UPDATE automations
-        SET name = ?, run_mode = ?, local_agent_id = ?, enabled = ?, automation_json = ?, api_key_json = ?, settings_json = ?, updated_at = ?
+        SET name = ?, run_mode = ?, local_agent_id = ?, enabled = ?, status = ?, next_run_at = ?,
+            automation_json = ?, api_key_json = ?, settings_json = ?, updated_at = ?
         WHERE id = ?
       `).bind(
         name,
         runMode,
-        localAgentId,
+        effectiveLocalAgentId,
         enabled,
+        nextStatus,
+        nextRunAt,
         JSON.stringify(mergedAutomationJson),
         mergedApiKeyJson ? JSON.stringify(mergedApiKeyJson) : null,
         mergedSettingsJson ? JSON.stringify(mergedSettingsJson) : null,
-        isoNow(),
+        now,
         automationId
       ).run()
       return renderAutomationPage(request, env, user, { success: `Automation ${name} updated.` })
@@ -517,19 +552,21 @@ async function handleAutomationAction(request, env, user) {
     await env.DB.prepare(`
       INSERT INTO automations (
         owner_user_id, name, run_mode, local_agent_id, enabled, status,
-        progress_percent, automation_json, api_key_json, settings_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'inactive', 0, ?, ?, ?, ?, ?)
+        progress_percent, next_run_at, automation_json, api_key_json, settings_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
     `).bind(
       user.id,
       name,
       runMode,
-      localAgentId,
+      effectiveLocalAgentId,
       enabled,
+      enabled ? 'running' : 'inactive',
+      nextRunAt,
       JSON.stringify(automationJson),
       apiKeyJson ? JSON.stringify(apiKeyJson) : null,
       settingsJson ? JSON.stringify(settingsJson) : null,
-      isoNow(),
-      isoNow()
+      now,
+      now
     ).run()
 
     return renderAutomationPage(request, env, user, { success: `Automation ${name} created.` })
@@ -547,7 +584,143 @@ async function handleAutomationAction(request, env, user) {
       return renderAutomationPage(request, env, user, { error: result.error })
     }
 
-    return renderAutomationPage(request, env, user, { success: `Automation queued on ${result.agentName}.` })
+    const message = result.alreadyQueued
+      ? `Automation is already queued on ${result.agentName}.`
+      : `Automation queued on ${result.agentName}.`
+    return renderAutomationPage(request, env, user, { success: message })
+  }
+
+  if (action === 'toggle_automation') {
+    const automationId = toInt(form.get('automation_id'))
+    const automation = await getAutomationById(env, automationId)
+    if (!automation || !canAccessAutomation(user, automation)) {
+      return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
+    }
+
+    const config = parseJsonMaybe(automation.automation_json, {})
+    const nextEnabled = automation.enabled ? 0 : 1
+    const nextStatus = nextEnabled ? 'running' : 'stopped'
+    const nextRunAt = nextEnabled
+      ? calculateAutomationNextRunAt(
+        String(config.schedule_type || 'daily'),
+        toInt(config.schedule_hour) || 9,
+        toInt(config.schedule_every_minutes) || 10
+      )
+      : null
+    const now = isoNow()
+    const progressPayload = JSON.stringify({
+      step: 'scheduler',
+      status: nextEnabled ? 'info' : 'warning',
+      event_status: nextEnabled ? 'info' : 'warning',
+      message: nextEnabled
+        ? `Automation enabled. Next scheduled run ${formatDisplayDateTime(nextRunAt)}.`
+        : 'Automation disabled.',
+      progress: nextEnabled ? Number(automation.progress_percent || 0) : 0,
+      stats: {},
+      outputs: [],
+      time: now
+    })
+
+    if (!nextEnabled) {
+      await cancelPendingJobsForAutomation(env, automation.id, 'Disabled by user.')
+    }
+
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE automations
+        SET enabled = ?, status = ?, next_run_at = ?, progress_percent = ?, progress_data = ?, last_progress_at = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(
+        nextEnabled,
+        nextStatus,
+        nextRunAt,
+        nextEnabled ? Number(automation.progress_percent || 0) : 0,
+        progressPayload,
+        now,
+        now,
+        automation.id
+      ),
+      env.DB.prepare(`
+        INSERT INTO automation_logs (automation_id, action, status, message, created_at)
+        VALUES (?, 'toggle', ?, ?, ?)
+      `).bind(
+        automation.id,
+        nextEnabled ? 'success' : 'warning',
+        nextEnabled ? 'Automation enabled.' : 'Automation disabled.',
+        now
+      )
+    ])
+
+    return renderAutomationPage(request, env, user, {
+      success: nextEnabled ? `Automation ${automation.name} enabled.` : `Automation ${automation.name} disabled.`
+    })
+  }
+
+  if (action === 'stop_automation') {
+    const automationId = toInt(form.get('automation_id'))
+    const automation = await getAutomationById(env, automationId)
+    if (!automation || !canAccessAutomation(user, automation)) {
+      return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
+    }
+
+    const now = isoNow()
+    await cancelPendingJobsForAutomation(env, automation.id, 'Stopped by user.')
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE automations
+        SET enabled = 0, status = 'stopped', next_run_at = NULL, progress_data = ?, last_progress_at = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(
+        JSON.stringify({
+          step: 'manual_stop',
+          status: 'warning',
+          event_status: 'warning',
+          message: 'Automation stopped by user.',
+          progress: Number(automation.progress_percent || 0),
+          stats: {},
+          outputs: [],
+          time: now
+        }),
+        now,
+        now,
+        automation.id
+      ),
+      env.DB.prepare(`
+        INSERT INTO automation_logs (automation_id, action, status, message, created_at)
+        VALUES (?, 'manual_stop', 'warning', ?, ?)
+      `).bind(automation.id, 'Automation stopped by user.', now)
+    ])
+
+    return renderAutomationPage(request, env, user, { success: `Automation ${automation.name} stopped.` })
+  }
+
+  if (action === 'reset_rotation') {
+    const automationId = toInt(form.get('automation_id'))
+    const automation = await getAutomationById(env, automationId)
+    if (!automation || !canAccessAutomation(user, automation)) {
+      return renderAutomationPage(request, env, user, { error: 'Automation not found.' })
+    }
+
+    const config = parseJsonMaybe(automation.automation_json, {})
+    config.rotation_cycle = 1
+    config.rotation_cursor = 0
+    config.last_processed_video_id = null
+    config.processed_video_ids = []
+    config.processed_videos = []
+    const now = isoNow()
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE automations
+        SET automation_json = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(JSON.stringify(config), now, automation.id),
+      env.DB.prepare(`
+        INSERT INTO automation_logs (automation_id, action, status, message, created_at)
+        VALUES (?, 'reset_rotation', 'info', ?, ?)
+      `).bind(automation.id, 'Rotation tracking reset.', now)
+    ])
+
+    return renderAutomationPage(request, env, user, { success: `Rotation reset for ${automation.name}.` })
   }
 
   if (action === 'delete_automation') {
@@ -915,15 +1088,25 @@ async function renderDashboardPage(request, env, user, feedback) {
 }
 
 async function renderAutomationPage(request, env, user, feedback) {
+  const url = new URL(request.url)
   const automations = await listAutomationsForUser(env, user)
   const agents = await listVisibleAgents(env, user)
   const apiKeys = await listApiKeys(env)
-  const editId = toInt(new URL(request.url).searchParams.get('edit'))
+  const editId = toInt(url.searchParams.get('edit'))
+  const createMode = url.searchParams.get('create') === '1'
+  const logAutomationId = toInt(url.searchParams.get('logs'))
   let editingAutomation = null
   if (editId > 0) {
     const candidate = await getAutomationById(env, editId)
     if (candidate && canAccessAutomation(user, candidate)) {
       editingAutomation = candidate
+    }
+  }
+  let logAutomation = null
+  if (logAutomationId > 0) {
+    const candidate = await getAutomationById(env, logAutomationId)
+    if (candidate && canAccessAutomation(user, candidate)) {
+      logAutomation = candidate
     }
   }
 
@@ -936,7 +1119,9 @@ async function renderAutomationPage(request, env, user, feedback) {
       agents,
       apiKeys,
       feedback,
-      editor: buildAutomationEditorState(editingAutomation)
+      editor: buildAutomationEditorState(editingAutomation),
+      editorOpen: createMode || !!editingAutomation,
+      logAutomation
     }),
     currentPath: '/automation'
   }))
@@ -1046,6 +1231,69 @@ async function handleOutputDownload(request, env, user, outputId) {
     user,
     body: `<section class="panel"><h1>Metadata Only</h1><p class="muted">This output was reported by the agent but no object storage is configured for downloads.</p></section>`
   }), 409)
+}
+
+async function handleAutomationRunApi(request, env, user) {
+  const payload = await readJsonBody(request)
+  const automationId = toInt(payload.automation_id || payload.id)
+  const automation = await getAutomationById(env, automationId)
+  if (!automation || !canAccessAutomation(user, automation)) {
+    return jsonResponse({ success: false, error: 'Automation not found.' }, 404)
+  }
+
+  const result = await queueAutomation(env, automation, 'manual')
+  if (!result.success) {
+    return jsonResponse(result, 400)
+  }
+
+  const refreshed = await getAutomationById(env, automation.id)
+  return jsonResponse({
+    success: true,
+    message: result.alreadyQueued
+      ? `Automation is already queued on ${result.agentName}.`
+      : `Automation queued on ${result.agentName}.`,
+    status: refreshed?.status || 'queued',
+    automation_id: automation.id,
+    job_id: result.jobId || 0
+  })
+}
+
+async function handleAutomationStatusApi(request, env, user) {
+  const url = new URL(request.url)
+  const automationId = toInt(url.searchParams.get('automation_id'))
+  const automation = await getAutomationById(env, automationId)
+  if (!automation || !canAccessAutomation(user, automation)) {
+    return jsonResponse({ success: false, error: 'Automation not found.' }, 404)
+  }
+
+  const [logs, outputs, job] = await Promise.all([
+    listAutomationLogs(env, automation.id, 60),
+    listOutputsForAutomation(env, automation.id, 12),
+    getLatestJobForAutomation(env, automation.id)
+  ])
+
+  return jsonResponse({
+    success: true,
+    automation: {
+      id: automation.id,
+      name: automation.name,
+      status: automation.status,
+      enabled: automation.enabled,
+      run_mode: automation.run_mode,
+      local_agent_id: automation.local_agent_id,
+      progress_percent: automation.progress_percent,
+      next_run_at: automation.next_run_at,
+      last_run_at: automation.last_run_at,
+      last_progress_at: automation.last_progress_at
+    },
+    progress: parseJsonMaybe(automation.progress_data, {}),
+    logs,
+    outputs: outputs.map((output) => ({
+      ...output,
+      download_url: output.stored_in === 'r2' ? `/outputs/${output.id}` : null
+    })),
+    job
+  })
 }
 
 function renderLoginBody({ errorMessage, next, appName }) {
@@ -1242,31 +1490,90 @@ function renderDashboardBody({ user, automations, agents, outputs, feedback }) {
   `
 }
 
-function renderAutomationBody({ user, automations, agents, apiKeys, feedback, editor }) {
+function renderAutomationBody({ user, automations, agents, apiKeys, feedback, editor, editorOpen, logAutomation }) {
   const cards = automations.map((automation) => {
     const config = parseJsonMaybe(automation.automation_json, {})
+    const progressState = parseJsonMaybe(automation.progress_data, {})
     const source = String(config.video_source || 'ftp')
     const schedule = String(config.schedule_type || 'daily')
     const videosPerRun = config.videos_per_run ?? '-'
+    const progressPercent = clampInt(progressState.progress ?? automation.progress_percent ?? 0, 0, 100)
+    const progressMessage = String(progressState.message || (automation.enabled ? 'Waiting for next run.' : 'Automation disabled.'))
+    const nextRunLabel = automation.next_run_at ? formatDisplayDateTime(automation.next_run_at) : 'Not scheduled'
+    const selectionLabel = config.video_selection_method === 'date_range' && (config.video_start_date || config.video_end_date)
+      ? `${String(config.video_start_date || '-')} to ${String(config.video_end_date || '-')}`
+      : `Last ${String(config.video_days_filter || 30)} days`
+    const shortsLabel = String(config.source_shorts_mode || 'single') === 'single'
+      ? '1 short/source'
+      : `up to ${String(config.source_shorts_max_count || 1)} shorts/source`
+    const statusClass = automationStatusClass(automation.status)
+    const isRunning = ['queued', 'processing', 'running'].includes(String(automation.status || '').toLowerCase())
     return `
-      <article class="list-card">
+      <article class="list-card automation-card-shell" data-automation-card="${automation.id}">
         <div class="list-card-head">
           <div>
             <strong>${escapeHtml(automation.name)}</strong>
             <div class="muted compact">
-              ${escapeHtml(source)} | ${escapeHtml(automation.run_mode)} | ${escapeHtml(schedule)} | ${escapeHtml(String(videosPerRun))}
-              videos/run
+              ${escapeHtml(source)} | ${escapeHtml(automation.run_mode)} | ${escapeHtml(schedule)} | ${escapeHtml(String(videosPerRun))} videos/run
+            </div>
+            <div class="muted compact">
+              ${escapeHtml(selectionLabel)} | ${escapeHtml(shortsLabel)} | Next run ${escapeHtml(nextRunLabel)}
             </div>
           </div>
-          <div class="badge">${escapeHtml(automation.status)}</div>
+          <div class="badge ${statusClass}" id="automation-status-${automation.id}">${escapeHtml(automation.status)}</div>
         </div>
-        <div class="toolbar wrap">
-          <a class="button" href="/automation?edit=${automation.id}">Edit</a>
+
+        <div class="card-progress">
+          <div class="progress-bar compact-progress">
+            <span id="automation-progress-${automation.id}" style="width:${progressPercent}%"></span>
+          </div>
+          <div class="progress-meta">
+            <span id="automation-progress-text-${automation.id}">${progressPercent}%</span>
+            <span id="automation-message-${automation.id}">${escapeHtml(progressMessage)}</span>
+          </div>
+        </div>
+
+        <div class="toolbar wrap meta-actions">
+          <button
+            type="button"
+            class="button"
+            data-open-runtime
+            data-automation-id="${automation.id}"
+            data-automation-name="${escapeHtml(automation.name)}"
+          >Live Logs</button>
+
+          ${isRunning ? `
+            <form method="POST" action="/automation" onsubmit="return confirm('Stop this running job?')">
+              <input type="hidden" name="action" value="stop_automation">
+              <input type="hidden" name="automation_id" value="${automation.id}">
+              <button class="button primary" type="submit">Stop</button>
+            </form>
+          ` : `
+            <button
+              type="button"
+              class="button primary"
+              data-run-automation
+              data-automation-id="${automation.id}"
+              data-automation-name="${escapeHtml(automation.name)}"
+            >Run Now</button>
+          `}
+
           <form method="POST" action="/automation">
-            <input type="hidden" name="action" value="queue_automation">
+            <input type="hidden" name="action" value="toggle_automation">
             <input type="hidden" name="automation_id" value="${automation.id}">
-            <button class="button primary" type="submit">Run Now</button>
+            <button class="button" type="submit">${automation.enabled ? 'Disable' : 'Enable'}</button>
           </form>
+
+          ${truthyValue(config.rotation_enabled, false) ? `
+            <form method="POST" action="/automation" onsubmit="return confirm('Reset rotation tracking for this automation?')">
+              <input type="hidden" name="action" value="reset_rotation">
+              <input type="hidden" name="automation_id" value="${automation.id}">
+              <button class="button" type="submit">Reset Rotation</button>
+            </form>
+          ` : ''}
+
+          <a class="button" href="/automation?edit=${automation.id}">Edit</a>
+
           <form method="POST" action="/automation" onsubmit="return confirm('Delete this automation?')">
             <input type="hidden" name="action" value="delete_automation">
             <input type="hidden" name="automation_id" value="${automation.id}">
@@ -1283,20 +1590,27 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
       <section class="panel span-two">
         <div class="section-head">
           <div>
-            <div class="eyebrow">Legacy Worker UI</div>
-            <h1>${editor.id ? 'Edit Automation' : 'Create Automation'}</h1>
-            <p class="lead">This Worker form stores the same core automation keys used by the old local runner: source, schedule, video processing, taglines, and publish settings.</p>
+            <div class="eyebrow">Legacy Automation Shell</div>
+            <h1>Automation Library</h1>
+            <p class="lead">This Worker page mirrors the old automation setup: modal editor, tabbed create/update flow, queue actions, runtime logs, and local-agent dispatch.</p>
           </div>
-          ${editor.id ? `<a class="button" href="/automation">Create New</a>` : ''}
+          <div class="toolbar wrap">
+            <a class="button primary" href="/automation?create=1">Create Automation</a>
+          </div>
         </div>
-        ${renderAutomationEditorForm({ user, agents, apiKeys, editor })}
+        ${cards || `
+          <div class="note-card empty-state">
+            <strong>No automations yet</strong>
+            <div class="muted compact">Create your first automation to restore the old local-runner workflow on the Worker control plane.</div>
+          </div>
+        `}
       </section>
 
       <section class="panel">
         <div class="section-head">
           <div>
-            <div class="eyebrow">Quick Notes</div>
-            <h2>Current Setup</h2>
+            <div class="eyebrow">Parity Notes</div>
+            <h2>Worker View</h2>
           </div>
         </div>
         <div class="stack">
@@ -1305,8 +1619,8 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
             <div class="muted compact">Choose <code>Local Runner</code> plus an assigned agent to keep processing on the customer PC.</div>
           </div>
           <div class="note-card">
-            <strong>API settings</strong>
-            <div class="muted compact">Use <a class="inline-link" href="/settings">Settings</a> for platform credentials and <a class="inline-link" href="/api-keys">API Keys</a> for Bunny connections.</div>
+            <strong>Tabs + settings</strong>
+            <div class="muted compact">Use <a class="inline-link" href="/settings">Settings</a> and <a class="inline-link" href="/api-keys">API Keys</a> exactly like the old FTP, AI, FFmpeg, storage, and Bunny setup flow.</div>
           </div>
           <div class="note-card">
             <strong>Runner policy</strong>
@@ -1314,18 +1628,91 @@ function renderAutomationBody({ user, automations, agents, apiKeys, feedback, ed
           </div>
         </div>
       </section>
+    </section>
+    ${renderAutomationEditorModal({ user, agents, apiKeys, editor, editorOpen })}
+    ${renderAutomationRuntimeModal(logAutomation)}
+    ${renderAutomationEditorScript()}
+  `
+}
 
-      <section class="panel span-two">
+function renderAutomationEditorModal({ user, agents, apiKeys, editor, editorOpen }) {
+  const title = editor.id ? 'Edit Automation' : 'Create Automation'
+  return `
+    <div class="modal-backdrop${editorOpen ? '' : ' hidden'}" id="automation-editor-modal" data-editor-open="${editorOpen ? '1' : '0'}">
+      <div class="modal-panel modal-wide">
         <div class="section-head">
           <div>
-            <div class="eyebrow">Automation Library</div>
-            <h2>Saved Automations</h2>
+            <div class="eyebrow">Automation Editor</div>
+            <h2>${escapeHtml(title)}</h2>
+            <p class="muted compact">The same tabbed create/edit flow is available here in popup form so the Worker UI behaves closer to the legacy panel.</p>
+          </div>
+          <div class="toolbar wrap">
+            <a class="button ghost" href="/automation">Close</a>
           </div>
         </div>
-        ${cards || '<p class="muted">No automations created yet.</p>'}
-      </section>
-    </section>
-    ${renderAutomationEditorScript()}
+        ${renderAutomationEditorForm({ user, agents, apiKeys, editor })}
+      </div>
+    </div>
+  `
+}
+
+function renderAutomationRuntimeModal(logAutomation) {
+  const automationId = logAutomation ? Number(logAutomation.id) : 0
+  const automationName = logAutomation ? String(logAutomation.name || `Automation #${automationId}`) : ''
+  return `
+    <div
+      class="modal-backdrop hidden"
+      id="automation-runtime-modal"
+      data-initial-open="${automationId > 0 ? '1' : '0'}"
+      data-automation-id="${automationId}"
+      data-automation-name="${escapeHtml(automationName)}"
+    >
+      <div class="modal-panel modal-wide">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Runtime Monitor</div>
+            <h2 id="runtime-modal-title">Automation Runtime</h2>
+            <p class="muted compact" id="runtime-modal-subtitle">Queue jobs, inspect progress, and follow logs from the local agent.</p>
+          </div>
+          <div class="toolbar wrap">
+            <div class="badge status-neutral" id="runtime-modal-status">idle</div>
+            <button type="button" class="button ghost" onclick="workerCloseRuntimeModal()">Close</button>
+          </div>
+        </div>
+
+        <div class="progress-bar runtime-progress">
+          <span id="runtime-modal-progress" style="width:0%"></span>
+        </div>
+        <div class="progress-meta">
+          <span id="runtime-modal-progress-text">0%</span>
+          <span id="runtime-modal-message">Waiting for runtime activity.</span>
+        </div>
+
+        <div class="stats-row runtime-stats">
+          <div class="metric"><span id="runtime-stat-fetched">0</span><small>Fetched</small></div>
+          <div class="metric"><span id="runtime-stat-downloaded">0</span><small>Downloaded</small></div>
+          <div class="metric"><span id="runtime-stat-processed">0</span><small>Processed</small></div>
+          <div class="metric"><span id="runtime-stat-scheduled">0</span><small>Scheduled</small></div>
+          <div class="metric"><span id="runtime-stat-posted">0</span><small>Posted</small></div>
+          <div class="metric"><span id="runtime-stat-job">-</span><small>Job</small></div>
+        </div>
+
+        <div class="grid two runtime-grid">
+          <section class="subpanel">
+            <div class="section-head">
+              <div><h2>Recent Outputs</h2></div>
+            </div>
+            <div id="runtime-modal-outputs" class="runtime-list muted compact">No output reported yet.</div>
+          </section>
+          <section class="subpanel">
+            <div class="section-head">
+              <div><h2>Recent Logs</h2></div>
+            </div>
+            <div id="runtime-modal-logs" class="runtime-list muted compact">No log activity yet.</div>
+          </section>
+        </div>
+      </div>
+    </div>
   `
 }
 
@@ -1494,9 +1881,10 @@ function renderApiKeysBody({ keys, feedback }) {
 
 function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
   const apiKeyOptions = ['<option value="">Select Bunny connection</option>', ...apiKeys.map((key) => `<option value="${key.id}"${selectedAttr(editor.api_key_id, key.id)}>${escapeHtml(key.name)}</option>`)].join('')
+  const selectedAgentId = editor.local_agent_id || (user.role !== 'admin' ? (user.assigned_local_agent_id || '') : '')
   const agentOptions = [
-    `<option value="">${user.role === 'admin' ? 'Server machine (current host)' : 'Assigned device'}</option>`,
-    ...agents.map((agent) => `<option value="${agent.id}"${selectedAttr(editor.local_agent_id, agent.id)}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`)
+    `<option value="">${user.role === 'admin' ? 'Select local agent' : 'Assigned device'}</option>`,
+    ...agents.map((agent) => `<option value="${agent.id}"${selectedAttr(selectedAgentId, agent.id)}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`)
   ].join('')
   const canUseGithubRunner = user.role === 'admin' || !!user.can_use_github_runner
 
@@ -1671,10 +2059,17 @@ function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
 function renderAutomationEditorScript() {
   return `
     <script>
+      const workerRuntimeState = {
+        automationId: 0,
+        automationName: '',
+        pollHandle: null
+      };
+
       function workerShowAutomationTab(tab) {
         document.querySelectorAll('[data-tab-pane]').forEach((el) => el.classList.toggle('active', el.getAttribute('data-tab-pane') === tab));
         document.querySelectorAll('[data-tab-button]').forEach((el) => el.classList.toggle('active', el.getAttribute('data-tab-button') === tab));
       }
+
       function workerToggleAutomationSource() {
         const source = document.getElementById('automation_video_source')?.value || 'ftp';
         document.getElementById('automation_api_key_group')?.classList.toggle('hidden', source !== 'bunny');
@@ -1696,11 +2091,261 @@ function renderAutomationEditorScript() {
         const mode = document.getElementById('source_shorts_mode')?.value || 'single';
         document.getElementById('source_shorts_max_wrap')?.classList.toggle('hidden', mode !== 'fixed_count');
       }
+
+      function workerOpenRuntimeModal(automationId, automationName) {
+        const modal = document.getElementById('automation-runtime-modal');
+        if (!modal) return false;
+        workerRuntimeState.automationId = Number(automationId || 0);
+        workerRuntimeState.automationName = automationName || ('Automation #' + workerRuntimeState.automationId);
+        document.getElementById('runtime-modal-title').textContent = workerRuntimeState.automationName;
+        modal.classList.remove('hidden');
+        workerSetRuntimeStatus('queued');
+        workerSetRuntimeProgress(0, 'Loading runtime details...');
+        workerRenderRuntimeLogs([]);
+        workerRenderRuntimeOutputs([]);
+        workerRenderRuntimeStats({}, null);
+        workerPollAutomationStatus(true);
+        workerStartRuntimePolling();
+        return false;
+      }
+
+      function workerCloseRuntimeModal() {
+        const modal = document.getElementById('automation-runtime-modal');
+        if (modal) {
+          modal.classList.add('hidden');
+        }
+        workerStopRuntimePolling();
+        if (window.location.search.indexOf('logs=') !== -1) {
+          window.location.href = '/automation';
+        }
+      }
+
+      function workerStartRuntimePolling() {
+        workerStopRuntimePolling();
+        workerRuntimeState.pollHandle = window.setInterval(() => {
+          workerPollAutomationStatus(false);
+        }, 2000);
+      }
+
+      function workerStopRuntimePolling() {
+        if (workerRuntimeState.pollHandle) {
+          window.clearInterval(workerRuntimeState.pollHandle);
+          workerRuntimeState.pollHandle = null;
+        }
+      }
+
+      async function workerQueueAutomation(automationId, automationName) {
+        workerOpenRuntimeModal(automationId, automationName);
+        workerSetRuntimeProgress(5, 'Queueing automation...');
+        workerSetRuntimeStatus('queued');
+        try {
+          const response = await fetch('/api/automation-run', {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body: new URLSearchParams({ automation_id: String(automationId) }).toString()
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to queue automation.');
+          }
+          workerSetRuntimeProgress(5, data.message || 'Automation queued.');
+          workerSetRuntimeStatus(data.status || 'queued');
+          await workerPollAutomationStatus(true);
+        } catch (error) {
+          workerSetRuntimeStatus('error');
+          workerSetRuntimeProgress(0, error.message || 'Unable to queue automation.');
+          workerRenderRuntimeLogs([{ status: 'error', action: 'queue', message: error.message || 'Unable to queue automation.', created_at: new Date().toISOString() }]);
+        }
+        return false;
+      }
+
+      async function workerPollAutomationStatus(force) {
+        if (!workerRuntimeState.automationId) return;
+        const modal = document.getElementById('automation-runtime-modal');
+        if (!force && modal && modal.classList.contains('hidden')) return;
+        try {
+          const response = await fetch('/api/automation-status?automation_id=' + encodeURIComponent(String(workerRuntimeState.automationId)), {
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store'
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to load runtime status.');
+          }
+          workerRenderRuntimeState(data);
+          const status = String((data.automation && data.automation.status) || '').toLowerCase();
+          if (['completed', 'error', 'stopped', 'inactive'].includes(status)) {
+            workerStopRuntimePolling();
+          }
+        } catch (error) {
+          workerSetRuntimeStatus('error');
+          workerSetRuntimeProgress(0, error.message || 'Unable to load runtime status.');
+        }
+      }
+
+      function workerRenderRuntimeState(data) {
+        const automation = data.automation || {};
+        const progress = data.progress || {};
+        const progressPercent = Number(progress.progress ?? automation.progress_percent ?? 0) || 0;
+        const message = progress.message || 'Waiting for runtime activity.';
+        workerSetRuntimeStatus(automation.status || 'inactive');
+        workerSetRuntimeProgress(progressPercent, message);
+        workerRenderRuntimeStats(progress.stats || {}, data.job || null);
+        workerRenderRuntimeLogs(Array.isArray(data.logs) ? data.logs : []);
+        workerRenderRuntimeOutputs(Array.isArray(data.outputs) ? data.outputs : []);
+        workerUpdateAutomationCard(automation.id, automation.status, progressPercent, message);
+      }
+
+      function workerSetRuntimeStatus(status) {
+        const badge = document.getElementById('runtime-modal-status');
+        if (!badge) return;
+        badge.className = 'badge ' + workerStatusClass(status);
+        badge.textContent = String(status || 'idle');
+      }
+
+      function workerSetRuntimeProgress(progress, message) {
+        const value = Math.max(0, Math.min(100, Number(progress || 0)));
+        const bar = document.getElementById('runtime-modal-progress');
+        const text = document.getElementById('runtime-modal-progress-text');
+        const messageNode = document.getElementById('runtime-modal-message');
+        if (bar) bar.style.width = value + '%';
+        if (text) text.textContent = Math.round(value) + '%';
+        if (messageNode) messageNode.textContent = message || 'Waiting for runtime activity.';
+      }
+
+      function workerRenderRuntimeStats(stats, job) {
+        const safeStats = stats || {};
+        document.getElementById('runtime-stat-fetched').textContent = String(safeStats.fetched || 0);
+        document.getElementById('runtime-stat-downloaded').textContent = String(safeStats.downloaded || 0);
+        document.getElementById('runtime-stat-processed').textContent = String(safeStats.processed || 0);
+        document.getElementById('runtime-stat-scheduled').textContent = String(safeStats.scheduled || 0);
+        document.getElementById('runtime-stat-posted').textContent = String(safeStats.posted || 0);
+        document.getElementById('runtime-stat-job').textContent = job && job.id ? ('#' + String(job.id)) : '-';
+      }
+
+      function workerRenderRuntimeLogs(logs) {
+        const container = document.getElementById('runtime-modal-logs');
+        if (!container) return;
+        if (!logs.length) {
+          container.innerHTML = '<div class="muted compact">No log activity yet.</div>';
+          return;
+        }
+        container.innerHTML = logs.map((log) => {
+          return '<article class="runtime-entry ' + workerStatusClass(log.status || 'info') + '">' +
+            '<strong>' + workerEscapeHtml(log.action || 'log') + '</strong>' +
+            '<div class="muted compact">' + workerEscapeHtml(log.message || '') + '</div>' +
+            '<div class="muted compact">' + workerEscapeHtml(workerFormatDate(log.created_at || '')) + '</div>' +
+          '</article>';
+        }).join('');
+      }
+
+      function workerRenderRuntimeOutputs(outputs) {
+        const container = document.getElementById('runtime-modal-outputs');
+        if (!container) return;
+        if (!outputs.length) {
+          container.innerHTML = '<div class="muted compact">No output reported yet.</div>';
+          return;
+        }
+        container.innerHTML = outputs.map((output) => {
+          const label = workerEscapeHtml(output.filename || ('Output #' + String(output.id || '')));
+          const meta = workerEscapeHtml((output.stored_in || 'metadata') + ' | ' + workerFormatDate(output.created_at || ''));
+          if (output.download_url) {
+            return '<article class="runtime-entry"><a class="inline-link" href="' + workerEscapeHtml(output.download_url) + '" target="_blank" rel="noopener">' + label + '</a><div class="muted compact">' + meta + '</div></article>';
+          }
+          return '<article class="runtime-entry"><strong>' + label + '</strong><div class="muted compact">' + meta + '</div></article>';
+        }).join('');
+      }
+
+      function workerUpdateAutomationCard(automationId, status, progress, message) {
+        if (!automationId) return;
+        const badge = document.getElementById('automation-status-' + automationId);
+        const bar = document.getElementById('automation-progress-' + automationId);
+        const text = document.getElementById('automation-progress-text-' + automationId);
+        const messageNode = document.getElementById('automation-message-' + automationId);
+        if (badge) {
+          badge.className = 'badge ' + workerStatusClass(status);
+          badge.textContent = String(status || 'inactive');
+        }
+        if (bar) {
+          bar.style.width = Math.max(0, Math.min(100, Number(progress || 0))) + '%';
+        }
+        if (text) {
+          text.textContent = Math.round(Number(progress || 0)) + '%';
+        }
+        if (messageNode) {
+          messageNode.textContent = message || 'Waiting for next run.';
+        }
+      }
+
+      function workerStatusClass(status) {
+        switch (String(status || '').toLowerCase()) {
+          case 'running':
+          case 'completed':
+          case 'success':
+            return 'status-success';
+          case 'queued':
+          case 'processing':
+          case 'claimed':
+            return 'status-queued';
+          case 'warning':
+          case 'stopped':
+            return 'status-warning';
+          case 'error':
+          case 'failed':
+          case 'cancelled':
+            return 'status-error';
+          default:
+            return 'status-neutral';
+        }
+      }
+
+      function workerEscapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function workerFormatDate(value) {
+        if (!value) return 'Unknown time';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString();
+      }
+
+      document.addEventListener('click', (event) => {
+        const runButton = event.target.closest('[data-run-automation]');
+        if (runButton) {
+          event.preventDefault();
+          workerQueueAutomation(runButton.getAttribute('data-automation-id'), runButton.getAttribute('data-automation-name') || '');
+          return;
+        }
+
+        const logButton = event.target.closest('[data-open-runtime]');
+        if (logButton) {
+          event.preventDefault();
+          workerOpenRuntimeModal(logButton.getAttribute('data-automation-id'), logButton.getAttribute('data-automation-name') || '');
+        }
+      });
+
       document.addEventListener('DOMContentLoaded', () => {
         workerToggleAutomationSource();
         workerToggleVideoSelection();
         workerTogglePostForMe();
         workerToggleSourceShortsMode();
+        const runtimeModal = document.getElementById('automation-runtime-modal');
+        if (runtimeModal && runtimeModal.dataset.initialOpen === '1') {
+          workerOpenRuntimeModal(runtimeModal.dataset.automationId || '0', runtimeModal.dataset.automationName || '');
+        }
+      });
+
+      window.addEventListener('beforeunload', () => {
+        workerStopRuntimePolling();
       });
     </script>
   `
@@ -2006,7 +2651,10 @@ function appendQueryToRequest(request, params) {
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, String(value))
   }
-  return new Request(url.toString(), request)
+  return new Request(url.toString(), {
+    method: 'GET',
+    headers: request.headers
+  })
 }
 
 function renderUsersBody({ users, agents, feedback }) {
@@ -2221,6 +2869,10 @@ function renderPage({ title, user, body, currentPath = '' }) {
     .progress-bar { height: 8px; border-radius: 999px; background: rgba(26,31,25,0.08); overflow:hidden; margin: 14px 0 18px; }
     .progress-bar span { display:block; height:100%; background: linear-gradient(90deg, #0ea5e9, #4f46e5, #7c3aed); border-radius:999px; }
     .automation-card { display:grid; gap: 10px; margin-bottom: 14px; }
+    .automation-card-shell { display:grid; gap: 14px; }
+    .card-progress { display:grid; gap: 8px; }
+    .compact-progress { margin: 0; height: 10px; background: rgba(15,23,42,0.88); }
+    .progress-meta { display:flex; justify-content:space-between; gap:12px; color: var(--muted); font-size: 0.84rem; flex-wrap:wrap; }
     .compact-form { margin-top: 6px; }
     .table-wrap { overflow:auto; }
     table { width:100%; border-collapse: collapse; }
@@ -2232,12 +2884,32 @@ function renderPage({ title, user, body, currentPath = '' }) {
     .inline-form select, .inline-form input { min-width: 160px; }
     .inline-link { color: var(--accent); }
     .hidden { display:none !important; }
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 90; padding: 28px 18px;
+      background: rgba(2,6,23,0.82); backdrop-filter: blur(10px);
+      display:flex; align-items:flex-start; justify-content:center; overflow:auto;
+    }
+    .modal-panel {
+      width: min(1120px, 100%); margin: 2vh auto; border-radius: 26px; padding: 22px;
+      border: 1px solid var(--line); background: rgba(2,6,23,0.96); box-shadow: var(--shadow);
+    }
+    .modal-wide { width: min(1240px, 100%); }
     .tab-strip, .tabs-wrap { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
     .tab-button, .tab-chip { display:inline-flex; align-items:center; justify-content:center; padding:10px 14px; border-radius:14px; border:1px solid var(--line); background: rgba(15,23,42,0.72); color: var(--muted); cursor:pointer; }
     .tab-button.active, .tab-chip.active { background: var(--accent-soft); color: var(--ink); border-color: rgba(99,102,241,0.38); }
     .tab-pane { display:none; padding-top:6px; }
     .tab-pane.active { display:block; }
     .note-card, .subpanel { border:1px solid var(--line); border-radius:18px; padding:16px; background: rgba(15,23,42,0.52); }
+    .empty-state { min-height: 180px; display:grid; place-content:center; text-align:center; gap: 8px; }
+    .runtime-grid { align-items:flex-start; }
+    .runtime-progress { margin-bottom: 10px; }
+    .runtime-list { display:grid; gap:10px; max-height: 360px; overflow:auto; padding-right: 6px; }
+    .runtime-entry { border:1px solid var(--line); border-radius: 16px; padding: 12px; background: rgba(15,23,42,0.58); }
+    .status-success { background: rgba(34,197,94,0.18); color: #86efac; }
+    .status-queued { background: rgba(59,130,246,0.18); color: #93c5fd; }
+    .status-warning { background: rgba(245,158,11,0.18); color: #fcd34d; }
+    .status-error { background: rgba(239,68,68,0.18); color: #fca5a5; }
+    .status-neutral { background: rgba(148,163,184,0.16); color: #cbd5e1; }
     code { background: rgba(15,23,42,0.9); padding:2px 6px; border-radius:8px; }
     @media (max-width: 980px) {
       .dashboard-grid { grid-template-columns: 1fr; }
@@ -2245,6 +2917,8 @@ function renderPage({ title, user, body, currentPath = '' }) {
       .grid.two, .stats-row { grid-template-columns: 1fr; }
       .topbar, .section-head, .list-card-head, .card-head { flex-direction: column; align-items: stretch; }
       .meta-actions { display:flex; flex-wrap:wrap; gap:10px; }
+      .modal-backdrop { padding: 12px; }
+      .modal-panel { padding: 18px; }
     }
   </style>
 </head>
@@ -2672,6 +3346,71 @@ function canAccessAutomation(user, automation) {
   return user.role === 'admin' || Number(automation.owner_user_id) === Number(user.id)
 }
 
+async function listAutomationLogs(env, automationId, limit = 50) {
+  const rows = await env.DB.prepare(`
+    SELECT id, automation_id, action, status, message, created_at
+    FROM automation_logs
+    WHERE automation_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).bind(automationId, limit).all()
+  return (rows.results || [])
+    .map((row) => ({
+      ...row,
+      id: Number(row.id),
+      automation_id: Number(row.automation_id)
+    }))
+    .reverse()
+}
+
+async function listOutputsForAutomation(env, automationId, limit = 12) {
+  const rows = await env.DB.prepare(`
+    SELECT id, automation_id, job_id, filename, stored_in, content_type, size_bytes, created_at
+    FROM output_files
+    WHERE automation_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).bind(automationId, limit).all()
+  return (rows.results || []).map((row) => ({
+    ...row,
+    id: Number(row.id),
+    automation_id: Number(row.automation_id),
+    job_id: Number(row.job_id)
+  }))
+}
+
+async function getLatestJobForAutomation(env, automationId) {
+  const row = await env.DB.prepare(`
+    SELECT id, automation_id, agent_id, trigger_source, status, queued_at, claimed_at, started_at, completed_at, last_heartbeat_at, error_message
+    FROM local_agent_jobs
+    WHERE automation_id = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(automationId).first()
+  return row ? {
+    ...row,
+    id: Number(row.id),
+    automation_id: Number(row.automation_id),
+    agent_id: Number(row.agent_id)
+  } : null
+}
+
+async function findPendingJobForAutomation(env, automationId) {
+  const row = await env.DB.prepare(`
+    SELECT id, automation_id, agent_id, status
+    FROM local_agent_jobs
+    WHERE automation_id = ? AND status IN ('queued', 'claimed', 'running')
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(automationId).first()
+  return row ? {
+    ...row,
+    id: Number(row.id),
+    automation_id: Number(row.automation_id),
+    agent_id: Number(row.agent_id)
+  } : null
+}
+
 async function queueAutomation(env, automation, triggerSource) {
   if (automation.run_mode === 'github_runner') {
     return { success: false, error: 'GitHub Runner dispatch is not implemented inside the Worker control plane yet.' }
@@ -2682,6 +3421,16 @@ async function queueAutomation(env, automation, triggerSource) {
   const agent = await getAgentById(env, automation.local_agent_id)
   if (!agent || agent.status === 'disabled') {
     return { success: false, error: 'Assigned local agent is disabled or missing.' }
+  }
+
+  const pendingJob = await findPendingJobForAutomation(env, automation.id)
+  if (pendingJob) {
+    return {
+      success: true,
+      agentName: agent.display_name || `Agent #${agent.id}`,
+      jobId: pendingJob.id,
+      alreadyQueued: true
+    }
   }
 
   const now = isoNow()
@@ -2703,7 +3452,8 @@ async function queueAutomation(env, automation, triggerSource) {
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE automations
-      SET status = 'queued', progress_percent = 5, progress_data = ?, last_progress_at = ?, updated_at = ?
+      SET status = 'queued', progress_percent = 5, progress_data = ?, last_progress_at = ?, updated_at = ?,
+          next_run_at = CASE WHEN enabled = 1 THEN next_run_at ELSE NULL END
       WHERE id = ?
     `).bind(progressPayload, now, now, automation.id),
     env.DB.prepare(`
@@ -2712,7 +3462,12 @@ async function queueAutomation(env, automation, triggerSource) {
     `).bind(automation.id, `Queued for local agent ${agent.display_name || ('#' + agent.id)} via ${triggerSource}`, now)
   ])
 
-  return { success: true, agentName: agent.display_name || `Agent #${agent.id}` }
+  return {
+    success: true,
+    agentName: agent.display_name || `Agent #${agent.id}`,
+    jobId: Number(result.meta?.last_row_id || 0),
+    alreadyQueued: false
+  }
 }
 
 async function buildCompressedPayload(env, automation) {
@@ -2765,6 +3520,7 @@ async function authorizeJobClaim(env, jobId, claimToken, statuses) {
 async function applyAutomationProgress(env, automationId, payload, action) {
   const now = isoNow()
   const status = normalizeRemoteStatus(String(payload.status || payload.event_status || 'processing'))
+  const automation = await getAutomationById(env, automationId)
   const progress = clampInt(payload.progress, 0, 100)
   const safePayload = {
     status,
@@ -2776,14 +3532,23 @@ async function applyAutomationProgress(env, automationId, payload, action) {
     outputs: Array.isArray(payload.outputs) ? payload.outputs.slice(0, 50) : [],
     time: String(payload.time || now)
   }
+  const config = automation ? parseJsonMaybe(automation.automation_json, {}) : {}
+  const nextRunAt = automation && automation.enabled && ['completed', 'error'].includes(status)
+    ? calculateAutomationNextRunAt(
+      String(config.schedule_type || 'daily'),
+      toInt(config.schedule_hour) || 9,
+      toInt(config.schedule_every_minutes) || 10
+    )
+    : automation?.next_run_at || null
 
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE automations
       SET status = ?, progress_percent = ?, progress_data = ?, last_progress_at = ?, updated_at = ?,
-          last_run_at = CASE WHEN ? IN ('completed', 'error') THEN ? ELSE last_run_at END
+          last_run_at = CASE WHEN ? IN ('completed', 'error') THEN ? ELSE last_run_at END,
+          next_run_at = CASE WHEN ? IN ('completed', 'error') AND enabled = 1 THEN ? ELSE next_run_at END
       WHERE id = ?
-    `).bind(status, progress, JSON.stringify(safePayload), now, now, status, now, automationId),
+    `).bind(status, progress, JSON.stringify(safePayload), now, now, status, now, status, nextRunAt, automationId),
     env.DB.prepare(`
       INSERT INTO automation_logs (automation_id, action, status, message, created_at)
       VALUES (?, ?, ?, ?, ?)
@@ -2799,6 +3564,97 @@ async function touchAgentByJob(env, job, request) {
     SET status = 'online', last_seen_at = ?, last_ip = ?, updated_at = ?
     WHERE id = ?
   `).bind(now, ipAddress, now, job.agent_id).run()
+}
+
+async function cancelPendingJobsForAutomation(env, automationId, reason) {
+  const now = isoNow()
+  await env.DB.prepare(`
+    UPDATE local_agent_jobs
+    SET status = 'cancelled', completed_at = ?, error_message = ?
+    WHERE automation_id = ? AND status IN ('queued', 'claimed', 'running')
+  `).bind(now, String(reason || 'Cancelled.'), automationId).run()
+}
+
+function resolveSavedAutomationStatus(existingStatus, enabled) {
+  if (!enabled) {
+    return 'inactive'
+  }
+  const normalized = String(existingStatus || '').toLowerCase()
+  if (['queued', 'processing', 'running'].includes(normalized)) {
+    return normalized
+  }
+  return 'running'
+}
+
+function calculateAutomationNextRunAt(scheduleType, scheduleHour, scheduleEveryMinutes) {
+  const nextRun = new Date()
+  const type = String(scheduleType || 'daily').toLowerCase()
+  const hour = clampInt(scheduleHour, 0, 23)
+  const everyMinutes = Math.max(1, toInt(scheduleEveryMinutes) || 10)
+
+  if (type === 'minutes') {
+    nextRun.setMinutes(nextRun.getMinutes() + everyMinutes, 0, 0)
+    return nextRun.toISOString()
+  }
+
+  if (type === 'hourly') {
+    nextRun.setHours(nextRun.getHours() + 1, 0, 0, 0)
+    return nextRun.toISOString()
+  }
+
+  if (type === 'weekly') {
+    const day = nextRun.getDay()
+    const offset = day === 1 ? 7 : ((8 - day) % 7 || 7)
+    nextRun.setDate(nextRun.getDate() + offset)
+    nextRun.setHours(hour, 0, 0, 0)
+    return nextRun.toISOString()
+  }
+
+  nextRun.setHours(hour, 0, 0, 0)
+  if (nextRun <= new Date()) {
+    nextRun.setDate(nextRun.getDate() + 1)
+  }
+  return nextRun.toISOString()
+}
+
+function formatDisplayDateTime(value) {
+  const raw = String(value || '').trim()
+  if (raw === '') {
+    return 'Unknown'
+  }
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) {
+    return raw
+  }
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+}
+
+function automationStatusClass(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'running':
+    case 'completed':
+    case 'success':
+      return 'status-success'
+    case 'queued':
+    case 'processing':
+    case 'claimed':
+      return 'status-queued'
+    case 'warning':
+    case 'stopped':
+      return 'status-warning'
+    case 'error':
+    case 'failed':
+    case 'cancelled':
+      return 'status-error'
+    default:
+      return 'status-neutral'
+  }
 }
 
 async function getSetting(env, key) {
