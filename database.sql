@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     manual_video_links LONGTEXT NULL,
     youtube_channel_url VARCHAR(500) NULL,
     run_mode ENUM('local', 'github_runner') DEFAULT 'local',
+    local_agent_id INT NULL,
     api_key_id INT NULL,
     enabled BOOLEAN DEFAULT FALSE,
     
@@ -179,8 +180,45 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT INTO settings (setting_key, setting_value) VALUES
 ('openai_api_key', ''),
 ('ffmpeg_path', 'ffmpeg'),
-('default_language', 'en')
+('default_language', 'en'),
+('local_agent_pairing_token', ''),
+('panel_public_base_url', '')
 ON DUPLICATE KEY UPDATE setting_value = setting_value;
+
+CREATE TABLE IF NOT EXISTS local_agents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    agent_key VARCHAR(80) NOT NULL UNIQUE,
+    agent_secret_hash VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    machine_name VARCHAR(255) NULL,
+    host_name VARCHAR(255) NULL,
+    platform VARCHAR(80) NULL,
+    agent_version VARCHAR(50) NULL,
+    status ENUM('online', 'offline', 'disabled') DEFAULT 'offline',
+    last_seen_at TIMESTAMP NULL,
+    last_ip VARCHAR(64) NULL,
+    capabilities_json LONGTEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS local_agent_jobs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_id INT NOT NULL,
+    automation_id INT NOT NULL,
+    trigger_source VARCHAR(50) DEFAULT 'manual',
+    status ENUM('queued', 'claimed', 'running', 'completed', 'error', 'cancelled') DEFAULT 'queued',
+    claim_token VARCHAR(64) NULL,
+    queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    claimed_at TIMESTAMP NULL,
+    started_at TIMESTAMP NULL,
+    completed_at TIMESTAMP NULL,
+    last_heartbeat_at TIMESTAMP NULL,
+    result_json LONGTEXT NULL,
+    error_message TEXT NULL,
+    FOREIGN KEY (agent_id) REFERENCES local_agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
+);
 
 -- Post for Me Connected Accounts
 CREATE TABLE IF NOT EXISTS postforme_accounts (

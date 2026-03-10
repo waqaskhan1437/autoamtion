@@ -207,6 +207,9 @@ try {
         if (!in_array('process_id', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN process_id VARCHAR(20) NULL");
         }
+        if (!in_array('local_agent_id', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN local_agent_id INT NULL");
+        }
 
         // Ensure schedule_type supports minutes testing mode
         try {
@@ -236,6 +239,45 @@ try {
                 posted_at TIMESTAMP NULL,
                 FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE,
                 UNIQUE KEY unique_video_per_cycle (automation_id, video_identifier, cycle_number)
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS local_agents (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                agent_key VARCHAR(80) NOT NULL UNIQUE,
+                agent_secret_hash VARCHAR(255) NOT NULL,
+                display_name VARCHAR(255) NOT NULL,
+                machine_name VARCHAR(255) NULL,
+                host_name VARCHAR(255) NULL,
+                platform VARCHAR(80) NULL,
+                agent_version VARCHAR(50) NULL,
+                status ENUM('online', 'offline', 'disabled') DEFAULT 'offline',
+                last_seen_at TIMESTAMP NULL,
+                last_ip VARCHAR(64) NULL,
+                capabilities_json LONGTEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS local_agent_jobs (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                agent_id INT NOT NULL,
+                automation_id INT NOT NULL,
+                trigger_source VARCHAR(50) DEFAULT 'manual',
+                status ENUM('queued', 'claimed', 'running', 'completed', 'error', 'cancelled') DEFAULT 'queued',
+                claim_token VARCHAR(64) NULL,
+                queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TIMESTAMP NULL,
+                started_at TIMESTAMP NULL,
+                completed_at TIMESTAMP NULL,
+                last_heartbeat_at TIMESTAMP NULL,
+                result_json LONGTEXT NULL,
+                error_message TEXT NULL,
+                FOREIGN KEY (agent_id) REFERENCES local_agents(id) ON DELETE CASCADE,
+                FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
             )
         ");
         
@@ -367,6 +409,7 @@ try {
                 manual_video_links LONGTEXT NULL,
                 youtube_channel_url VARCHAR(500) NULL,
                 run_mode ENUM('local', 'github_runner') DEFAULT 'local',
+                local_agent_id INT NULL,
                 api_key_id INT,
                 enabled TINYINT(1) DEFAULT 1,
                 video_days_filter INT DEFAULT 30,
@@ -440,6 +483,41 @@ try {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS local_agents (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                agent_key VARCHAR(80) NOT NULL UNIQUE,
+                agent_secret_hash VARCHAR(255) NOT NULL,
+                display_name VARCHAR(255) NOT NULL,
+                machine_name VARCHAR(255) NULL,
+                host_name VARCHAR(255) NULL,
+                platform VARCHAR(80) NULL,
+                agent_version VARCHAR(50) NULL,
+                status ENUM('online', 'offline', 'disabled') DEFAULT 'offline',
+                last_seen_at TIMESTAMP NULL,
+                last_ip VARCHAR(64) NULL,
+                capabilities_json LONGTEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS local_agent_jobs (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                agent_id INT NOT NULL,
+                automation_id INT NOT NULL,
+                trigger_source VARCHAR(50) DEFAULT 'manual',
+                status ENUM('queued', 'claimed', 'running', 'completed', 'error', 'cancelled') DEFAULT 'queued',
+                claim_token VARCHAR(64) NULL,
+                queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TIMESTAMP NULL,
+                started_at TIMESTAMP NULL,
+                completed_at TIMESTAMP NULL,
+                last_heartbeat_at TIMESTAMP NULL,
+                result_json LONGTEXT NULL,
+                error_message TEXT NULL,
+                FOREIGN KEY (agent_id) REFERENCES local_agents(id) ON DELETE CASCADE,
+                FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
+            );
             
             CREATE TABLE IF NOT EXISTS postforme_accounts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -504,6 +582,34 @@ try {
     </div>');
 }
 
+if (isset($pdo)) {
+    try {
+        $defaultSettings = [
+            'openai_api_key' => '',
+            'ffmpeg_path' => 'ffmpeg',
+            'ffprobe_path' => '',
+            'default_language' => 'en',
+            'auto_install_local_runtime' => '1',
+            'ffmpeg_auto_download_url' => '',
+            'ffmpeg_auto_download_url_windows' => 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+            'ffmpeg_auto_download_url_linux' => 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz',
+            'local_agent_pairing_token' => '',
+            'panel_public_base_url' => '',
+        ];
+
+        $stmt = $pdo->prepare("
+            INSERT INTO settings (setting_key, setting_value)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE setting_value = setting_value
+        ");
+        foreach ($defaultSettings as $key => $value) {
+            $stmt->execute([$key, $value]);
+        }
+    } catch (Exception $e) {
+        // Continue with existing settings if default seeding fails.
+    }
+}
+
 $ytdlpCookiesFile = trim((string)(getenv('VW_YTDLP_COOKIES_FILE') ?: ''));
 if ($ytdlpCookiesFile === '' && isset($pdo)) {
     try {
@@ -565,8 +671,9 @@ function getRandomWord($words) {
  * Check if FFmpeg is installed
  */
 function isFFmpegAvailable() {
-    exec(FFMPEG_PATH . ' -version 2>&1', $output, $returnCode);
-    return $returnCode === 0;
+    require_once __DIR__ . '/includes/FFmpegProcessor.php';
+    $ffmpeg = new FFmpegProcessor();
+    return $ffmpeg->isAvailable();
 }
 
 /**

@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/RuntimeBootstrap.php';
+
 class YouTubeSource
 {
     private string $channelUrl;
@@ -13,8 +15,12 @@ class YouTubeSource
             throw new InvalidArgumentException('YouTube channel URL is required.');
         }
 
+        $runtime = new RuntimeBootstrap(isset($GLOBALS['pdo']) && $GLOBALS['pdo'] instanceof PDO ? $GLOBALS['pdo'] : null);
+        $runtimePaths = $runtime->discoverFFmpegPaths();
+
         $this->channelUrl = $channelUrl;
-        $this->ffmpegPath = $this->resolveExistingBinary($ffmpegPath ?: (defined('FFMPEG_PATH') ? (string)FFMPEG_PATH : 'ffmpeg'));
+        $resolvedFfmpeg = $ffmpegPath ?: ($runtimePaths['ffmpeg'] ?? null) ?: (defined('FFMPEG_PATH') ? (string)FFMPEG_PATH : 'ffmpeg');
+        $this->ffmpegPath = $this->resolveExistingBinary($resolvedFfmpeg);
         $this->ytDlpPath = $this->resolveYtDlpPath();
     }
 

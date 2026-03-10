@@ -20,6 +20,7 @@ if (ob_get_level()) ob_end_clean();
 require_once 'config.php';
 require_once 'includes/FTPAPI.php';
 require_once 'includes/FFmpegProcessor.php';
+require_once 'includes/RuntimeBootstrap.php';
 require_once 'includes/AITaglineGenerator.php';
 require_once 'includes/PostForMeAPI.php';
 
@@ -133,13 +134,15 @@ if (!is_dir($tempDir)) @mkdir($tempDir, 0777, true);
 if (!is_dir($outputDir)) @mkdir($outputDir, 0777, true);
 
 // FFmpeg check
-sendLog('ffmpeg_check', 'info', 'Checking FFmpeg...', 15);
-$ffmpeg = new FFmpegProcessor();
-if (!$ffmpeg->isAvailable()) {
-    sendLog('ffmpeg_check', 'error', 'FFmpeg not installed!');
+sendLog('ffmpeg_check', 'info', 'Preparing local runtime...', 15);
+$runtimeBootstrap = new RuntimeBootstrap($pdo);
+$runtime = $runtimeBootstrap->ensureFFmpegAvailable(true);
+if (!$runtime['success']) {
+    sendLog('ffmpeg_check', 'error', $runtime['error'] ?? 'FFmpeg not installed!');
     exit;
 }
-sendLog('ffmpeg_check', 'success', 'FFmpeg OK', 18);
+$ffmpeg = new FFmpegProcessor($runtime['ffmpeg_path'] ?? null, $runtime['ffprobe_path'] ?? null);
+sendLog('ffmpeg_check', 'success', $runtime['message'] ?? 'FFmpeg runtime ready.', 18);
 
 // Fetch videos
 sendLog('fetch', 'info', 'Connecting to FTP...', 20);

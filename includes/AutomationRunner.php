@@ -7,6 +7,7 @@
 require_once __DIR__ . '/BunnyAPI.php';
 require_once __DIR__ . '/FTPAPI.php';
 require_once __DIR__ . '/FFmpegProcessor.php';
+require_once __DIR__ . '/RuntimeBootstrap.php';
 require_once __DIR__ . '/WhisperAPI.php';
 require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
@@ -29,7 +30,9 @@ class AutomationRunner {
         $this->automationId = $automationId;
         
         // Set directories
-        if (PHP_OS_FAMILY === 'Windows') {
+        if (defined('BASE_DATA_DIR') && trim((string)BASE_DATA_DIR) !== '') {
+            $baseDir = rtrim((string)BASE_DATA_DIR, '/\\');
+        } elseif (PHP_OS_FAMILY === 'Windows') {
             $baseDir = 'C:/VideoWorkflow';
         } else {
             $baseDir = getenv('HOME') . '/VideoWorkflow';
@@ -88,6 +91,17 @@ class AutomationRunner {
         $this->log('run_started', 'info', 'Automation run started');
         
         try {
+            $runtimeBootstrap = new RuntimeBootstrap($this->pdo);
+            $runtime = $runtimeBootstrap->ensureFFmpegAvailable(true);
+            if (!$runtime['success']) {
+                $this->log('ffmpeg_error', 'error', $runtime['error'] ?? 'FFmpeg runtime bootstrap failed.');
+                throw new Exception($runtime['error'] ?? 'FFmpeg runtime bootstrap failed.');
+            }
+            $runtimeMessage = $runtime['installed'] ?? false
+                ? ($runtime['message'] ?? 'FFmpeg runtime installed locally.')
+                : 'FFmpeg runtime ready.';
+            $this->log('ffmpeg_check', 'success', $runtimeMessage);
+
             // Step 1: Fetch videos from Bunny CDN
             $videos = $this->fetchVideos();
             $totalFetched = count($videos);

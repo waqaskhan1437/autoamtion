@@ -24,6 +24,7 @@ try {
     require_once __DIR__ . '/config.php';
     require_once __DIR__ . '/includes/FTPAPI.php';
     require_once __DIR__ . '/includes/FFmpegProcessor.php';
+    require_once __DIR__ . '/includes/RuntimeBootstrap.php';
     require_once __DIR__ . '/includes/AITaglineGenerator.php';
 } catch (Exception $e) {
     file_put_contents(__DIR__ . '/logs/background-error.log', 
@@ -196,23 +197,28 @@ updateProgress($pdo, $automationId, 'init', 'info', "Starting: {$automation['nam
 saveLog($pdo, $automationId, 'run_started', 'info', 'Background automation started');
 
 // Set up directories
-$baseDir = (PHP_OS_FAMILY === 'Windows') ? 'C:/VideoWorkflow' : getenv('HOME') . '/VideoWorkflow';
+$baseDir = defined('BASE_DATA_DIR') && trim((string)BASE_DATA_DIR) !== ''
+    ? rtrim((string)BASE_DATA_DIR, '/\\')
+    : ((PHP_OS_FAMILY === 'Windows') ? 'C:/VideoWorkflow' : getenv('HOME') . '/VideoWorkflow');
 $tempDir = $baseDir . '/temp';
 $outputDir = $baseDir . '/output';
 
 if (!is_dir($tempDir)) @mkdir($tempDir, 0777, true);
 if (!is_dir($outputDir)) @mkdir($outputDir, 0777, true);
 
-// Step 1: Check FFmpeg
-updateProgress($pdo, $automationId, 'ffmpeg_check', 'info', 'Checking FFmpeg...', 10, $stats);
-$ffmpeg = new FFmpegProcessor();
-if (!$ffmpeg->isAvailable()) {
-    updateProgress($pdo, $automationId, 'ffmpeg_check', 'error', 'FFmpeg not installed! Go to Settings', 10, $stats);
-    saveLog($pdo, $automationId, 'ffmpeg_error', 'error', 'FFmpeg not available');
+// Step 1: Prepare local runtime
+updateProgress($pdo, $automationId, 'ffmpeg_check', 'info', 'Preparing local runtime...', 10, $stats);
+$runtimeBootstrap = new RuntimeBootstrap($pdo);
+$runtime = $runtimeBootstrap->ensureFFmpegAvailable(true);
+if (!$runtime['success']) {
+    $errorMessage = $runtime['error'] ?? 'FFmpeg not available';
+    updateProgress($pdo, $automationId, 'ffmpeg_check', 'error', $errorMessage, 10, $stats);
+    saveLog($pdo, $automationId, 'ffmpeg_error', 'error', $errorMessage);
     $pdo->prepare("UPDATE automation_settings SET status = 'error', process_id = NULL WHERE id = ?")->execute([$automationId]);
     exit;
 }
-updateProgress($pdo, $automationId, 'ffmpeg_check', 'success', 'FFmpeg OK', 15, $stats);
+$ffmpeg = new FFmpegProcessor($runtime['ffmpeg_path'] ?? null, $runtime['ffprobe_path'] ?? null);
+updateProgress($pdo, $automationId, 'ffmpeg_check', 'success', $runtime['message'] ?? 'FFmpeg runtime ready.', 15, $stats);
 
 // Step 2: Connect and fetch videos
 updateProgress($pdo, $automationId, 'fetch', 'info', 'Connecting to video storage...', 20, $stats);

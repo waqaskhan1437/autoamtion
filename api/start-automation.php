@@ -13,6 +13,7 @@ header('Content-Type: application/json');
 try {
     require_once __DIR__ . '/../config.php';
     require_once __DIR__ . '/../includes/GitHubRunner.php';
+    require_once __DIR__ . '/../includes/LocalAgentManager.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error: ' . $e->getMessage()]);
     exit;
@@ -58,7 +59,7 @@ if (!$automationId) {
 }
 
 $stmt = $pdo->prepare("
-    SELECT id, name, status, enabled, run_mode, schedule_type, schedule_hour, schedule_every_minutes
+    SELECT id, name, status, enabled, run_mode, local_agent_id, schedule_type, schedule_hour, schedule_every_minutes
     FROM automation_settings
     WHERE id = ?
 ");
@@ -173,6 +174,28 @@ if ($runMode === 'github_runner') {
         'run_url' => $dispatch['run_url'] ?? null,
         'workflow_url' => $dispatch['workflow_url'] ?? null,
         'run_id' => $dispatch['run_id'] ?? null,
+        'automationId' => $automationId
+    ]);
+    exit;
+}
+
+if ($runMode === 'local' && (int)($automation['local_agent_id'] ?? 0) > 0) {
+    $agentManager = new LocalAgentManager($pdo);
+    $queue = $agentManager->queueAutomation((int)$automationId, 'manual_run');
+    if (!$queue['success']) {
+        echo json_encode([
+            'success' => false,
+            'error' => $queue['error'] ?? 'Failed to queue local agent job'
+        ]);
+        exit;
+    }
+
+    echo json_encode([
+        'success' => true,
+        'mode' => 'local_agent',
+        'status' => 'queued',
+        'message' => 'Queued for local agent ' . ($queue['agent_name'] ?? ('#' . ($queue['agent_id'] ?? ''))),
+        'job_id' => $queue['job_id'] ?? null,
         'automationId' => $automationId
     ]);
     exit;

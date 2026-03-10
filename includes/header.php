@@ -35,6 +35,7 @@ vwm_require_live_password();
                 <a href="api-keys.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'api-keys.php' ? 'bg-gray-800' : '' ?>">API Keys</a>
                 <a href="jobs.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'bg-gray-800' : '' ?>">Jobs</a>
                 <a href="automation.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'automation.php' ? 'bg-gray-800' : '' ?>">Automation</a>
+                <a href="agents.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'agents.php' ? 'bg-gray-800' : '' ?>">Agents</a>
                 <a href="player.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'player.php' ? 'bg-indigo-600' : '' ?>">
                     <span class="flex items-center gap-1">
                         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>

@@ -98,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, local_agent_id, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -142,6 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
+            !empty($_POST['local_agent_id']) ? (int)$_POST['local_agent_id'] : null,
             $_POST['api_key_id'] ?: null,
             $enabled,
             $videoDaysFilter,
@@ -220,7 +221,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, local_agent_id=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -260,6 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
+            !empty($_POST['local_agent_id']) ? (int)$_POST['local_agent_id'] : null,
             $_POST['api_key_id'] ?: null,
             $videoDaysFilter,
             $videoStartDate,
@@ -401,7 +403,13 @@ function calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEve
     return $nextRun->format('Y-m-d H:i:s');
 }
 
-$stmt = $pdo->query("SELECT a.*, k.name as key_name FROM automation_settings a LEFT JOIN api_keys k ON a.api_key_id = k.id ORDER BY a.created_at DESC");
+$stmt = $pdo->query("
+    SELECT a.*, k.name AS key_name, ag.display_name AS local_agent_name, ag.machine_name AS local_agent_machine
+    FROM automation_settings a
+    LEFT JOIN api_keys k ON a.api_key_id = k.id
+    LEFT JOIN local_agents ag ON ag.id = a.local_agent_id
+    ORDER BY a.created_at DESC
+");
 $automations = $stmt->fetchAll();
 
 foreach ($automations as &$automation) {
@@ -436,6 +444,9 @@ unset($automation);
 
 $stmt = $pdo->query("SELECT * FROM api_keys WHERE status = 'active'");
 $keys = $stmt->fetchAll();
+
+$stmt = $pdo->query("SELECT id, display_name, machine_name, status FROM local_agents WHERE status <> 'disabled' ORDER BY display_name ASC, machine_name ASC");
+$localAgents = $stmt->fetchAll();
 
 $selectedLogs = [];
 $selectedLogAutomationId = isset($_GET['logs']) ? intval($_GET['logs']) : 0;
@@ -591,6 +602,9 @@ refreshOutputVideoCount();
                             <h3 class="font-semibold"><?= htmlspecialchars($automation['name']) ?></h3>
                             <div class="text-sm text-gray-400">
                                 <?= (($automation['run_mode'] ?? 'local') === 'github_runner' ? 'GitHub Runner' : 'Local') ?> |
+                                <?php if (($automation['run_mode'] ?? 'local') === 'local' && !empty($automation['local_agent_id'])): ?>
+                                    Agent: <?= htmlspecialchars($automation['local_agent_name'] ?: $automation['local_agent_machine'] ?: ('#' . $automation['local_agent_id'])) ?> |
+                                <?php endif; ?>
                                 <?= $automation['schedule_type'] ?> | 
                                 <?php 
                                 if (!empty($automation['video_start_date']) && !empty($automation['video_end_date'])) {
@@ -625,7 +639,7 @@ refreshOutputVideoCount();
                             </form>
                         <?php else: ?>
                             <!-- Run button when not processing -->
-                            <form method="POST" class="inline" onsubmit="event.preventDefault(); runAutomationSmart('<?= $automation['id'] ?>', '<?= htmlspecialchars($automation['run_mode'] ?? 'local') ?>'); return false;">
+                            <form method="POST" class="inline" onsubmit="event.preventDefault(); runAutomationSmart('<?= $automation['id'] ?>', '<?= htmlspecialchars($automation['run_mode'] ?? 'local') ?>', '<?= (int)($automation['local_agent_id'] ?? 0) ?>'); return false;">
                                 <input type="hidden" name="action" value="run">
                                 <input type="hidden" name="id" value="<?= $automation['id'] ?>">
                                 <button type="submit" class="p-2 hover:bg-gray-700 rounded text-green-400" title="Run Now - Process Videos">
@@ -962,7 +976,18 @@ refreshOutputVideoCount();
                         <option value="local" selected>Local Runner</option>
                         <option value="github_runner">GitHub Runner</option>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Local runs on this server. GitHub Runner dispatches workflow in your GitHub repo.</p>
+                    <p class="text-xs text-gray-500 mt-1">Local runs on the machine hosting this app and can auto-install FFmpeg on first run. GitHub Runner dispatches workflow in your GitHub repo.</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Local Agent Device</label>
+                    <select name="local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <option value="">Server machine (current host)</option>
+                        <?php foreach ($localAgents as $agent): ?>
+                            <option value="<?= (int)$agent['id'] ?>"><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.</p>
                 </div>
                 
                 <div id="bunny_source_section" class="hidden">
@@ -1468,7 +1493,18 @@ refreshOutputVideoCount();
                         <option value="local">Local Runner</option>
                         <option value="github_runner">GitHub Runner</option>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">Use GitHub Runner to dispatch a workflow instead of local execution.</p>
+                    <p class="text-xs text-gray-500 mt-1">Local runs on the machine hosting this app and can auto-install FFmpeg on first run. Use GitHub Runner to dispatch a workflow instead.</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Local Agent Device</label>
+                    <select name="local_agent_id" id="edit_local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                        <option value="">Server machine (current host)</option>
+                        <?php foreach ($localAgents as $agent): ?>
+                            <option value="<?= (int)$agent['id'] ?>"><?= htmlspecialchars($agent['display_name'] ?: $agent['machine_name'] ?: ('Agent #' . $agent['id'])) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Optional. If selected, Local Runner jobs will queue to that paired PC instead of this server.</p>
                 </div>
                 
                 <div id="edit_bunny_source_section" class="hidden">
@@ -2171,6 +2207,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_name').value = automationData.name || '';
     document.getElementById('edit_video_source').value = automationData.video_source || 'ftp';
     document.getElementById('edit_run_mode').value = automationData.run_mode || 'local';
+    document.getElementById('edit_local_agent_id').value = automationData.local_agent_id || '';
     document.getElementById('edit_api_key_id').value = automationData.api_key_id || '';
     document.getElementById('edit_schedule_type').value = automationData.schedule_type || 'daily';
     document.getElementById('edit_schedule_hour').value = automationData.schedule_hour || 9;
@@ -2579,7 +2616,7 @@ function testFetch(automationId, source) {
 function confirmRun(form) {
     event.preventDefault();
     const automationId = form.querySelector('input[name="id"]').value;
-    runAutomationSmart(automationId, 'local');
+    runAutomationSmart(automationId, 'local', 0);
     return false;
 }
 
@@ -2601,12 +2638,63 @@ function setCardStatus(automationId, status) {
     badge.textContent = (status === 'queued') ? 'queued' : status;
 }
 
-function runAutomationSmart(automationId, runMode) {
+function runAutomationSmart(automationId, runMode, localAgentId = 0) {
     if (runMode === 'github_runner') {
         runAutomationGithub(automationId);
         return;
     }
+    if (Number(localAgentId || 0) > 0) {
+        runAutomationRemoteDispatch(automationId, 'local agent');
+        return;
+    }
     runAutomationLive(automationId);
+}
+
+function runAutomationRemoteDispatch(automationId, label) {
+    const progressSection = document.getElementById('progress-' + automationId);
+    const progressBar = document.getElementById('progress-bar-' + automationId);
+    const progressPercent = document.getElementById('progress-percent-' + automationId);
+    const progressLog = document.getElementById('progress-log-' + automationId);
+    const progressOutputs = document.getElementById('progress-outputs-' + automationId);
+
+    if (progressSection) progressSection.classList.remove('hidden');
+    if (progressBar) progressBar.style.width = '5%';
+    if (progressPercent) progressPercent.textContent = '5%';
+    if (progressLog) {
+        progressLog.innerHTML = '';
+        addCardLog(progressLog, 'Queueing to ' + label + '...', 'info');
+    }
+    if (progressOutputs) {
+        progressOutputs.innerHTML = '<div class="text-gray-500">Waiting for remote output...</div>';
+    }
+
+    setCardStatus(automationId, 'queued');
+
+    fetch('api/start-automation.php?id=' + encodeURIComponent(automationId), { cache: 'no-store' })
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) {
+                throw new Error((data && data.error) ? data.error : 'Remote dispatch failed');
+            }
+
+            setCardStatus(automationId, data.status || 'queued');
+            if (progressLog) {
+                addCardLog(progressLog, data.message || 'Queued successfully.', 'success');
+            }
+            if (typeof showToast === 'function') {
+                showToast(data.message || 'Queued successfully');
+            }
+            resumePolling(automationId);
+        })
+        .catch(err => {
+            setCardStatus(automationId, 'error');
+            if (progressLog) {
+                addCardLog(progressLog, err.message || 'Remote dispatch failed', 'error');
+            }
+            if (typeof showToast === 'function') {
+                showToast(err.message || 'Remote dispatch failed', 'error');
+            }
+        });
 }
 
 function runAutomationGithub(automationId) {

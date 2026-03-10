@@ -19,9 +19,35 @@ while (ob_get_level()) ob_end_clean();
 // Global PDO reference for updateDatabase
 $globalPdo = null;
 $globalAutomationId = null;
+$globalKnownOutputs = [];
 
-function sendProgress($step, $status, $message, $percent = 0, $stats = []) {
-    global $globalPdo, $globalAutomationId;
+function syncNormalizeOutputName($value): string {
+    $name = basename(trim((string)$value));
+    if ($name === '') {
+        return '';
+    }
+
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    return in_array($ext, ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'], true) ? $name : '';
+}
+
+function syncMergeOutputs(array $existing, array $incoming): array {
+    foreach ($incoming as $item) {
+        $name = syncNormalizeOutputName($item);
+        if ($name !== '' && !in_array($name, $existing, true)) {
+            $existing[] = $name;
+        }
+    }
+
+    return $existing;
+}
+
+function sendProgress($step, $status, $message, $percent = 0, $stats = [], $outputs = null) {
+    global $globalPdo, $globalAutomationId, $globalKnownOutputs;
+
+    if (is_array($outputs)) {
+        $globalKnownOutputs = syncMergeOutputs($globalKnownOutputs, $outputs);
+    }
     
     $data = json_encode([
         'step' => $step,
@@ -29,6 +55,7 @@ function sendProgress($step, $status, $message, $percent = 0, $stats = []) {
         'message' => $message,
         'progress' => $percent,
         'stats' => $stats,
+        'outputs' => $globalKnownOutputs,
         'time' => date('H:i:s')
     ]);
     echo "data: {$data}\n\n";
@@ -50,12 +77,23 @@ function sendPing() {
     @flush();
 }
 
-function sendDone($success, $message, $stats = []) {
+function sendDone($success, $message, $stats = [], $outputs = null) {
+    global $globalKnownOutputs;
+
+    if (is_array($outputs)) {
+        $globalKnownOutputs = syncMergeOutputs($globalKnownOutputs, $outputs);
+    }
+
     $data = json_encode([
         'done' => true,
         'success' => $success,
+        'status' => $success ? 'success' : 'error',
+        'step' => 'complete',
         'message' => $message,
-        'stats' => $stats
+        'progress' => $success ? 100 : 0,
+        'stats' => $stats,
+        'outputs' => $globalKnownOutputs,
+        'time' => date('H:i:s')
     ]);
     echo "data: {$data}\n\n";
     flush();
@@ -273,6 +311,7 @@ try {
     require_once __DIR__ . '/../config.php';
     require_once __DIR__ . '/../includes/FTPAPI.php';
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
+    require_once __DIR__ . '/../includes/RuntimeBootstrap.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
@@ -337,6 +376,7 @@ if (!$isManualSource && !$isYouTubeSource && !$automation['api_key_id']) {
 $pdo->prepare("UPDATE automation_settings SET status = 'processing', progress_percent = 0 WHERE id = ?")->execute([$automationId]);
 
 $stats = ['fetched' => 0, 'downloaded' => 0, 'processed' => 0, 'scheduled' => 0, 'posted' => 0, 'errors' => 0];
+$generatedOutputs = [];
 $videosPerRun = intval($automation['videos_per_run'] ?? 5);
 if ($videosPerRun < 1) $videosPerRun = 1;
 if ($videosPerRun > 500) $videosPerRun = 500;
@@ -382,13 +422,15 @@ if ($pfEnabled) {
 }
 
 // Check FFmpeg
-sendProgress('ffmpeg', 'info', 'Checking FFmpeg...', 15, $stats);
-$ffmpeg = new FFmpegProcessor();
-if (!$ffmpeg->isAvailable()) {
+sendProgress('ffmpeg', 'info', 'Preparing local runtime...', 15, $stats);
+$runtimeBootstrap = new RuntimeBootstrap($pdo);
+$runtime = $runtimeBootstrap->ensureFFmpegAvailable(true);
+if (!$runtime['success']) {
     $pdo->prepare("UPDATE automation_settings SET status = 'error' WHERE id = ?")->execute([$automationId]);
-    sendDone(false, 'FFmpeg not installed! Go to Settings page to configure.');
+    sendDone(false, $runtime['error'] ?? 'FFmpeg not installed! Go to Settings page to configure.');
 }
-sendProgress('ffmpeg', 'success', 'FFmpeg OK', 20, $stats);
+$ffmpeg = new FFmpegProcessor($runtime['ffmpeg_path'] ?? null, $runtime['ffprobe_path'] ?? null);
+sendProgress('ffmpeg', 'success', $runtime['message'] ?? 'FFmpeg runtime ready.', 20, $stats);
 
 $ftp = null;
 $youtubeSourceClient = null;
@@ -946,7 +988,8 @@ foreach ($videos as $index => $video) {
         $sourceHadSuccess = true;
         $stats['processed']++;
         $outputSize = round(filesize($outputPath) / 1024 / 1024, 1);
-        sendProgress('process', 'success', "Created {$clipLabel}: " . basename($outputPath) . " ({$outputSize}MB)", $clipProgressBase + ($progressPerVideo * 0.1), $stats);
+        $generatedOutputs = syncMergeOutputs($generatedOutputs, [basename($outputPath)]);
+        sendProgress('process', 'success', "Created {$clipLabel}: " . basename($outputPath) . " ({$outputSize}MB)", $clipProgressBase + ($progressPerVideo * 0.1), $stats, $generatedOutputs);
 
         try {
             $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
@@ -1156,5 +1199,5 @@ if ($willPost) {
     $summaryText = implode(', ', $postSummary) ?: 'No posts made';
     sendProgress('summary', ($stats['posted'] > 0 || $stats['scheduled'] > 0) ? 'success' : 'warning', "âœ“ {$summaryText}", 99, $stats);
 }
-sendProgress('complete', 'success', 'Automation Complete!', 100, $stats);
-sendDone(true, "Completed! Processed {$stats['processed']}, Scheduled {$stats['scheduled']}, Posted {$stats['posted']} videos", $stats);
+sendProgress('complete', 'success', 'Automation Complete!', 100, $stats, $generatedOutputs);
+sendDone(true, "Completed! Processed {$stats['processed']}, Scheduled {$stats['scheduled']}, Posted {$stats['posted']} videos", $stats, $generatedOutputs);

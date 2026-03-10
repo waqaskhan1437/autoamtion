@@ -5,6 +5,8 @@
  * Supports Windows XAMPP environment
  */
 
+require_once __DIR__ . '/RuntimeBootstrap.php';
+
 class FFmpegProcessor {
     private $ffmpegPath;
     private $ffprobePath;
@@ -12,9 +14,12 @@ class FFmpegProcessor {
     private $fontPath;
     
     public function __construct($ffmpegPath = null, $ffprobePath = null) {
-        // Auto-detect FFmpeg path
-        $this->ffmpegPath = $ffmpegPath ?: $this->findExecutable('ffmpeg');
-        $this->ffprobePath = $ffprobePath ?: $this->findExecutable('ffprobe');
+        $runtime = new RuntimeBootstrap(isset($GLOBALS['pdo']) && $GLOBALS['pdo'] instanceof PDO ? $GLOBALS['pdo'] : null);
+        $runtimePaths = $runtime->discoverFFmpegPaths();
+
+        // Resolve FFmpeg/ffprobe using explicit override, DB settings, runtime bin, then PATH.
+        $this->ffmpegPath = $ffmpegPath ?: ($runtimePaths['ffmpeg'] ?? null) ?: $this->findExecutable('ffmpeg');
+        $this->ffprobePath = $ffprobePath ?: ($runtimePaths['ffprobe'] ?? null) ?: $this->findExecutable('ffprobe');
         
         // Set font path based on OS - CRITICAL: proper FFmpeg escaping
         if (PHP_OS_FAMILY === 'Windows') {
@@ -111,7 +116,7 @@ class FFmpegProcessor {
     private function testCommand($command) {
         $output = [];
         $returnCode = 0;
-        @exec($command . ' -version 2>&1', $output, $returnCode);
+        @exec(escapeshellarg($command) . ' -version 2>&1', $output, $returnCode);
         return $returnCode === 0;
     }
     
@@ -751,7 +756,7 @@ class FFmpegProcessor {
      * Check if FFmpeg is available
      */
     public function isAvailable() {
-        return $this->testCommand('"' . $this->ffmpegPath . '"');
+        return $this->testCommand($this->ffmpegPath);
     }
     
     /**

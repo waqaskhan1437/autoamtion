@@ -11,6 +11,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/AutomationRunner.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
 require_once __DIR__ . '/../includes/GitHubRunner.php';
+require_once __DIR__ . '/../includes/LocalAgentManager.php';
 
 // Force DB session timezone to match PHP timezone for consistent TIMESTAMP behavior.
 try {
@@ -183,9 +184,10 @@ $automationsRun = [];
 
 try {
     $githubRunner = new GitHubRunner($pdo);
+    $localAgentManager = new LocalAgentManager($pdo);
 
     $stmt = $pdo->query("
-        SELECT id, name, run_mode, schedule_type, schedule_hour, schedule_every_minutes, next_run_at
+        SELECT id, name, run_mode, local_agent_id, schedule_type, schedule_hour, schedule_every_minutes, next_run_at
         FROM automation_settings
         WHERE enabled = 1
         AND status NOT IN ('processing', 'queued')
@@ -275,6 +277,41 @@ try {
                     'name' => $automation['name'],
                     'processed' => 0,
                     'mode' => 'github_runner'
+                ];
+                continue;
+            }
+
+            if (($automation['run_mode'] ?? 'local') === 'local' && (int)($automation['local_agent_id'] ?? 0) > 0) {
+                $queue = $localAgentManager->queueAutomation((int)$automation['id'], 'cron_schedule');
+                if (!$queue['success']) {
+                    throw new Exception($queue['error'] ?? 'Local agent queue failed in cron');
+                }
+
+                $nextRunAt = calculateNextRunAtForCron(
+                    $automation['schedule_type'] ?? 'daily',
+                    $automation['schedule_hour'] ?? 9,
+                    $automation['schedule_every_minutes'] ?? 10
+                );
+
+                $pdo->prepare("
+                    UPDATE automation_settings
+                    SET status = 'queued',
+                        next_run_at = ?,
+                        last_run_at = NOW(),
+                        last_progress_time = NOW()
+                    WHERE id = ?
+                ")->execute([$nextRunAt, $automation['id']]);
+
+                $pdo->prepare("
+                    INSERT INTO automation_logs (automation_id, action, status, message)
+                    VALUES (?, 'local_agent_dispatch', 'success', ?)
+                ")->execute([$automation['id'], 'Cron queued automation for local agent ' . ($queue['agent_name'] ?? ('#' . ($queue['agent_id'] ?? '')))]);
+
+                $automationsRun[] = [
+                    'id' => $automation['id'],
+                    'name' => $automation['name'],
+                    'processed' => 0,
+                    'mode' => 'local_agent'
                 ];
                 continue;
             }

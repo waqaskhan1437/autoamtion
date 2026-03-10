@@ -1,5 +1,7 @@
 <?php
 require_once 'config.php';
+require_once 'includes/RuntimeBootstrap.php';
+require_once 'includes/FFmpegProcessor.php';
 
 $message = '';
 $messageType = 'success';
@@ -11,8 +13,9 @@ while ($row = $stmt->fetch()) {
     $settings[$row['setting_key']] = $row['setting_value'];
 }
 
-// Check FFmpeg status
-$ffmpegAvailable = isFFmpegAvailable();
+$runtimeBootstrap = new RuntimeBootstrap($pdo);
+$runtimeStatus = $runtimeBootstrap->getStatus();
+$ffmpegAvailable = !empty($runtimeStatus['available']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -58,6 +61,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'save_ffmpeg') {
         $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
         $stmt->execute(['ffmpeg_path', $_POST['ffmpeg_path'] ?? 'ffmpeg']);
+        $stmt->execute(['auto_install_local_runtime', isset($_POST['auto_install_local_runtime']) ? '1' : '0']);
+        $stmt->execute(['ffmpeg_auto_download_url_windows', trim((string)($_POST['ffmpeg_auto_download_url_windows'] ?? ''))]);
         $message = 'FFmpeg settings saved';
         
     } elseif ($action === 'test_bunny') {
@@ -132,14 +137,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
     } elseif ($action === 'test_ffmpeg') {
-        $ffmpegPath = $_POST['test_path'] ?? $settings['ffmpeg_path'] ?? 'ffmpeg';
-        exec($ffmpegPath . ' -version 2>&1', $output, $returnCode);
+        $ffmpegPath = trim((string)($_POST['test_path'] ?? $_POST['ffmpeg_path'] ?? $settings['ffmpeg_path'] ?? ''));
+        $ffmpeg = new FFmpegProcessor($ffmpegPath !== '' ? $ffmpegPath : null);
         
-        if ($returnCode === 0) {
-            $version = isset($output[0]) ? preg_replace('/^ffmpeg version ([^ ]+).*/', '$1', $output[0]) : 'unknown';
+        if ($ffmpeg->isAvailable()) {
+            $versionLine = $ffmpeg->getVersion();
+            $version = preg_replace('/^ffmpeg version ([^ ]+).*/', '$1', $versionLine);
             $message = "FFmpeg is working! Version: {$version}";
         } else {
             $message = 'FFmpeg not found at specified path';
+            $messageType = 'error';
+        }
+    } elseif ($action === 'install_ffmpeg_runtime') {
+        $result = $runtimeBootstrap->ensureFFmpegAvailable(true);
+        if ($result['success']) {
+            $message = $result['message'] ?? 'FFmpeg installed successfully';
+        } else {
+            $message = $result['error'] ?? 'Automatic FFmpeg install failed';
             $messageType = 'error';
         }
     } elseif ($action === 'save_postforme') {
@@ -247,6 +261,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     while ($row = $stmt->fetch()) {
         $settings[$row['setting_key']] = $row['setting_value'];
     }
+
+    $runtimeBootstrap = new RuntimeBootstrap($pdo);
+    $runtimeStatus = $runtimeBootstrap->getStatus();
+    $ffmpegAvailable = !empty($runtimeStatus['available']);
 }
 
 $activeTab = $_GET['tab'] ?? 'bunny';
@@ -739,13 +757,21 @@ include 'includes/header.php';
                 <div>
                     <h3 class="font-semibold">FFmpeg Status</h3>
                     <div class="text-sm <?= $ffmpegAvailable ? 'text-green-400' : 'text-red-400' ?>">
-                        <?= $ffmpegAvailable ? 'Installed and working' : 'Not found - install FFmpeg' ?>
+                        <?= $ffmpegAvailable ? 'Installed and working' : 'Not found - local runtime will try auto-install' ?>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1">
+                        Resolved path: <?= htmlspecialchars($runtimeStatus['ffmpeg_path'] ?: 'not resolved yet') ?>
                     </div>
                 </div>
             </div>
-            <button type="submit" formaction="?tab=ffmpeg" name="action" value="test_ffmpeg" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-medium" data-testid="button-test-ffmpeg">
-                Test FFmpeg
-            </button>
+            <div class="flex gap-2">
+                <button type="submit" formaction="?tab=ffmpeg" name="action" value="install_ffmpeg_runtime" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg font-medium">
+                    Install FFmpeg
+                </button>
+                <button type="submit" formaction="?tab=ffmpeg" name="action" value="test_ffmpeg" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-medium" data-testid="button-test-ffmpeg">
+                    Test FFmpeg
+                </button>
+            </div>
         </div>
     </div>
     
@@ -760,27 +786,30 @@ include 'includes/header.php';
             <div>
                 <label class="block text-sm text-gray-400 mb-1">FFmpeg Path</label>
                 <input type="text" name="ffmpeg_path" value="<?= htmlspecialchars($settings['ffmpeg_path'] ?? 'ffmpeg') ?>" placeholder="ffmpeg" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" data-testid="input-ffmpeg-path">
-                <p class="text-xs text-gray-500 mt-1">Leave as "ffmpeg" if in PATH, otherwise full path like "C:\ffmpeg\bin\ffmpeg.exe"</p>
+                <p class="text-xs text-gray-500 mt-1">Leave as "ffmpeg" if in PATH, or set a full path like "C:\ffmpeg\bin\ffmpeg.exe". Auto-installed runtime will also update this field.</p>
+            </div>
+
+            <label class="flex items-center gap-2">
+                <input type="checkbox" name="auto_install_local_runtime" value="1" class="w-4 h-4" <?= !isset($settings['auto_install_local_runtime']) || !in_array(strtolower((string)$settings['auto_install_local_runtime']), ['0', 'false', 'off', 'no'], true) ? 'checked' : '' ?>>
+                <span class="text-sm">Auto-install FFmpeg locally when Local Runner starts</span>
+            </label>
+
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Windows Auto-Install URL</label>
+                <input type="text" name="ffmpeg_auto_download_url_windows" value="<?= htmlspecialchars($settings['ffmpeg_auto_download_url_windows'] ?? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip') ?>" placeholder="https://..." class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                <p class="text-xs text-gray-500 mt-1">Portable zip URL used when FFmpeg is missing on Windows Local Runner.</p>
             </div>
             
             <div class="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
                 <h4 class="font-medium mb-3 flex items-center gap-2">
                     <svg class="w-4 h-4 text-purple-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
-                    FFmpeg Installation Guide (Windows)
+                    Local Runner Behavior
                 </h4>
-                <ol class="text-sm text-gray-400 space-y-2 list-decimal list-inside">
-                    <li>Download from <a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" class="text-purple-400 hover:underline">gyan.dev/ffmpeg/builds</a> (ffmpeg-release-essentials.zip)</li>
-                    <li>Extract to <code class="bg-gray-800 px-1 rounded">C:\ffmpeg</code></li>
-                    <li>Add <code class="bg-gray-800 px-1 rounded">C:\ffmpeg\bin</code> to System PATH:
-                        <ul class="ml-5 mt-1 space-y-1 list-disc">
-                            <li>Search "Environment Variables" in Windows</li>
-                            <li>Edit "Path" under System Variables</li>
-                            <li>Add new: C:\ffmpeg\bin</li>
-                        </ul>
-                    </li>
-                    <li>Restart XAMPP and browser</li>
-                    <li>Click "Test FFmpeg" to verify</li>
-                </ol>
+                <div class="text-sm text-gray-400 space-y-2">
+                    <p>When <code class="bg-gray-800 px-1 rounded">Local Runner</code> starts and FFmpeg is missing, the app can download a portable build into <code class="bg-gray-800 px-1 rounded"><?= htmlspecialchars($runtimeStatus['bin_dir'] ?? (BASE_DATA_DIR . '\runtime\bin')) ?></code>.</p>
+                    <p>If auto-install is disabled or the download fails, local jobs will stop with a runtime error and GitHub Runner will still work normally.</p>
+                    <p>Manual source: <a href="https://ffmpeg.org/download.html" target="_blank" class="text-purple-400 hover:underline">ffmpeg.org/download.html</a></p>
+                </div>
             </div>
         </div>
     </div>
