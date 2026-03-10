@@ -1,3 +1,4 @@
+node_modules/
 cloudflare-worker/node_modules/
 cloudflare-worker/.wrangler/
 cloudflare-worker/.wrangler-dev.out.log

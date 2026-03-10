@@ -23,6 +23,10 @@ The Worker replaces the always-online panel/API layer. The heavy video processin
 5. Start local dev:
    - `npm run dev`
 
+For Cloudflare Git deploys from the repository root, use:
+
+- deploy command: `npm run cf:deploy`
+
 Default admin credentials in local dev:
 
 - email: `admin@local`

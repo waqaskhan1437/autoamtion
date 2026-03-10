@@ -65,7 +65,7 @@ If you want a mostly free online control-plane:
 3. `npm install`
 4. Create/bind a D1 database in `wrangler.jsonc`
 5. Run `npm run db:apply:remote`
-6. Deploy with `npm run deploy`
+6. From repo root, deploy with `npm run cf:deploy`
 7. Set `SESSION_SECRET`, `AGENT_PACKAGE_URL` or `GITHUB_REPO_SLUG`, and admin vars in Wrangler
 
 Important:

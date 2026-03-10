@@ -1,5 +1,5 @@
 {
-  "$schema": "./cloudflare-worker/node_modules/wrangler/config-schema.json",
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "video-workflow-control-plane",
   "main": "cloudflare-worker/src/index.js",
   "compatibility_date": "2026-03-10",
