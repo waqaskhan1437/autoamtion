@@ -299,7 +299,7 @@ async function handleUsersAction(request, env, adminUser) {
 
   if (action === 'create_user') {
     const email = normalizeEmail(form.get('email'))
-    const password = String(form.get('password') || '')
+    const password = String(form.get('password') || '').trim() || randomHex(6)
     const displayName = String(form.get('display_name') || '').trim()
     const role = String(form.get('role') || 'user') === 'admin' ? 'admin' : 'user'
     const status = String(form.get('status') || 'active') === 'disabled' ? 'disabled' : 'active'
@@ -307,7 +307,7 @@ async function handleUsersAction(request, env, adminUser) {
     const assignedLocalAgentId = toInt(form.get('assigned_local_agent_id'))
     const requestedSlug = String(form.get('client_slug') || '').trim()
 
-    if (email === '' || password === '') {
+    if (email === '') {
       return renderUsersPage(request, env, adminUser, { error: 'Email and password are required.' })
     }
 
@@ -322,7 +322,64 @@ async function handleUsersAction(request, env, adminUser) {
       clientSlug: requestedSlug
     })
 
-    return renderUsersPage(request, env, adminUser, { success: `User #${userId} created. Share the email and password with the client.` })
+    return renderUsersPage(request, env, adminUser, { success: `User #${userId} created. Client login: ${email} / ${password}` })
+  }
+
+  if (action === 'update_user') {
+    const userId = toInt(form.get('user_id'))
+    const user = await getUserById(env, userId)
+    if (!user) {
+      return renderUsersPage(request, env, adminUser, { error: 'User not found.' })
+    }
+
+    const email = normalizeEmail(form.get('email'))
+    const displayName = String(form.get('display_name') || '').trim()
+    const role = String(form.get('role') || user.role) === 'admin' ? 'admin' : 'user'
+    const status = String(form.get('status') || user.status) === 'disabled' ? 'disabled' : 'active'
+    const canUseGithubRunner = checkboxValue(form.get('can_use_github_runner'))
+    const assignedLocalAgentId = toNullableInt(form.get('assigned_local_agent_id'))
+    const requestedSlug = String(form.get('client_slug') || '').trim()
+    const password = String(form.get('password') || '').trim()
+
+    if (email === '') {
+      return renderUsersPage(request, env, adminUser, { error: 'Email is required.' })
+    }
+
+    const existing = await getUserByEmail(env, email)
+    if (existing && Number(existing.id) !== Number(userId)) {
+      return renderUsersPage(request, env, adminUser, { error: 'Another user already uses this email.' })
+    }
+
+    const slug = await ensureUniqueClientSlug(env, requestedSlug || displayName || email.split('@')[0], userId)
+    const now = isoNow()
+    await env.DB.prepare(`
+      UPDATE app_users
+      SET email = ?, display_name = ?, client_slug = ?, role = ?, status = ?,
+          can_use_github_runner = ?, assigned_local_agent_id = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      email,
+      displayName || null,
+      slug,
+      role,
+      status,
+      canUseGithubRunner ? 1 : 0,
+      assignedLocalAgentId,
+      now,
+      userId
+    ).run()
+
+    if (password !== '') {
+      await env.DB.prepare('UPDATE app_users SET password_hash = ?, updated_at = ? WHERE id = ?').bind(
+        await hashPassword(password),
+        now,
+        userId
+      ).run()
+    }
+
+    return renderUsersPage(request, env, adminUser, {
+      success: password !== '' ? `User ${email} updated and password reset.` : `User ${email} updated.`
+    })
   }
 
   if (action === 'toggle_user_status') {
@@ -351,6 +408,10 @@ async function handleUsersAction(request, env, adminUser) {
     return renderUsersPage(request, env, adminUser, { error: 'Magic links are disabled. Create a user and share the email/password instead.' })
   }
 
+  if (action === 'revoke_magic_links') {
+    return renderUsersPage(request, env, adminUser, { success: 'Magic links are disabled in Worker mode. No active token changes were needed.' })
+  }
+
   if (action === 'assign_agent') {
     const userId = toInt(form.get('user_id'))
     const agentId = toNullableInt(form.get('assigned_local_agent_id'))
@@ -377,16 +438,65 @@ async function handleAgentsAction(request, env, adminUser) {
     return renderAgentsPage(request, env, adminUser, { success: 'Agent status updated.' })
   }
 
+  if (action === 'save_panel_url') {
+    await setSetting(env, 'panel_public_base_url', String(form.get('panel_public_base_url') || '').trim())
+    return renderAgentsPage(request, env, adminUser, { success: 'Hosted panel URL saved.' })
+  }
+
   return renderAgentsPage(request, env, adminUser, { error: 'Unknown agents action.' })
 }
 
 async function handleSettingsAction(request, env, adminUser) {
   const form = await request.formData()
   const action = String(form.get('action') || 'save_settings')
-  const tab = sanitizeSettingsTab(String(form.get('tab') || 'bunny'))
+  const actionTabMap = {
+    save_bunny: 'bunny',
+    test_bunny: 'bunny',
+    save_stream: 'stream',
+    save_ftp: 'ftp',
+    test_ftp: 'ftp',
+    save_openai: 'openai',
+    test_openai: 'openai',
+    save_ffmpeg: 'ffmpeg',
+    install_ffmpeg_runtime: 'ffmpeg',
+    test_ffmpeg: 'ffmpeg',
+    save_storage: 'storage',
+    clear_temp: 'storage',
+    open_folder: 'storage',
+    save_github_runner: 'github_runner',
+    test_github_runner: 'github_runner',
+    save_postforme: 'postforme',
+    test_postforme: 'postforme',
+    sync_postforme: 'postforme'
+  }
+  const tab = sanitizeSettingsTab(String(form.get('tab') || actionTabMap[action] || 'bunny'))
 
-  if (action !== 'save_settings') {
-    return renderSettingsPage(appendQueryToRequest(request, { tab }), env, adminUser, { error: 'Unknown settings action.' })
+  const saveActions = new Set([
+    'save_settings', 'save_bunny', 'save_stream', 'save_ftp', 'save_openai',
+    'save_ffmpeg', 'save_storage', 'save_github_runner', 'save_postforme'
+  ])
+
+  if (!saveActions.has(action)) {
+    const infoMessages = {
+      test_bunny: 'Worker saved Bunny settings. Direct connection tests still run on the paired/local machine.',
+      test_ftp: 'Worker saved FTP settings. Direct FTP reachability is verified during the next local-agent run.',
+      test_openai: 'Worker saved AI settings. API usage is validated during tagline/transcription tasks on the agent.',
+      install_ffmpeg_runtime: 'FFmpeg auto-install stays enabled in Worker mode. The paired PC will bootstrap runtime on next job.',
+      test_ffmpeg: 'FFmpeg test is deferred to the paired/local machine because the Worker cannot execute binaries.',
+      clear_temp: 'Temporary runtime cleanup happens on the paired machine. Worker-side metadata remains intact.',
+      open_folder: 'Worker panel is online-only. Use the Player page or the paired machine output folder to inspect generated videos.',
+      test_github_runner: 'GitHub Runner settings were kept. Dispatch is tested when a GitHub Runner automation is queued.',
+      test_postforme: 'Post for Me credentials were kept. Posting/scheduling is exercised during real automation runs.',
+      sync_postforme: 'Connected account sync is not yet mirrored on the Worker. Save the API key here, then sync from the legacy/local panel if needed.'
+    }
+    return renderSettingsPage(
+      appendQueryToRequest(request, { tab }),
+      env,
+      adminUser,
+      infoMessages[action]
+        ? { success: infoMessages[action] }
+        : { error: 'Unknown settings action.' }
+    )
   }
 
   const fields = getSettingsTabFields(tab)
@@ -1265,6 +1375,8 @@ async function renderAgentsPage(request, env, adminUser, feedback) {
   const agents = await listAgents(env)
   const pairingToken = await getPairingToken(env)
   const manifest = buildInstallManifest(env, new URL(request.url).origin)
+  const panelBaseUrl = await getSetting(env, 'panel_public_base_url', new URL(request.url).origin)
+  const agentJobCounts = await listAgentJobCounts(env)
   return htmlResponse(renderPage({
     title: 'Agents',
     user: adminUser,
@@ -1272,6 +1384,8 @@ async function renderAgentsPage(request, env, adminUser, feedback) {
       agents,
       pairingToken,
       feedback,
+      panelBaseUrl,
+      agentJobCounts,
       installScriptUrl: `${new URL(request.url).origin}/install/windows.ps1?pairing_token=${encodeURIComponent(pairingToken)}`,
       installManifest: manifest
     }),
@@ -1658,7 +1772,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
     const config = parseJsonMaybe(automation.automation_json, {})
     const progressState = parseJsonMaybe(automation.progress_data, {})
     const automationNameJs = JSON.stringify(String(automation.name || ''))
-    const source = String(config.video_source || 'ftp')
+    const editorPayload = escapeHtml(JSON.stringify(buildAutomationEditorState(automation)))
     const schedule = String(config.schedule_type || 'daily')
     const videosPerRun = config.videos_per_run ?? '-'
     const progressPercent = clampInt(progressState.progress ?? automation.progress_percent ?? 0, 0, 100)
@@ -1673,83 +1787,153 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
     const scheduledCount = Number(scheduledCounts.get(Number(automation.id)) || 0)
     const statusClass = automationStatusClass(automation.status)
     const isRunning = ['queued', 'processing', 'running'].includes(String(automation.status || '').toLowerCase())
+    const outputs = Array.isArray(progressState.outputs) ? progressState.outputs.filter(Boolean).slice(-5).reverse() : []
+    const stats = { fetched: 0, downloaded: 0, processed: 0, scheduled: 0, posted: 0, ...(progressState.stats || {}) }
+    const assignedAgent = agents.find((agent) => Number(agent.id) === Number(automation.local_agent_id || 0))
+    const agentLabel = assignedAgent ? (assignedAgent.display_name || assignedAgent.machine_name || `Agent #${assignedAgent.id}`) : 'Current host'
+
     return `
-      <article class="list-card automation-card-shell" data-automation-card="${automation.id}">
-        <div class="list-card-head">
-          <div>
-            <strong>${escapeHtml(automation.name)}</strong>
-            <div class="muted compact">
-              ${escapeHtml(source)} | ${escapeHtml(automation.run_mode)} | ${escapeHtml(schedule)} | ${escapeHtml(String(videosPerRun))} videos/run
+      <article class="card rounded-lg automation-card-shell" data-automation-card="${automation.id}" data-automation-name="${escapeHtml(automation.name)}">
+        <div class="p-4 flex items-center justify-between border-b border-gray-800">
+          <div class="flex items-start gap-3 min-w-0">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center ${isRunning ? 'bg-green-500/10' : 'bg-gray-700'}">
+              <svg class="w-5 h-5 ${isRunning ? 'text-green-500' : 'text-gray-400'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
             </div>
-            <div class="muted compact">
-              ${escapeHtml(selectionLabel)} | ${escapeHtml(shortsLabel)} | Next run ${escapeHtml(nextRunLabel)}
+            <div class="min-w-0">
+              <strong>${escapeHtml(automation.name)}</strong>
+              <div class="text-sm text-gray-400">
+                ${escapeHtml(automation.run_mode === 'github_runner' ? 'GitHub Runner' : 'Local Runner')} |
+                ${escapeHtml(automation.run_mode === 'local' ? `Agent: ${agentLabel}` : 'Remote workflow')} |
+                ${escapeHtml(schedule)} |
+                ${escapeHtml(selectionLabel)} |
+                Process ${escapeHtml(String(videosPerRun))}/run
+              </div>
+              <div class="text-sm text-gray-500">
+                ${escapeHtml(shortsLabel)} | Speed ${escapeHtml(String(config.playback_speed || '1.0'))}x | Next run ${escapeHtml(nextRunLabel)}
+              </div>
             </div>
           </div>
-          <div class="badge ${statusClass}" id="automation-status-${automation.id}">${escapeHtml(automation.status)}</div>
+          <div class="flex items-center gap-2">
+            <button type="button" class="p-2 hover:bg-gray-700 rounded" title="View Logs" data-open-runtime data-automation-id="${automation.id}" data-automation-name="${escapeHtml(automation.name)}">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            </button>
+            ${isRunning ? `
+              <form method="POST" action="/automation" class="inline" onsubmit="return confirm('Stop this running job?')">
+                <input type="hidden" name="action" value="stop_automation">
+                <input type="hidden" name="automation_id" value="${automation.id}">
+                <button type="submit" class="p-2 hover:bg-gray-700 rounded text-red-400" title="Stop">
+                  <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+                </button>
+              </form>
+            ` : `
+              <button type="button" class="p-2 hover:bg-gray-700 rounded text-green-400" title="Run Now" data-run-automation data-automation-id="${automation.id}" data-automation-name="${escapeHtml(automation.name)}">
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+            `}
+            <form method="POST" action="/automation" class="inline">
+              <input type="hidden" name="action" value="toggle_automation">
+              <input type="hidden" name="automation_id" value="${automation.id}">
+              <button type="submit" class="p-2 hover:bg-gray-700 rounded" title="${automation.enabled ? 'Disable' : 'Enable'}">
+                ${automation.enabled
+                  ? '<svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'
+                  : '<svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'}
+              </button>
+            </form>
+            ${truthyValue(config.rotation_enabled, false) ? `
+              <form method="POST" action="/automation" class="inline" onsubmit="return confirm('Reset rotation tracking for this automation?')">
+                <input type="hidden" name="action" value="reset_rotation">
+                <input type="hidden" name="automation_id" value="${automation.id}">
+                <button type="submit" class="p-2 hover:bg-gray-700 rounded text-indigo-400" title="Reset Rotation">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </button>
+              </form>
+            ` : ''}
+            <form method="POST" action="/automation" class="inline" onsubmit="return confirm('Delete this automation?')">
+              <input type="hidden" name="action" value="delete_automation">
+              <input type="hidden" name="automation_id" value="${automation.id}">
+              <button type="submit" class="p-2 hover:bg-gray-700 rounded text-red-500" title="Delete">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+              </button>
+            </form>
+            <button type="button" class="p-2 hover:bg-gray-700 rounded text-blue-400" title="Edit Automation" data-edit-automation="${editorPayload}">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+            </button>
+          </div>
         </div>
 
-        <div class="card-progress">
-          <div class="progress-bar compact-progress">
-            <span id="automation-progress-${automation.id}" style="width:${progressPercent}%"></span>
+        <div class="p-4">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div>
+              <div class="text-gray-400 mb-1">Status</div>
+              <span id="automation-status-${automation.id}" class="px-2 py-1 rounded text-xs font-medium ${statusClass}">${escapeHtml(automation.status)}</span>
+            </div>
+            <div>
+              <div class="text-gray-400 mb-1">Short Duration</div>
+              <div class="font-mono">${escapeHtml(String(config.short_duration || 60))}s</div>
+            </div>
+            <div>
+              <div class="text-gray-400 mb-1">Run Mode</div>
+              <div class="text-xs">${escapeHtml(automation.run_mode)}</div>
+            </div>
+            <div>
+              <div class="text-gray-400 mb-1">Scheduled</div>
+              <button type="button" class="text-indigo-400 text-xs hover:underline" onclick='workerOpenScheduledModal(${automation.id}, ${automationNameJs})'>
+                ${scheduledCount ? `${scheduledCount} in queue` : 'Open queue'}
+              </button>
+            </div>
           </div>
-          <div class="progress-meta">
-            <span id="automation-progress-text-${automation.id}">${progressPercent}%</span>
-            <span id="automation-message-${automation.id}">${escapeHtml(progressMessage)}</span>
+
+          <div class="flex flex-wrap gap-2 mt-4">
+            <span class="px-2 py-1 bg-emerald-500/10 rounded text-xs text-emerald-300 border border-emerald-500/20">${escapeHtml(automation.run_mode === 'github_runner' ? 'GitHub Runner' : 'Local Runner')}</span>
+            ${truthyValue(config.postforme_enabled, false) ? '<span class="px-2 py-1 bg-gradient-to-r from-pink-500/10 to-purple-500/10 rounded text-xs text-pink-400 border border-pink-500/20">Post for Me</span>' : ''}
+            ${truthyValue(config.youtube_enabled, false) ? '<span class="px-2 py-1 bg-red-500/10 rounded text-xs text-red-500">YouTube</span>' : ''}
+            ${truthyValue(config.instagram_enabled, false) ? '<span class="px-2 py-1 bg-pink-500/10 rounded text-xs text-pink-500">Instagram</span>' : ''}
+            ${truthyValue(config.facebook_enabled, false) ? '<span class="px-2 py-1 bg-blue-500/10 rounded text-xs text-blue-500">Facebook</span>' : ''}
+            ${truthyValue(config.tiktok_enabled, false) ? '<span class="px-2 py-1 bg-gray-500/10 rounded text-xs text-gray-300">TikTok</span>' : ''}
+            ${truthyValue(config.rotation_enabled, false) ? '<span class="px-2 py-1 bg-indigo-500/10 rounded text-xs text-indigo-400 border border-indigo-500/20">Rotation Enabled</span>' : ''}
           </div>
-        </div>
 
-        <div class="toolbar wrap meta-actions">
-          <button
-            type="button"
-            class="button"
-            data-open-runtime
-            data-automation-id="${automation.id}"
-            data-automation-name="${escapeHtml(automation.name)}"
-          >Live Logs</button>
+          <div class="mt-4 grid grid-cols-5 gap-2 text-center text-xs">
+            <div class="p-2 bg-gray-800 rounded">
+              <div class="text-lg font-bold text-blue-400" id="stat-fetched-${automation.id}">${Number(stats.fetched || 0)}</div>
+              <div class="text-gray-500">Fetched</div>
+            </div>
+            <div class="p-2 bg-gray-800 rounded">
+              <div class="text-lg font-bold text-yellow-400" id="stat-downloaded-${automation.id}">${Number(stats.downloaded || 0)}</div>
+              <div class="text-gray-500">Downloaded</div>
+            </div>
+            <div class="p-2 bg-gray-800 rounded">
+              <div class="text-lg font-bold text-green-400" id="stat-processed-${automation.id}">${Number(stats.processed || 0)}</div>
+              <div class="text-gray-500">Processed</div>
+            </div>
+            <div class="p-2 bg-gradient-to-r from-indigo-900/30 to-blue-900/30 rounded border border-indigo-500/20 cursor-pointer hover:bg-indigo-900/50 transition-colors" onclick='workerOpenScheduledModal(${automation.id}, ${automationNameJs})'>
+              <div class="text-lg font-bold text-indigo-400" id="stat-scheduled-${automation.id}">${Number(stats.scheduled || 0)}</div>
+              <div class="text-gray-500">Scheduled</div>
+            </div>
+            <div class="p-2 bg-gradient-to-r from-pink-900/30 to-purple-900/30 rounded border border-pink-500/20">
+              <div class="text-lg font-bold text-pink-400" id="stat-posted-${automation.id}">${Number(stats.posted || 0)}</div>
+              <div class="text-gray-500">Posted</div>
+            </div>
+          </div>
 
-          ${isRunning ? `
-            <form method="POST" action="/automation" onsubmit="return confirm('Stop this running job?')">
-              <input type="hidden" name="action" value="stop_automation">
-              <input type="hidden" name="automation_id" value="${automation.id}">
-              <button class="button primary" type="submit">Stop</button>
-            </form>
-          ` : `
-            <button
-              type="button"
-              class="button primary"
-              data-run-automation
-              data-automation-id="${automation.id}"
-              data-automation-name="${escapeHtml(automation.name)}"
-            >Run Now</button>
-          `}
-
-          <form method="POST" action="/automation">
-            <input type="hidden" name="action" value="toggle_automation">
-            <input type="hidden" name="automation_id" value="${automation.id}">
-            <button class="button" type="submit">${automation.enabled ? 'Disable' : 'Enable'}</button>
-          </form>
-
-          ${truthyValue(config.rotation_enabled, false) ? `
-            <form method="POST" action="/automation" onsubmit="return confirm('Reset rotation tracking for this automation?')">
-              <input type="hidden" name="action" value="reset_rotation">
-              <input type="hidden" name="automation_id" value="${automation.id}">
-              <button class="button" type="submit">Reset Rotation</button>
-            </form>
-          ` : ''}
-
-          <button
-            type="button"
-            class="button"
-            onclick='workerOpenScheduledModal(${automation.id}, ${automationNameJs})'
-          >Scheduled Queue${scheduledCount > 0 ? ` (${scheduledCount})` : ''}</button>
-
-          <a class="button" href="/automation?edit=${automation.id}">Edit</a>
-
-          <form method="POST" action="/automation" onsubmit="return confirm('Delete this automation?')">
-            <input type="hidden" name="action" value="delete_automation">
-            <input type="hidden" name="automation_id" value="${automation.id}">
-            <button class="button ghost" type="submit">Delete</button>
-          </form>
+          <div id="progress-${automation.id}" class="mt-3 p-3 bg-gray-800/30 rounded-lg${isRunning ? '' : ' hidden'}">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-medium text-green-400">Processing...</span>
+              <span class="text-xs text-gray-400" id="progress-percent-${automation.id}">${progressPercent}%</span>
+            </div>
+            <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+              <div id="progress-bar-${automation.id}" class="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-300" style="width:${progressPercent}%"></div>
+            </div>
+            <div class="mt-2 text-xs text-gray-300" id="automation-message-${automation.id}">${escapeHtml(progressMessage)}</div>
+            <div class="mt-3 border-t border-gray-700/60 pt-2">
+              <div class="text-xs text-gray-400 mb-1">Edited Outputs</div>
+              <div id="progress-outputs-${automation.id}" class="space-y-1 text-xs">
+                ${outputs.length
+                  ? outputs.map((item) => `<div class="text-cyan-300 truncate">${escapeHtml(String(item))}</div>`).join('')
+                  : '<div class="text-gray-500">No edited output yet</div>'}
+              </div>
+            </div>
+          </div>
         </div>
       </article>
     `
@@ -1760,33 +1944,35 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
     <div class="page-head">
       <div>
         <h2 class="text-xl font-semibold">Video Automations</h2>
-        <p class="text-sm text-gray-400 mt-1">Auto-convert videos to shorts and manage queue, outputs, and local execution from the Worker dashboard.</p>
+        <p class="text-sm text-gray-400 mt-1">Auto-convert videos to shorts and post to social media</p>
       </div>
-      <div class="toolbar wrap">
-        <a class="button" href="/player">View Processed Videos</a>
-        <button type="button" class="button" onclick="workerOpenScheduledModal(0, 'All Automations')">Scheduled Queue</button>
+      <div class="flex items-center gap-2 flex-wrap">
+        <a href="/player" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg flex items-center gap-2" title="View processed videos">View Processed Videos</a>
+        <button type="button" onclick="workerOpenScheduledModal(0, 'All Automations')" class="px-3 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg flex items-center gap-2 text-sm" title="View/Delete scheduled posts across all automations">Scheduled Queue</button>
         ${user.role === 'admin' ? `
           <form method="POST" action="/automation" onsubmit="return confirm('Stop all running and enabled automations?')">
             <input type="hidden" name="action" value="stop_all_automations">
-            <button class="button ghost danger-button" type="submit">Stop All</button>
+            <button class="px-3 py-2 bg-red-600 hover:bg-red-700 rounded-lg flex items-center gap-2 text-sm" type="submit">Stop All</button>
           </form>
         ` : ''}
-        <a class="button primary" href="/automation?create=1">Create Automation</a>
+        <button type="button" data-open-create class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-2 ${(!user.assigned_local_agent_id && user.role !== 'admin') ? 'opacity-50 cursor-not-allowed' : ''}" ${(!user.assigned_local_agent_id && user.role !== 'admin') ? 'disabled title="Admin must assign a local agent first"' : ''}>Create Automation</button>
       </div>
     </div>
 
-    <div class="card rounded-lg p-4 output-summary-card">
-      <div class="section-head">
-        <div>
-          <h3 class="text-lg font-semibold">Output Summary</h3>
-          <p class="text-sm text-gray-400 mt-1">Worker-tracked outputs and scheduled queue visibility.</p>
+    <div class="card p-4 mb-6 bg-gradient-to-r from-gray-800 to-gray-900 border border-gray-700 output-summary-card">
+      <div class="flex flex-wrap items-center gap-4">
+        <div class="flex items-center gap-2">
+          <span class="text-gray-400">Output Folder:</span>
+          <code class="bg-gray-900 px-3 py-1 rounded text-green-400 text-sm font-mono">Worker/R2 managed outputs</code>
         </div>
-        <a class="button ghost" href="/player">Open Player</a>
-      </div>
-      <div class="stats-row">
-        <div class="metric"><span>${Number(outputSummary.total || 0)}</span><small>Total Outputs</small></div>
-        <div class="metric"><span>${Number(outputSummary.r2Count || 0)}</span><small>R2 Ready</small></div>
-        <div class="metric"><span>${Number(outputSummary.metadataCount || 0)}</span><small>Metadata Only</small></div>
+        <div class="flex items-center gap-2 text-sm text-gray-400">
+          Processed videos and uploaded outputs appear in Player after local-agent completion.
+        </div>
+        <div class="ml-auto flex items-center gap-2">
+          ${Number(outputSummary.total || 0) > 0
+            ? `<a href="/player" class="px-3 py-1 bg-green-600 rounded-lg text-sm hover:bg-green-700">${Number(outputSummary.total || 0)} videos ready to view</a>`
+            : '<span class="text-gray-500 text-sm">No processed videos yet</span>'}
+        </div>
       </div>
     </div>
 
@@ -1819,7 +2005,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
     ${renderAutomationEditorModal({ user, agents, apiKeys, editor, editorOpen })}
     ${renderAutomationRuntimeModal(logAutomation)}
     ${renderScheduledPostsModal({ user, posts: scheduledPosts })}
-    ${renderAutomationEditorScript()}
+    ${renderAutomationEditorScript({ user, defaultEditor: buildAutomationEditorState(null), initialEditor: editor, initialEditorOpen: editorOpen })}
   `
 }
 
@@ -1831,11 +2017,11 @@ function renderAutomationEditorModal({ user, agents, apiKeys, editor, editorOpen
         <div class="section-head">
           <div>
             <div class="eyebrow">Automation Editor</div>
-            <h2>${escapeHtml(title)}</h2>
-            <p class="muted compact">The same tabbed create/edit flow is available here in popup form so the Worker UI behaves closer to the legacy panel.</p>
+            <h2 id="automation-editor-title">${escapeHtml(title)}</h2>
+            <p class="muted compact">Popup-based create and edit flow for local and GitHub automation runs.</p>
           </div>
           <div class="toolbar wrap">
-            <a class="button ghost" href="/automation">Close</a>
+            <button type="button" class="button ghost" onclick="workerCloseAutomationEditor()">Close</button>
           </div>
         </div>
         ${renderAutomationEditorForm({ user, agents, apiKeys, editor })}
@@ -1934,61 +2120,99 @@ function renderScheduledPostsModal({ user, posts }) {
 
 function renderSettingsBody({ tab, settings, feedback }) {
   const tabs = [
-    ['bunny', 'Bunny'],
-    ['stream', 'Stream APIs'],
-    ['ftp', 'FTP'],
-    ['openai', 'AI'],
-    ['ffmpeg', 'FFmpeg'],
-    ['storage', 'Storage'],
-    ['github_runner', 'GitHub Runner'],
-    ['postforme', 'Post for Me']
+    ['bunny', 'Bunny CDN', 'bg-orange-600'],
+    ['stream', 'Stream APIs', 'bg-red-600'],
+    ['ftp', 'FTP Server', 'bg-blue-600'],
+    ['openai', 'AI Settings', 'bg-purple-600'],
+    ['ffmpeg', 'FFmpeg', 'bg-violet-600'],
+    ['storage', 'Storage', 'bg-yellow-600'],
+    ['github_runner', 'GitHub Runner', 'bg-sky-600'],
+    ['postforme', 'Post for Me', 'bg-pink-600']
   ]
 
-  const tabLinks = tabs.map(([key, label]) => `
-    <a class="tab-chip${tab === key ? ' active' : ''}" href="/settings?tab=${key}">${label}</a>
+  const saveActionByTab = {
+    bunny: 'save_bunny',
+    stream: 'save_stream',
+    ftp: 'save_ftp',
+    openai: 'save_openai',
+    ffmpeg: 'save_ffmpeg',
+    storage: 'save_storage',
+    github_runner: 'save_github_runner',
+    postforme: 'save_postforme'
+  }
+  const testActionByTab = {
+    bunny: 'test_bunny',
+    ftp: 'test_ftp',
+    openai: 'test_openai',
+    ffmpeg: 'test_ffmpeg',
+    github_runner: 'test_github_runner',
+    postforme: 'test_postforme'
+  }
+  const saveLabelByTab = {
+    bunny: 'Save Bunny Settings',
+    stream: 'Save Stream API Settings',
+    ftp: 'Save FTP Settings',
+    openai: 'Save OpenAI Settings',
+    ffmpeg: 'Save FFmpeg Settings',
+    storage: 'Save Storage Settings',
+    github_runner: 'Save GitHub Runner Settings',
+    postforme: 'Save Post for Me Settings'
+  }
+  const tabLinks = tabs.map(([key, label, activeColor]) => `
+    <a href="/settings?tab=${key}" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === key ? `${activeColor} text-white` : 'bg-gray-800 text-gray-400 hover:text-white'}">
+      ${label}
+    </a>
   `).join('')
 
   return `
     ${renderFeedback(feedback)}
-    <section class="dashboard-grid">
-      <section class="panel span-two">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Legacy Settings</div>
-            <h1>${escapeHtml(settingsTabLabel(tab))}</h1>
-          </div>
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">Settings</h2>
+        <p class="text-sm text-gray-400 mt-1">Configure all API keys, runtime settings, cookies, and publishing integrations.</p>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap gap-2 mb-6 border-b border-gray-800 pb-4">
+      ${tabLinks}
+    </div>
+
+    <form method="POST" action="/settings">
+      <input type="hidden" name="action" value="${saveActionByTab[tab] || 'save_settings'}">
+      <input type="hidden" name="tab" value="${escapeHtml(tab)}">
+      <div class="card rounded-lg mb-6">
+        <div class="p-4 border-b border-gray-800 flex items-center justify-between">
+          <h3 class="font-semibold">${escapeHtml(settingsTabLabel(tab))}</h3>
+          <span class="px-2 py-1 rounded text-xs ${Object.values(getSettingsTabFields(tab)).length ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'}">
+            Worker D1
+          </span>
         </div>
-        <div class="toolbar wrap tabs-wrap">${tabLinks}</div>
-        <form method="POST" action="/settings" class="stack legacy-settings-form">
-          <input type="hidden" name="action" value="save_settings">
-          <input type="hidden" name="tab" value="${escapeHtml(tab)}">
+        <div class="p-4 space-y-4">
           ${renderSettingsTabFields(tab, settings)}
-          <button type="submit" class="button primary">Save ${escapeHtml(settingsTabLabel(tab))}</button>
-        </form>
-      </section>
-      <section class="panel">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Worker Notes</div>
-            <h2>How It Applies</h2>
-          </div>
         </div>
-        <div class="stack">
-          <div class="note-card">
-            <strong>Saved in D1</strong>
-            <div class="muted compact">These values are stored in Worker D1 and included in local-agent payload snapshots.</div>
-          </div>
-          <div class="note-card">
-            <strong>Local processing</strong>
-            <div class="muted compact">FFmpeg, FTP, AI, cookies, and runner settings are pulled into the paired machine when jobs are queued.</div>
-          </div>
-          <div class="note-card">
-            <strong>Parity</strong>
-            <div class="muted compact">This page is the Worker-side equivalent of the old settings.php tabs.</div>
-          </div>
-        </div>
-      </section>
-    </section>
+      </div>
+
+      <div class="flex gap-3 flex-wrap">
+        <button type="submit" class="flex-1 min-w-[220px] py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-medium">
+          ${escapeHtml(saveLabelByTab[tab] || `Save ${settingsTabLabel(tab)}`)}
+        </button>
+        ${testActionByTab[tab] ? `
+          <button type="submit" formaction="/settings?tab=${tab}" name="action" value="${testActionByTab[tab]}" class="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium">
+            Test Connection
+          </button>
+        ` : ''}
+        ${tab === 'ffmpeg' ? `
+          <button type="submit" formaction="/settings?tab=ffmpeg" name="action" value="install_ffmpeg_runtime" class="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg font-medium">
+            Install FFmpeg
+          </button>
+        ` : ''}
+        ${tab === 'storage' ? `
+          <button type="submit" formaction="/settings?tab=storage" name="action" value="clear_temp" class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-medium">
+            Clear Temp
+          </button>
+        ` : ''}
+      </div>
+    </form>
   `
 }
 
@@ -2204,9 +2428,9 @@ function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
   const canUseGithubRunner = user.role === 'admin' || !!user.can_use_github_runner
 
   return `
-    <form method="POST" action="/automation" class="stack">
+    <form method="POST" action="/automation" class="stack" id="automation-editor-form">
       <input type="hidden" name="action" value="save_automation">
-      ${editor.id ? `<input type="hidden" name="automation_id" value="${editor.id}">` : ''}
+      <input type="hidden" name="automation_id" value="${editor.id || ''}">
       <div class="tab-strip">
         <button type="button" class="tab-button active" data-tab-button="basic" onclick="workerShowAutomationTab('basic')">1. Basic</button>
         <button type="button" class="tab-button" data-tab-button="video" onclick="workerShowAutomationTab('video')">2. Video</button>
@@ -2371,9 +2595,15 @@ function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
   `
 }
 
-function renderAutomationEditorScript() {
+function renderAutomationEditorScript({ user, defaultEditor, initialEditor, initialEditorOpen }) {
   return `
     <script>
+      const workerDefaultAutomationEditor = ${JSON.stringify(defaultEditor || buildAutomationEditorState(null))};
+      const workerEditorContext = ${JSON.stringify({
+        assigned_local_agent_id: user?.role !== 'admin' ? (user?.assigned_local_agent_id || '') : '',
+        role: user?.role || 'user'
+      })};
+
       const workerRuntimeState = {
         automationId: 0,
         automationName: '',
@@ -2405,6 +2635,102 @@ function renderAutomationEditorScript() {
       function workerToggleSourceShortsMode() {
         const mode = document.getElementById('source_shorts_mode')?.value || 'single';
         document.getElementById('source_shorts_max_wrap')?.classList.toggle('hidden', mode !== 'fixed_count');
+      }
+
+      function workerCloseAutomationEditor() {
+        document.getElementById('automation-editor-modal')?.classList.add('hidden');
+      }
+
+      function workerOpenCreateAutomationEditor() {
+        const state = { ...workerDefaultAutomationEditor };
+        if (!state.local_agent_id && workerEditorContext.role !== 'admin' && workerEditorContext.assigned_local_agent_id) {
+          state.local_agent_id = workerEditorContext.assigned_local_agent_id;
+        }
+        workerApplyAutomationEditorState(state, false);
+      }
+
+      function workerOpenEditAutomationEditor(rawState) {
+        try {
+          const state = typeof rawState === 'string' ? JSON.parse(rawState) : (rawState || {});
+          workerApplyAutomationEditorState(state, true);
+        } catch (error) {
+          alert('Unable to open editor for this automation.');
+        }
+      }
+
+      function workerSetEditorField(name, value) {
+        const form = document.getElementById('automation-editor-form');
+        if (!form) return;
+        const field = form.querySelector('[name="' + name + '"]');
+        if (!field) return;
+        if (field.type === 'checkbox') {
+          field.checked = !!value && value !== '0';
+          return;
+        }
+        field.value = value == null ? '' : String(value);
+      }
+
+      function workerApplyAutomationEditorState(state, isEdit) {
+        const modal = document.getElementById('automation-editor-modal');
+        const form = document.getElementById('automation-editor-form');
+        if (!modal || !form) return;
+        const data = state || {};
+        const title = document.getElementById('automation-editor-title');
+        if (title) title.textContent = isEdit ? 'Edit Automation' : 'Create Automation';
+
+        workerSetEditorField('automation_id', isEdit ? (data.id || '') : '');
+        workerSetEditorField('name', data.name || '');
+        workerSetEditorField('video_source', data.video_source || 'ftp');
+        workerSetEditorField('api_key_id', data.api_key_id || '');
+        workerSetEditorField('manual_video_links', data.manual_video_links || '');
+        workerSetEditorField('youtube_channel_url', data.youtube_channel_url || '');
+        workerSetEditorField('run_mode', data.run_mode || 'local');
+        workerSetEditorField('local_agent_id', data.local_agent_id || '');
+        workerSetEditorField('schedule_type', data.schedule_type || 'daily');
+        workerSetEditorField('schedule_hour', data.schedule_hour ?? 9);
+        workerSetEditorField('schedule_every_minutes', data.schedule_every_minutes ?? 10);
+        workerSetEditorField('enabled', data.enabled);
+        workerSetEditorField('video_selection_method_hidden', data.video_selection_method || 'days');
+        const method = data.video_selection_method || 'days';
+        const radio = form.querySelector('input[name="video_selection_method"][value="' + method + '"]');
+        if (radio) radio.checked = true;
+        workerSetEditorField('video_days_filter', data.video_days_filter ?? 30);
+        workerSetEditorField('video_start_date', data.video_start_date || '');
+        workerSetEditorField('video_end_date', data.video_end_date || '');
+        workerSetEditorField('rotation_enabled', data.rotation_enabled);
+        workerSetEditorField('rotation_shuffle', data.rotation_shuffle);
+        workerSetEditorField('rotation_auto_reset', data.rotation_auto_reset);
+        workerSetEditorField('videos_per_run', data.videos_per_run ?? 5);
+        workerSetEditorField('short_duration', data.short_duration ?? 60);
+        workerSetEditorField('playback_speed', data.playback_speed ?? '1.0');
+        workerSetEditorField('short_aspect_ratio', data.short_aspect_ratio || '9:16');
+        workerSetEditorField('source_shorts_mode', data.source_shorts_mode || 'single');
+        workerSetEditorField('source_shorts_max_count', data.source_shorts_max_count ?? 1);
+        workerSetEditorField('ai_taglines_enabled', data.ai_taglines_enabled);
+        workerSetEditorField('ai_tagline_prompt', data.ai_tagline_prompt || 'Generate universal greeting taglines');
+        workerSetEditorField('branding_text_top', data.branding_text_top || '');
+        workerSetEditorField('branding_text_bottom', data.branding_text_bottom || '');
+        workerSetEditorField('random_words', data.random_words || '');
+        workerSetEditorField('whisper_enabled', data.whisper_enabled);
+        workerSetEditorField('whisper_language', data.whisper_language || 'en');
+        workerSetEditorField('postforme_enabled', data.postforme_enabled);
+        workerSetEditorField('postforme_account_ids_csv', data.postforme_account_ids_csv || '');
+        workerSetEditorField('postforme_schedule_mode', data.postforme_schedule_mode || 'immediate');
+        workerSetEditorField('postforme_schedule_datetime', data.postforme_schedule_datetime || '');
+        workerSetEditorField('postforme_schedule_timezone', data.postforme_schedule_timezone || 'UTC');
+        workerSetEditorField('postforme_schedule_offset_minutes', data.postforme_schedule_offset_minutes ?? 0);
+        workerSetEditorField('postforme_schedule_spread_minutes', data.postforme_schedule_spread_minutes ?? 0);
+        workerSetEditorField('youtube_enabled', data.youtube_enabled);
+        workerSetEditorField('tiktok_enabled', data.tiktok_enabled);
+        workerSetEditorField('instagram_enabled', data.instagram_enabled);
+        workerSetEditorField('facebook_enabled', data.facebook_enabled);
+
+        workerToggleAutomationSource();
+        workerToggleVideoSelection();
+        workerTogglePostForMe();
+        workerToggleSourceShortsMode();
+        workerShowAutomationTab('basic');
+        modal.classList.remove('hidden');
       }
 
       function workerOpenRuntimeModal(automationId, automationName) {
@@ -2512,6 +2838,7 @@ function renderAutomationEditorScript() {
         workerRenderRuntimeLogs(Array.isArray(data.logs) ? data.logs : []);
         workerRenderRuntimeOutputs(Array.isArray(data.outputs) ? data.outputs : []);
         workerUpdateAutomationCard(automation.id, automation.status, progressPercent, message);
+        workerUpdateAutomationStats(automation.id, progress.stats || {}, Array.isArray(data.outputs) ? data.outputs : []);
       }
 
       function workerSetRuntimeStatus(status) {
@@ -2577,11 +2904,12 @@ function renderAutomationEditorScript() {
       function workerUpdateAutomationCard(automationId, status, progress, message) {
         if (!automationId) return;
         const badge = document.getElementById('automation-status-' + automationId);
-        const bar = document.getElementById('automation-progress-' + automationId);
-        const text = document.getElementById('automation-progress-text-' + automationId);
+        const bar = document.getElementById('automation-progress-' + automationId) || document.getElementById('progress-bar-' + automationId);
+        const text = document.getElementById('automation-progress-text-' + automationId) || document.getElementById('progress-percent-' + automationId);
         const messageNode = document.getElementById('automation-message-' + automationId);
+        const progressWrap = document.getElementById('progress-' + automationId);
         if (badge) {
-          badge.className = 'badge ' + workerStatusClass(status);
+          badge.className = (badge.className.indexOf('badge') !== -1 ? 'badge ' : 'px-2 py-1 rounded text-xs font-medium ') + workerStatusClass(status);
           badge.textContent = String(status || 'inactive');
         }
         if (bar) {
@@ -2592,6 +2920,36 @@ function renderAutomationEditorScript() {
         }
         if (messageNode) {
           messageNode.textContent = message || 'Waiting for next run.';
+        }
+        if (progressWrap) {
+          progressWrap.classList.toggle('hidden', !['queued', 'processing', 'running', 'claimed', 'completed', 'error'].includes(String(status || '').toLowerCase()));
+        }
+      }
+
+      function workerUpdateAutomationStats(automationId, stats, outputs) {
+        if (!automationId) return;
+        const safeStats = stats || {};
+        const setText = (id, value) => {
+          const node = document.getElementById(id + '-' + automationId);
+          if (node) node.textContent = String(value || 0);
+        };
+        setText('stat-fetched', safeStats.fetched || 0);
+        setText('stat-downloaded', safeStats.downloaded || 0);
+        setText('stat-processed', safeStats.processed || 0);
+        setText('stat-scheduled', safeStats.scheduled || 0);
+        setText('stat-posted', safeStats.posted || 0);
+        const outputWrap = document.getElementById('progress-outputs-' + automationId);
+        if (outputWrap) {
+          if (!outputs.length) {
+            outputWrap.innerHTML = '<div class="text-gray-500">No edited output yet</div>';
+          } else {
+            outputWrap.innerHTML = outputs.slice(0, 5).map((output) => {
+              const label = workerEscapeHtml(output.filename || ('Output #' + String(output.id || '')));
+              return output.download_url
+                ? '<a href="' + workerEscapeHtml(output.download_url) + '" target="_blank" rel="noopener" class="block text-cyan-300 truncate">' + label + '</a>'
+                : '<div class="text-cyan-300 truncate">' + label + '</div>';
+            }).join('');
+          }
         }
       }
 
@@ -2748,6 +3106,20 @@ function renderAutomationEditorScript() {
       }
 
       document.addEventListener('click', (event) => {
+        const createButton = event.target.closest('[data-open-create]');
+        if (createButton) {
+          event.preventDefault();
+          workerOpenCreateAutomationEditor();
+          return;
+        }
+
+        const editButton = event.target.closest('[data-edit-automation]');
+        if (editButton) {
+          event.preventDefault();
+          workerOpenEditAutomationEditor(editButton.getAttribute('data-edit-automation') || '{}');
+          return;
+        }
+
         const runButton = event.target.closest('[data-run-automation]');
         if (runButton) {
           event.preventDefault();
@@ -2767,6 +3139,10 @@ function renderAutomationEditorScript() {
         workerToggleVideoSelection();
         workerTogglePostForMe();
         workerToggleSourceShortsMode();
+        const editorModal = document.getElementById('automation-editor-modal');
+        if (editorModal && editorModal.dataset.editorOpen === '1') {
+          editorModal.classList.remove('hidden');
+        }
         const runtimeModal = document.getElementById('automation-runtime-modal');
         if (runtimeModal && runtimeModal.dataset.initialOpen === '1') {
           workerOpenRuntimeModal(runtimeModal.dataset.automationId || '0', runtimeModal.dataset.automationName || '');
@@ -3087,121 +3463,252 @@ function appendQueryToRequest(request, params) {
 }
 
 function renderUsersBody({ users, agents, feedback }) {
+  const agentNameById = new Map(agents.map((agent) => [Number(agent.id), String(agent.display_name || agent.machine_name || (`Agent #${agent.id}`))]))
   return `
     ${renderFeedback(feedback)}
-    <section class="dashboard-grid">
-      <section class="panel">
-        <div class="section-head"><div><div class="eyebrow">Admin</div><h1>Create User</h1></div></div>
-        <form method="POST" action="/admin/users" class="stack">
-          <input type="hidden" name="action" value="create_user">
-          <label class="field"><span>Email</span><input type="email" name="email" required></label>
-          <label class="field"><span>Password</span><input type="text" name="password" required></label>
-          <label class="field"><span>Display Name</span><input type="text" name="display_name"></label>
-          <label class="field"><span>Client Slug</span><input type="text" name="client_slug" placeholder="client-a"></label>
-          <div class="grid two">
-            <label class="field">
-              <span>Role</span>
-              <select name="role"><option value="user">User</option><option value="admin">Admin</option></select>
-            </label>
-            <label class="field">
-              <span>Status</span>
-              <select name="status"><option value="active">Active</option><option value="disabled">Disabled</option></select>
-            </label>
-          </div>
-          <label class="field">
-            <span>Assigned Agent</span>
-            <select name="assigned_local_agent_id">
-              <option value="">None</option>
-              ${agents.map((agent) => `<option value="${agent.id}">${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`).join('')}
-            </select>
-          </label>
-          <label class="toggle"><input type="checkbox" name="can_use_github_runner"> <span>Allow GitHub Runner</span></label>
-          <p class="muted compact">Create the user here, then send the client the email and password manually.</p>
-          <button type="submit" class="button primary">Create User</button>
-        </form>
-      </section>
-      <section class="panel span-two">
-        <div class="section-head"><div><div class="eyebrow">Access Control</div><h2>Users</h2></div></div>
-        <div class="list-stack">
-          ${users.map((user) => `
-            <article class="list-card">
-              <div class="list-card-head">
-                <div>
-                  <strong>${escapeHtml(user.display_name || user.email)}</strong>
-                  <div class="muted compact">${escapeHtml(user.email)} | ${escapeHtml(user.role)} | ${escapeHtml(user.status)} | slug ${escapeHtml(user.client_slug || '-')}</div>
-                </div>
-                <div class="badge">${user.can_use_github_runner ? 'runner on' : 'local only'}</div>
-              </div>
-              <div class="toolbar wrap">
-                <form method="POST" action="/admin/users">
-                  <input type="hidden" name="action" value="toggle_user_status">
-                  <input type="hidden" name="user_id" value="${user.id}">
-                  <button class="button" type="submit">${user.status === 'active' ? 'Disable' : 'Enable'}</button>
-                </form>
-                <form method="POST" action="/admin/users">
-                  <input type="hidden" name="action" value="toggle_runner">
-                  <input type="hidden" name="user_id" value="${user.id}">
-                  <button class="button" type="submit">${user.can_use_github_runner ? 'Disable Runner' : 'Enable Runner'}</button>
-                </form>
-                <form method="POST" action="/admin/users" class="inline-form">
-                  <input type="hidden" name="action" value="assign_agent">
-                  <input type="hidden" name="user_id" value="${user.id}">
-                  <select name="assigned_local_agent_id">
-                    <option value="">No agent</option>
-                    ${agents.map((agent) => `<option value="${agent.id}"${Number(user.assigned_local_agent_id || 0) === Number(agent.id) ? ' selected' : ''}>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</option>`).join('')}
-                  </select>
-                  <button class="button" type="submit">Save Agent</button>
-                </form>
-              </div>
-            </article>
-          `).join('')}
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">Users</h2>
+        <p class="text-sm text-gray-400 mt-1">Create customer logins, assign their paired PC, and control runner access from the Worker panel.</p>
+      </div>
+    </div>
+
+    <div class="card rounded-lg p-5 mb-6">
+      <h3 class="text-lg font-semibold mb-4">Create User</h3>
+      <form method="POST" action="/admin/users" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+        <input type="hidden" name="action" value="create_user">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Email</label>
+          <input type="email" name="email" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" required>
         </div>
-      </section>
-    </section>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Password</label>
+          <input type="text" name="password" placeholder="Leave blank to auto-generate" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Display Name</label>
+          <input type="text" name="display_name" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Client Slug</label>
+          <input type="text" name="client_slug" placeholder="auto from name/email" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Role</label>
+          <select name="role" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Status</label>
+          <select name="status" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+            <option value="active">Active</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">Assigned Local Agent</label>
+          <select name="assigned_local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+            <option value="">None</option>
+            ${agents.map((agent) => `<option value="${agent.id}">${escapeHtml(agent.display_name || agent.machine_name || `Agent #${agent.id}`)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="flex items-end">
+          <label class="flex items-center gap-2 text-sm text-gray-300">
+            <input type="checkbox" name="can_use_github_runner" value="1" class="rounded border-gray-600 bg-gray-800">
+            Allow GitHub Runner
+          </label>
+        </div>
+        <div class="flex items-end xl:col-span-2">
+          <button type="submit" class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Create User</button>
+        </div>
+      </form>
+      <div class="text-xs text-gray-500 mt-3">
+        Local-only customer profile: leave <code>Allow GitHub Runner</code> unchecked and assign the paired local agent.
+      </div>
+    </div>
+
+    <div class="space-y-4">
+      ${users.map((user) => {
+        const assignedAgentName = user.assigned_local_agent_id ? (agentNameById.get(Number(user.assigned_local_agent_id)) || `Agent #${user.assigned_local_agent_id}`) : 'Not assigned'
+        return `
+          <div class="card rounded-lg p-5">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <div class="font-semibold">${escapeHtml(user.display_name || user.email)}</div>
+                <div class="text-sm text-gray-400">${escapeHtml(user.email)}</div>
+                <div class="text-xs text-gray-500 mt-1">Client Slug: <code class="bg-gray-900 px-2 py-1 rounded">${escapeHtml(user.client_slug || '')}</code></div>
+              </div>
+              <div class="flex items-center gap-2 text-xs">
+                <span class="px-2 py-1 rounded ${user.role === 'admin' ? 'bg-indigo-500/15 text-indigo-300' : 'bg-gray-700 text-gray-200'}">${escapeHtml(user.role)}</span>
+                <span class="px-2 py-1 rounded ${user.status === 'active' ? 'bg-green-500/15 text-green-300' : 'bg-red-500/15 text-red-300'}">${escapeHtml(user.status)}</span>
+                <span class="px-2 py-1 rounded ${user.can_use_github_runner ? 'bg-amber-500/15 text-amber-300' : 'bg-blue-500/15 text-blue-300'}">
+                  ${user.can_use_github_runner ? 'Runner + Local' : 'Local Only'}
+                </span>
+              </div>
+            </div>
+
+            <form method="POST" action="/admin/users" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              <input type="hidden" name="action" value="update_user">
+              <input type="hidden" name="user_id" value="${user.id}">
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Email</label>
+                <input type="email" name="email" value="${escapeHtml(user.email)}" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" required>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Display Name</label>
+                <input type="text" name="display_name" value="${escapeHtml(user.display_name || '')}" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Client Slug</label>
+                <input type="text" name="client_slug" value="${escapeHtml(user.client_slug || '')}" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">New Password</label>
+                <input type="text" name="password" placeholder="Leave blank to keep current" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Role</label>
+                <select name="role" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                  <option value="user"${user.role === 'user' ? ' selected' : ''}>User</option>
+                  <option value="admin"${user.role === 'admin' ? ' selected' : ''}>Admin</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Status</label>
+                <select name="status" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                  <option value="active"${user.status === 'active' ? ' selected' : ''}>Active</option>
+                  <option value="disabled"${user.status === 'disabled' ? ' selected' : ''}>Disabled</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm text-gray-400 mb-1">Assigned Local Agent</label>
+                <select name="assigned_local_agent_id" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                  <option value="">None</option>
+                  ${agents.map((agent) => `<option value="${agent.id}"${Number(user.assigned_local_agent_id || 0) === Number(agent.id) ? ' selected' : ''}>${escapeHtml(agent.display_name || agent.machine_name || `Agent #${agent.id}`)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="flex items-end">
+                <label class="flex items-center gap-2 text-sm text-gray-300">
+                  <input type="checkbox" name="can_use_github_runner" value="1" class="rounded border-gray-600 bg-gray-800"${user.can_use_github_runner ? ' checked' : ''}>
+                  Allow GitHub Runner
+                </label>
+              </div>
+              <div class="flex items-end text-sm text-gray-400">
+                Agent: ${escapeHtml(assignedAgentName)}
+              </div>
+              <div class="flex items-end xl:col-span-3">
+                <button type="submit" class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Save User</button>
+              </div>
+            </form>
+          </div>
+        `
+      }).join('')}
+    </div>
   `
 }
 
-function renderAgentsBody({ agents, pairingToken, feedback, installScriptUrl, installManifest }) {
+function renderAgentsBody({ agents, pairingToken, feedback, panelBaseUrl, agentJobCounts, installScriptUrl, installManifest }) {
   const command = `$p=Join-Path $env:TEMP 'video-workflow-agent-install.ps1'; Invoke-WebRequest '${installScriptUrl}' -OutFile $p; powershell -ExecutionPolicy Bypass -File $p -CreateScheduledTask`
   return `
     ${renderFeedback(feedback)}
-    <section class="dashboard-grid">
-      <section class="panel">
-        <div class="section-head"><div><div class="eyebrow">Pairing</div><h1>Agent Installer</h1></div></div>
-        <p class="muted">Share this command with the target Windows PC. The installer will fetch the package, auto-detect or install PHP, pair the machine, and create a logon task if requested.</p>
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">Local Agents</h2>
+        <p class="text-sm text-gray-400 mt-1">Pair remote PCs with this hosted panel and dispatch local jobs securely.</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="card rounded-lg p-5 space-y-4">
+        <div>
+          <h3 class="font-semibold">Pairing</h3>
+          <p class="text-sm text-gray-400 mt-1">Install the worker on the target PC once, then use this token to pair it.</p>
+        </div>
         <div class="mono-block">${escapeHtml(pairingToken)}</div>
-        <div class="mono-block">${escapeHtml(command)}</div>
-        <div class="mono-block">${escapeHtml(JSON.stringify(installManifest, null, 2))}</div>
+        <div class="bg-gray-900 rounded-lg p-3 font-mono text-sm break-all">${escapeHtml(pairingToken)}</div>
         <form method="POST" action="/admin/agents">
           <input type="hidden" name="action" value="regenerate_pairing_token">
-          <button class="button primary" type="submit">Regenerate Pairing Token</button>
+          <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm">Regenerate Token</button>
         </form>
-      </section>
-      <section class="panel span-two">
-        <div class="section-head"><div><div class="eyebrow">Runtime Nodes</div><h2>Registered Agents</h2></div></div>
-        <div class="list-stack">
-          ${agents.map((agent) => `
-            <article class="list-card">
-              <div class="list-card-head">
-                <div>
-                  <strong>${escapeHtml(agent.display_name || `Agent #${agent.id}`)}</strong>
-                  <div class="muted compact">${escapeHtml(agent.machine_name || '-')} | ${escapeHtml(agent.platform || '-')} | last seen ${escapeHtml(agent.last_seen_at || 'never')}</div>
-                </div>
-                <div class="badge">${escapeHtml(agent.status)}</div>
-              </div>
-              <div class="toolbar wrap">
-                <form method="POST" action="/admin/agents">
-                  <input type="hidden" name="action" value="set_agent_status">
-                  <input type="hidden" name="agent_id" value="${agent.id}">
-                  <input type="hidden" name="status" value="${agent.status === 'disabled' ? 'offline' : 'disabled'}">
-                  <button class="button" type="submit">${agent.status === 'disabled' ? 'Enable' : 'Disable'}</button>
-                </form>
-              </div>
-            </article>
-          `).join('') || '<p class="muted">No agents paired yet.</p>'}
+      </div>
+
+      <div class="card rounded-lg p-5 space-y-4">
+        <div>
+          <h3 class="font-semibold">Hosted Panel URL</h3>
+          <p class="text-sm text-gray-400 mt-1">Public URL that agents will use to hit register, poll, report, and complete endpoints.</p>
         </div>
-      </section>
-    </section>
+        <form method="POST" action="/admin/agents" class="space-y-3">
+          <input type="hidden" name="action" value="save_panel_url">
+          <input type="text" name="panel_public_base_url" value="${escapeHtml(panelBaseUrl || '')}" placeholder="https://your-domain.com" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+          <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm">Save URL</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card rounded-lg p-5 mb-6 space-y-4">
+      <div>
+        <h3 class="font-semibold">Installer Command</h3>
+        <p class="text-sm text-gray-400 mt-1">Use this one-liner on the client PC. It fetches the agent package, bootstraps PHP if required, pairs the machine, and starts polling.</p>
+      </div>
+      <pre class="bg-gray-900 rounded-lg p-4 overflow-x-auto text-xs text-green-400"><code>${escapeHtml(command)}</code></pre>
+      <div class="text-xs text-gray-500">Manifest snapshot served to installer:</div>
+      <pre class="bg-gray-900 rounded-lg p-4 overflow-x-auto text-xs text-gray-300"><code>${escapeHtml(JSON.stringify(installManifest, null, 2))}</code></pre>
+    </div>
+
+    <div class="card rounded-lg overflow-hidden">
+      <div class="p-4 border-b border-gray-800">
+        <h3 class="font-semibold">Registered Agents</h3>
+      </div>
+      <div class="p-4">
+        ${agents.length ? `
+          <div class="space-y-3">
+            ${agents.map((agent) => {
+              const counts = agentJobCounts.get(Number(agent.id)) || {}
+              const status = String(agent.status || 'offline')
+              const statusClass = status === 'online'
+                ? 'bg-green-500/10 text-green-400'
+                : (status === 'disabled' ? 'bg-red-500/10 text-red-400' : 'bg-yellow-500/10 text-yellow-400')
+              return `
+                <div class="border border-gray-800 rounded-lg p-4">
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <div class="font-medium">${escapeHtml(agent.display_name || agent.machine_name || `Agent #${agent.id}`)}</div>
+                      <div class="text-sm text-gray-400">${escapeHtml(agent.machine_name || '-')} | ${escapeHtml(agent.platform || '-')} | last seen ${escapeHtml(agent.last_seen_at || 'never')}</div>
+                      <div class="text-xs text-gray-500 mt-1 font-mono">${escapeHtml(agent.agent_key || '-')}</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="px-2 py-1 rounded text-xs font-medium ${statusClass}">${escapeHtml(status)}</span>
+                      <form method="POST" action="/admin/agents" class="inline">
+                        <input type="hidden" name="action" value="set_agent_status">
+                        <input type="hidden" name="agent_id" value="${agent.id}">
+                        <input type="hidden" name="status" value="${status === 'disabled' ? 'offline' : 'disabled'}">
+                        <button type="submit" class="px-3 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600">${status === 'disabled' ? 'Enable' : 'Disable'}</button>
+                      </form>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-3 gap-3 mt-4 text-sm">
+                    <div class="bg-gray-900 rounded p-3">
+                      <div class="text-gray-500 text-xs">Queued</div>
+                      <div class="font-mono text-lg">${Number(counts.queued || 0)}</div>
+                    </div>
+                    <div class="bg-gray-900 rounded p-3">
+                      <div class="text-gray-500 text-xs">Running</div>
+                      <div class="font-mono text-lg">${Number(counts.running || 0) + Number(counts.claimed || 0)}</div>
+                    </div>
+                    <div class="bg-gray-900 rounded p-3">
+                      <div class="text-gray-500 text-xs">Completed</div>
+                      <div class="font-mono text-lg">${Number(counts.completed || 0)}</div>
+                    </div>
+                  </div>
+                </div>
+              `
+            }).join('')}
+          </div>
+        ` : '<div class="text-gray-400">No agents paired yet.</div>'}
+      </div>
+    </div>
   `
 }
 
@@ -3212,6 +3719,19 @@ function renderPage({ title, user, body, currentPath = '' }) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} | Video Workflow Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#6366f1',
+            accent: '#22c55e'
+          }
+        }
+      }
+    }
+  </script>
   <style>
     :root {
       --bg: #0f0f0f;
@@ -3236,13 +3756,6 @@ function renderPage({ title, user, body, currentPath = '' }) {
     .shell { max-width: 1280px; margin: 0 auto; padding: 28px 24px 56px; }
     .topbar, .section-head, .list-card-head, .card-head {
       display:flex; justify-content:space-between; align-items:flex-start; gap:16px;
-    }
-    .topbar {
-      margin: -28px -24px 24px;
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--line);
-      background: #111827;
-      align-items: center;
     }
     .brand { font-size: 1.7rem; font-weight: 700; }
     .brand small { display:block; font-size:0.84rem; color: var(--muted); font-weight: 400; margin-top: 4px; }
@@ -3420,32 +3933,58 @@ function renderPage({ title, user, body, currentPath = '' }) {
     }
   </style>
 </head>
-<body>
-  <main class="shell">
-    <header class="topbar">
-      <div class="brand">
-        Video Workflow Manager
-        <small>Cloudflare Worker clone shell for the legacy automation panel</small>
-      </div>
+<body class="min-h-screen bg-[#0f0f0f] text-gray-200">
+  <div class="border-b border-gray-800 bg-gray-900">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
+      <h1 class="text-2xl font-bold leading-tight">
+        Video Workflow Control
+        <span class="block text-sm font-normal text-gray-400">Cloudflare Worker panel for local automation agents</span>
+      </h1>
       ${user ? `
-        <div class="user-meta">
-          <nav class="nav">
-            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/dashboard' ? ' nav-active' : ''}" href="/dashboard">Dashboard</a><a class="button ghost${currentPath === '/api-keys' ? ' nav-active' : ''}" href="/api-keys">API Keys</a><a class="button ghost${currentPath === '/jobs' ? ' nav-active' : ''}" href="/jobs">Jobs</a>` : ''}
-            <a class="button ghost${currentPath === '/automation' ? ' nav-active' : ''}" href="/automation">Automation</a>
-            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/admin/agents' ? ' nav-active' : ''}" href="/admin/agents">Agents</a><a class="button ghost${currentPath === '/admin/users' ? ' nav-active' : ''}" href="/admin/users">Users</a>` : ''}
-            <a class="button ghost${currentPath === '/player' ? ' nav-active' : ''}" href="/player">Player</a>
-            ${user.role === 'admin' ? `<a class="button ghost${currentPath === '/settings' ? ' nav-active' : ''}" href="/settings">Settings</a>` : ''}
+        <div class="flex items-center gap-4">
+          <nav class="flex gap-2 flex-wrap">
+            ${user.role === 'admin' ? `
+              <a href="/dashboard" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/dashboard' ? 'bg-gray-800' : ''}">Dashboard</a>
+              <a href="/api-keys" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/api-keys' ? 'bg-gray-800' : ''}">API Keys</a>
+              <a href="/jobs" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/jobs' ? 'bg-gray-800' : ''}">Jobs</a>
+            ` : ''}
+            <a href="/automation" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/automation' ? 'bg-gray-800' : ''}">Automation</a>
+            ${user.role === 'admin' ? `
+              <a href="/admin/agents" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/agents' ? 'bg-gray-800' : ''}">Agents</a>
+              <a href="/admin/users" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/users' ? 'bg-gray-800' : ''}">Users</a>
+            ` : ''}
+            <a href="/player" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/player' ? 'bg-indigo-600' : ''}">
+              <span class="flex items-center gap-1">Player</span>
+            </a>
+            ${user.role === 'admin' ? `<a href="/settings" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/settings' ? 'bg-gray-800' : ''}">Settings</a>` : ''}
           </nav>
-          <div class="user-box">
-            <div class="font-medium">${escapeHtml(user.display_name || user.email || 'User')}</div>
-            <div class="text-xs text-gray-400">${user.role === 'admin' ? 'Admin' : 'User'}</div>
+          <div class="flex items-center gap-3 text-sm">
+            <div class="text-right">
+              <div class="font-medium text-gray-100">${escapeHtml(user.display_name || user.email || 'User')}</div>
+              <div class="text-xs text-gray-400">${user.role === 'admin' ? 'Admin' : 'User'}</div>
+            </div>
+            <form method="POST" action="/logout"><button type="submit" class="px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200">Logout</button></form>
           </div>
-          <form method="POST" action="/logout"><button type="submit" class="button ghost">Logout</button></form>
         </div>
-      ` : '<a class="button ghost" href="/login">Login</a>'}
-    </header>
+      ` : '<a class="px-4 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100" href="/login">Login</a>'}
+    </div>
+  </div>
+  <main class="max-w-7xl mx-auto px-6 py-8">
     ${body}
   </main>
+  <script>
+    function confirmDelete(message) {
+      return window.confirm(message || 'Are you sure you want to delete?');
+    }
+
+    function showToast(message, type) {
+      const toast = document.createElement('div');
+      toast.className = 'fixed bottom-4 right-4 px-6 py-3 rounded-lg text-white shadow-lg z-50 ' + (type === 'error' ? 'bg-red-600' : 'bg-green-600');
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+  </script>
 </body>
 </html>`
 }
@@ -3754,6 +4293,23 @@ async function consumeMagicLink(env, token, clientSlug) {
 async function listAgents(env) {
   const rows = await env.DB.prepare('SELECT * FROM local_agents ORDER BY display_name ASC, id ASC').all()
   return rows.results || []
+}
+
+async function listAgentJobCounts(env) {
+  const rows = await env.DB.prepare(`
+    SELECT agent_id, status, COUNT(*) AS total
+    FROM local_agent_jobs
+    GROUP BY agent_id, status
+  `).all()
+  const map = new Map()
+  for (const row of rows.results || []) {
+    const agentId = Number(row.agent_id || 0)
+    if (!map.has(agentId)) {
+      map.set(agentId, {})
+    }
+    map.get(agentId)[String(row.status || 'unknown')] = Number(row.total || 0)
+  }
+  return map
 }
 
 async function listVisibleAgents(env, user) {
