@@ -118,6 +118,7 @@ export const bootstrapSchemaStatements = [
     job_id INTEGER NOT NULL,
     filename TEXT NOT NULL,
     object_key TEXT,
+    local_path TEXT,
     content_type TEXT,
     size_bytes INTEGER NOT NULL DEFAULT 0,
     stored_in TEXT NOT NULL DEFAULT 'metadata' CHECK (stored_in IN ('metadata', 'r2')),

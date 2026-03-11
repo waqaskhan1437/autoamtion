@@ -1280,6 +1280,7 @@ async function completeJob(env, payload, request) {
     status === 'error' ? String(resultPayload.message || 'Agent execution failed.') : null,
     jobId
   ).run()
+  await syncOutputFilesFromJobResult(env, job, resultPayload, now)
   await syncScheduledPostsFromJobResult(env, job, { ...resultPayload, status }, now)
   await touchAgentByJob(env, job, request)
   return { success: true }
@@ -1300,38 +1301,29 @@ async function storeAgentOutput(env, form) {
 
   const safeName = sanitizeFileName(file.name || `agent_output_${jobId}.mp4`)
   const createdAt = isoNow()
-  let storedIn = 'metadata'
-  let objectKey = null
-
-  if (env.OUTPUTS && typeof env.OUTPUTS.put === 'function') {
-    objectKey = `${job.automation_id}/${jobId}/${safeName}`
-    await env.OUTPUTS.put(objectKey, file.stream(), {
-      httpMetadata: {
-        contentType: file.type || 'application/octet-stream'
-      }
-    })
-    storedIn = 'r2'
-  }
+  const localPath = sanitizeLocalFilePath(String(form.get('local_path') || '').trim()) || null
 
   await env.DB.prepare(`
     INSERT INTO output_files (
-      automation_id, job_id, filename, object_key, content_type, size_bytes, stored_in, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      automation_id, job_id, filename, object_key, local_path, content_type, size_bytes, stored_in, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     job.automation_id,
     jobId,
     safeName,
-    objectKey,
+    null,
+    localPath,
     file.type || 'application/octet-stream',
     Number(file.size || 0),
-    storedIn,
+    'metadata',
     createdAt
   ).run()
 
   return {
     success: true,
     filename: safeName,
-    stored_in: storedIn
+    stored_in: 'metadata',
+    local_path: localPath
   }
 }
 
@@ -1517,25 +1509,23 @@ async function handleOutputDownload(request, env, user, outputId) {
     }), 403)
   }
 
-  if (output.stored_in === 'r2' && output.object_key && env.OUTPUTS && typeof env.OUTPUTS.get === 'function') {
-    const object = await env.OUTPUTS.get(output.object_key)
-    if (!object) {
-      return htmlResponse(renderPage({
-        title: 'Output',
-        user,
-        body: `<section class="panel"><h1>Missing</h1><p class="muted">The stored file is no longer available.</p></section>`
-      }), 404)
-    }
-    const headers = new Headers()
-    object.writeHttpMetadata(headers)
-    headers.set('Content-Disposition', `${forceDownload ? 'attachment' : 'inline'}; filename="${sanitizeFileName(output.filename)}"`)
-    return new Response(object.body, { headers })
-  }
+  const safePath = output.local_path ? escapeHtml(String(output.local_path)) : ''
+  const dispositionLabel = forceDownload ? 'download' : 'open'
 
   return htmlResponse(renderPage({
     title: 'Output',
     user,
-    body: `<section class="panel"><h1>Metadata Only</h1><p class="muted">This output was reported by the agent but no object storage is configured for downloads.</p></section>`
+    body: `
+      <section class="panel stack">
+        <h1>Local Output Only</h1>
+        <p class="muted">This Worker keeps output metadata only. The actual file stays on the paired PC output folder.</p>
+        <div class="note-card">
+          <strong>${escapeHtml(String(output.filename || 'output.mp4'))}</strong>
+          <div class="muted compact">Requested action: ${escapeHtml(dispositionLabel)}</div>
+          <div class="muted compact">${safePath ? `Local path: <code>${safePath}</code>` : 'Local path was not reported by the agent.'}</div>
+        </div>
+      </section>
+    `
   }), 409)
 }
 
@@ -1628,9 +1618,8 @@ async function handleAutomationStatusApi(request, env, user) {
     logs,
     outputs: outputs.map((output) => ({
       ...output,
-      download_url: output.stored_in === 'r2'
-        ? `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id))}&file=${encodeURIComponent(String(output.filename || ''))}`
-        : null
+      storage_label: getOutputStorageLabel(output),
+      download_url: null
     })),
     job
   })
@@ -1682,19 +1671,19 @@ async function handleLegacyListOutputVideosApi(request, env, user) {
   const outputs = await listRecentOutputsForUser(env, user, 200)
   const videos = outputs.map((output) => {
     const modifiedTs = toUnixTimestamp(output.created_at)
-    const source = String(output.run_mode || '') === 'github_runner' ? 'github' : 'local'
+    const source = 'local'
+    const localPath = String(output.local_path || '').trim()
     return {
       name: String(output.filename || `output_${output.id}.mp4`),
-      path: source === 'github'
-        ? `github://${output.automation_id}/${output.filename}`
-        : `worker://outputs/${output.id}`,
+      path: localPath || `local://paired-agent/${output.id}`,
       size: output.size_bytes ? Number(output.size_bytes) / 1024 / 1024 : null,
       size_formatted: formatBytes(output.size_bytes || 0),
       modified: String(output.created_at || ''),
       modified_ago: formatTimeAgo(output.created_at),
       modified_ts: modifiedTs,
-      url: `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id))}&file=${encodeURIComponent(String(output.filename || ''))}`,
+      url: null,
       source,
+      storage_label: getOutputStorageLabel(output),
       automation_id: Number(output.automation_id || 0),
       run_id: Number(output.job_id || 0) || null
     }
@@ -1703,12 +1692,12 @@ async function handleLegacyListOutputVideosApi(request, env, user) {
   return jsonResponse({
     success: true,
     folder: {
-      output_folder: 'Worker/R2 managed outputs',
-      temp_folder: 'Worker metadata only',
+      output_folder: deriveOutputDirectoryHint(outputs, env),
+      temp_folder: 'Paired PC runtime temp folder',
       output_exists: true,
       temp_exists: true,
-      local_count: videos.filter((item) => item.source === 'local').length,
-      github_count: videos.filter((item) => item.source === 'github').length
+      local_count: videos.length,
+      github_count: 0
     },
     videos,
     total: videos.length
@@ -2030,9 +2019,9 @@ async function handleSeedDemoApi(request, env, user) {
       for (const filename of sample.outputs) {
         await env.DB.prepare(`
           INSERT INTO output_files (
-            automation_id, job_id, filename, stored_in, object_key, content_type, size_bytes, created_at
-          ) VALUES (?, ?, ?, 'metadata', NULL, 'video/mp4', ?, ?)
-        `).bind(automationId, jobId, filename, 0, now).run()
+            automation_id, job_id, filename, stored_in, object_key, local_path, content_type, size_bytes, created_at
+          ) VALUES (?, ?, ?, 'metadata', NULL, ?, 'video/mp4', ?, ?)
+        `).bind(automationId, jobId, filename, `C:/VideoWorkflowAgentData/output/${filename}`, 0, now).run()
       }
 
       if (sample.scheduled > 0) {
@@ -2418,7 +2407,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
               <div class="text-xs text-gray-400 mb-1">Edited Outputs</div>
               <div id="progress-outputs-${automation.id}" class="space-y-1 text-xs">
                 ${outputs.length
-                  ? outputs.map((item) => `<a href="/api/stream-github-video.php?automation_id=${encodeURIComponent(String(automation.id))}&file=${encodeURIComponent(String(item))}" target="_blank" rel="noopener" class="block text-cyan-300 truncate">${escapeHtml(String(item))}</a>`).join('')
+                  ? outputs.map((item) => `<div class="block text-cyan-300 truncate">${escapeHtml(String(item))}</div>`).join('')
                   : '<div class="text-gray-500">No edited output yet</div>'}
               </div>
             </div>
@@ -2452,10 +2441,10 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
       <div class="flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <span class="text-gray-400">Output Folder:</span>
-          <code class="bg-gray-900 px-3 py-1 rounded text-green-400 text-sm font-mono">Worker/R2 managed outputs</code>
+          <code class="bg-gray-900 px-3 py-1 rounded text-green-400 text-sm font-mono">${escapeHtml(String(outputSummary.outputFolder || getDefaultLocalOutputDirectory()))}</code>
         </div>
         <div class="flex items-center gap-2 text-sm text-gray-400">
-          Processed videos and uploaded outputs appear in Player after local-agent completion.
+          Processed videos stay on the paired PC. The Worker only tracks local output metadata and status.
         </div>
         <div class="ml-auto flex items-center gap-2">
           ${Number(outputSummary.total || 0) > 0
@@ -2854,26 +2843,24 @@ function renderJobsBody({ jobs, feedback }) {
 
 function renderPlayerBody({ user, outputs, summary, feedback }) {
   const cards = outputs.map((output) => {
-    const streamHref = `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id || 0))}&file=${encodeURIComponent(String(output.filename || ''))}`
+    const localPath = String(output.local_path || '').trim()
+    const storageLabel = getOutputStorageLabel(output)
     return `
     <article class="player-card">
       <div class="player-card-preview">
-        ${output.stored_in === 'r2'
-          ? `<video controls preload="metadata"><source src="${streamHref}" type="${escapeHtml(output.content_type || 'video/mp4')}"></video>`
-          : `<div class="player-placeholder">Metadata Only</div>`}
+        <div class="player-placeholder">${localPath ? 'Local File' : 'Metadata Only'}</div>
       </div>
       <div class="player-card-body">
         <div class="list-card-head">
           <div>
             <strong>${escapeHtml(output.filename)}</strong>
-            <div class="muted compact">${escapeHtml(formatDisplayDateTime(output.created_at))} | ${escapeHtml(output.stored_in)}</div>
+            <div class="muted compact">${escapeHtml(formatDisplayDateTime(output.created_at))} | ${escapeHtml(storageLabel)}</div>
           </div>
-          <div class="status-pill ${output.stored_in === 'r2' ? 'status-success' : 'status-neutral'}">${escapeHtml(output.stored_in)}</div>
+          <div class="status-pill ${localPath ? 'status-success' : 'status-neutral'}">${escapeHtml(storageLabel)}</div>
         </div>
+        <div class="muted compact">${localPath ? `Local path: ${escapeHtml(localPath)}` : 'Local path not reported by the paired agent.'}</div>
         <div class="toolbar wrap">
-          ${output.stored_in === 'r2'
-            ? `<a class="button primary" href="${streamHref}" target="_blank" rel="noopener">Open Output</a><a class="button ghost" href="${streamHref}&download=1" target="_blank" rel="noopener">Download</a>`
-            : '<span class="muted compact">Metadata only. Configure object storage for direct streaming.</span>'}
+          <span class="muted compact">Open this file from the paired PC output folder.</span>
         </div>
       </div>
     </article>
@@ -2901,13 +2888,14 @@ function renderPlayerBody({ user, outputs, summary, feedback }) {
       <div class="section-head">
         <div>
           <h3 class="text-lg font-semibold">Output Directory Snapshot</h3>
-          <p class="text-sm text-gray-400 mt-1">Worker object storage summary for processed videos.</p>
+          <p class="text-sm text-gray-400 mt-1">Local output metadata reported by paired agents.</p>
         </div>
       </div>
+      <div class="muted compact mb-3">Primary folder: <code>${escapeHtml(String(summary.outputFolder || getDefaultLocalOutputDirectory()))}</code></div>
       <div class="stats-row">
         <div class="metric"><span>${Number(summary.total || 0)}</span><small>Total</small></div>
-        <div class="metric"><span>${Number(summary.metadataCount || 0)}</span><small>Local</small></div>
-        <div class="metric"><span>${Number(summary.r2Count || 0)}</span><small>GitHub</small></div>
+        <div class="metric"><span>${Number(summary.localCount || 0)}</span><small>Local</small></div>
+        <div class="metric"><span>${Number(summary.pathCount || 0)}</span><small>With Path</small></div>
       </div>
     </div>
 
@@ -4662,6 +4650,7 @@ async function ensureSchema(env) {
     for (const statement of bootstrapSchemaStatements) {
       await env.DB.prepare(statement).run()
     }
+    await ensureColumnExists(env, 'output_files', 'local_path', 'TEXT')
   })()
 
   try {
@@ -4669,6 +4658,14 @@ async function ensureSchema(env) {
   } catch (error) {
     schemaReadyPromise = null
     throw error
+  }
+}
+
+async function ensureColumnExists(env, tableName, columnName, columnDefinition) {
+  const rows = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all()
+  const exists = (rows.results || []).some((row) => String(row.name || '').toLowerCase() === String(columnName).toLowerCase())
+  if (!exists) {
+    await env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`).run()
   }
 }
 
@@ -5214,16 +5211,16 @@ async function getOutputSummaryForUser(env, user) {
     ? `
       SELECT
         COUNT(*) AS total,
-        SUM(CASE WHEN o.stored_in = 'r2' THEN 1 ELSE 0 END) AS r2_count,
-        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS metadata_count
+        SUM(CASE WHEN COALESCE(o.local_path, '') <> '' THEN 1 ELSE 0 END) AS path_count,
+        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS local_count
       FROM output_files o
       JOIN automations a ON a.id = o.automation_id
     `
     : `
       SELECT
         COUNT(*) AS total,
-        SUM(CASE WHEN o.stored_in = 'r2' THEN 1 ELSE 0 END) AS r2_count,
-        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS metadata_count
+        SUM(CASE WHEN COALESCE(o.local_path, '') <> '' THEN 1 ELSE 0 END) AS path_count,
+        SUM(CASE WHEN o.stored_in = 'metadata' THEN 1 ELSE 0 END) AS local_count
       FROM output_files o
       JOIN automations a ON a.id = o.automation_id
       WHERE a.owner_user_id = ?
@@ -5231,10 +5228,12 @@ async function getOutputSummaryForUser(env, user) {
   const row = user.role === 'admin'
     ? await env.DB.prepare(sql).first()
     : await env.DB.prepare(sql).bind(user.id).first()
+  const outputFolder = await findLatestOutputDirectoryForUser(env, user)
   return {
     total: Number(row?.total || 0),
-    r2Count: Number(row?.r2_count || 0),
-    metadataCount: Number(row?.metadata_count || 0)
+    localCount: Number(row?.local_count || 0),
+    pathCount: Number(row?.path_count || 0),
+    outputFolder
   }
 }
 
@@ -5312,7 +5311,7 @@ async function listAutomationLogs(env, automationId, limit = 50) {
 
 async function listOutputsForAutomation(env, automationId, limit = 12) {
   const rows = await env.DB.prepare(`
-    SELECT id, automation_id, job_id, filename, stored_in, content_type, size_bytes, created_at
+    SELECT id, automation_id, job_id, filename, stored_in, local_path, content_type, size_bytes, created_at
     FROM output_files
     WHERE automation_id = ?
     ORDER BY id DESC
@@ -5582,6 +5581,208 @@ async function syncScheduledPostsFromJobResult(env, job, payload, completedAt) {
       row.updated_at
     ).run()
   }
+}
+
+async function syncOutputFilesFromJobResult(env, job, payload, completedAt) {
+  const items = extractOutputMetadataFromPayload(payload, completedAt)
+  if (!items.length) {
+    return
+  }
+
+  await env.DB.prepare('DELETE FROM output_files WHERE job_id = ?').bind(Number(job.id)).run()
+
+  for (const item of items) {
+    await env.DB.prepare(`
+      INSERT INTO output_files (
+        automation_id, job_id, filename, object_key, local_path, content_type, size_bytes, stored_in, created_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, 'metadata', ?)
+    `).bind(
+      Number(job.automation_id),
+      Number(job.id),
+      item.filename,
+      item.local_path,
+      item.content_type,
+      item.size_bytes,
+      item.created_at
+    ).run()
+  }
+}
+
+function extractOutputMetadataFromPayload(payload, fallbackCreatedAt) {
+  const detailed = Array.isArray(payload.local_output_files) ? payload.local_output_files : []
+  const fallbackNames = Array.isArray(payload.outputs) ? payload.outputs : []
+  const normalized = []
+  const seen = new Set()
+
+  for (const rawItem of detailed) {
+    const item = normalizeOutputMetadataItem(rawItem, fallbackCreatedAt)
+    if (!item) {
+      continue
+    }
+    const key = item.filename.toLowerCase()
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    normalized.push(item)
+  }
+
+  for (const rawName of fallbackNames) {
+    const filename = sanitizeFileName(String(rawName || '').trim())
+    if (!filename) {
+      continue
+    }
+    const key = filename.toLowerCase()
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    normalized.push({
+      filename,
+      local_path: null,
+      content_type: guessOutputContentType(filename),
+      size_bytes: 0,
+      created_at: fallbackCreatedAt
+    })
+  }
+
+  return normalized
+}
+
+function normalizeOutputMetadataItem(rawItem, fallbackCreatedAt) {
+  if (!rawItem) {
+    return null
+  }
+
+  if (typeof rawItem === 'string') {
+    const filename = sanitizeFileName(String(rawItem).trim())
+    if (!filename) {
+      return null
+    }
+    return {
+      filename,
+      local_path: null,
+      content_type: guessOutputContentType(filename),
+      size_bytes: 0,
+      created_at: fallbackCreatedAt
+    }
+  }
+
+  if (!isPlainObject(rawItem)) {
+    return null
+  }
+
+  const filename = sanitizeFileName(String(rawItem.filename || rawItem.name || '').trim())
+  if (!filename) {
+    return null
+  }
+
+  const localPath = sanitizeLocalFilePath(String(rawItem.local_path || rawItem.path || '').trim()) || null
+  const contentType = String(rawItem.content_type || '').trim() || guessOutputContentType(filename)
+  const sizeBytes = Math.max(0, Number(rawItem.size_bytes || rawItem.size || 0) || 0)
+  const createdAt = normalizeIsoDateMaybe(rawItem.created_at || rawItem.modified_at || rawItem.updated_at) || fallbackCreatedAt
+
+  return {
+    filename,
+    local_path: localPath,
+    content_type: contentType,
+    size_bytes: sizeBytes,
+    created_at: createdAt
+  }
+}
+
+function getOutputStorageLabel(output) {
+  if (String(output.local_path || '').trim() !== '') {
+    return 'local only'
+  }
+  if (String(output.stored_in || '').toLowerCase() === 'r2') {
+    return 'legacy remote'
+  }
+  return 'metadata only'
+}
+
+function guessOutputContentType(filename) {
+  const lower = String(filename || '').toLowerCase()
+  if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) {
+    return 'video/mp4'
+  }
+  if (lower.endsWith('.mov')) {
+    return 'video/quicktime'
+  }
+  if (lower.endsWith('.webm')) {
+    return 'video/webm'
+  }
+  if (lower.endsWith('.avi')) {
+    return 'video/x-msvideo'
+  }
+  if (lower.endsWith('.mkv')) {
+    return 'video/x-matroska'
+  }
+  return 'application/octet-stream'
+}
+
+function sanitizeLocalFilePath(value) {
+  return String(value || '').replace(/[\r\n\t]+/g, ' ').trim()
+}
+
+function getDefaultLocalOutputDirectory(env) {
+  const base = String(env?.DEFAULT_WORKER_BASE_DIR || 'C:/VideoWorkflowAgentData').replace(/[\\/]+$/, '')
+  return base ? `${base}/output` : 'Paired PC local output folder'
+}
+
+function getDirectoryNameFromPath(filePath) {
+  const value = String(filePath || '').trim()
+  if (!value) {
+    return ''
+  }
+  const normalized = value.replace(/[\\/]+/g, '/')
+  const index = normalized.lastIndexOf('/')
+  return index > 0 ? normalized.slice(0, index) : normalized
+}
+
+function deriveOutputDirectoryHint(outputs, env) {
+  for (const output of outputs || []) {
+    const dir = getDirectoryNameFromPath(output.local_path || '')
+    if (dir) {
+      return dir
+    }
+  }
+  return getDefaultLocalOutputDirectory(env)
+}
+
+function normalizeIsoDateMaybe(value) {
+  const text = String(value || '').trim()
+  if (!text) {
+    return ''
+  }
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) {
+    return ''
+  }
+  return parsed.toISOString()
+}
+
+async function findLatestOutputDirectoryForUser(env, user) {
+  const sql = user.role === 'admin'
+    ? `
+      SELECT local_path
+      FROM output_files
+      WHERE COALESCE(local_path, '') <> ''
+      ORDER BY id DESC
+      LIMIT 1
+    `
+    : `
+      SELECT o.local_path
+      FROM output_files o
+      JOIN automations a ON a.id = o.automation_id
+      WHERE a.owner_user_id = ? AND COALESCE(o.local_path, '') <> ''
+      ORDER BY o.id DESC
+      LIMIT 1
+    `
+  const row = user.role === 'admin'
+    ? await env.DB.prepare(sql).first()
+    : await env.DB.prepare(sql).bind(user.id).first()
+  return deriveOutputDirectoryHint(row ? [row] : [], env)
 }
 
 function buildScheduledPostRows({ automationId, jobId, outputNames, scheduledCount, postedCount, scheduleMode, accountIds, config, completedAt }) {

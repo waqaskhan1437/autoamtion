@@ -19,7 +19,6 @@ if ($jobId <= 0 || $claimToken === '' || $automationId <= 0 || $serverBaseUrl ==
 
 $reportUrl = $serverBaseUrl . '/api/agent-report.php';
 $completeUrl = $serverBaseUrl . '/api/agent-complete.php';
-$uploadUrl = $serverBaseUrl . '/api/agent-upload-output.php';
 
 function agentNormalizeStats(array $stats): array
 {
@@ -80,47 +79,22 @@ function agentPostJson(string $url, array $payload): void
     curl_close($ch);
 }
 
-function agentUploadOutput(string $url, int $jobId, string $claimToken, string $filePath): ?string
+function agentGuessMimeType(string $filePath): string
 {
-    if (!function_exists('curl_init') || !is_file($filePath)) {
-        return null;
-    }
-
-    $mime = 'application/octet-stream';
     $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
     if (in_array($ext, ['mp4', 'm4v'], true)) {
-        $mime = 'video/mp4';
+        return 'video/mp4';
     } elseif ($ext === 'mov') {
-        $mime = 'video/quicktime';
+        return 'video/quicktime';
     } elseif ($ext === 'webm') {
-        $mime = 'video/webm';
+        return 'video/webm';
     } elseif ($ext === 'avi') {
-        $mime = 'video/x-msvideo';
+        return 'video/x-msvideo';
     } elseif ($ext === 'mkv') {
-        $mime = 'video/x-matroska';
+        return 'video/x-matroska';
     }
 
-    $ch = curl_init($url);
-    agentApplyCurlResolution($ch, $url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => [
-            'job_id' => $jobId,
-            'claim_token' => $claimToken,
-            'output_file' => new CURLFile($filePath, $mime, basename($filePath))
-        ],
-        CURLOPT_TIMEOUT => 120
-    ]);
-    $body = curl_exec($ch);
-    curl_close($ch);
-
-    $json = json_decode((string)$body, true);
-    if (!is_array($json) || empty($json['success'])) {
-        return null;
-    }
-
-    return (string)($json['filename'] ?? basename($filePath));
+    return 'application/octet-stream';
 }
 
 function agentSendProgress(
@@ -211,14 +185,16 @@ function agentListOutputFiles(): array
         $files[strtolower($name)] = [
             'name' => $name,
             'path' => $path,
-            'mtime' => (int)@filemtime($path)
+            'mtime' => (int)@filemtime($path),
+            'size' => (int)@filesize($path),
+            'content_type' => agentGuessMimeType($path)
         ];
     }
 
     return $files;
 }
 
-function agentCollectUploadCandidates(array $knownOutputs, array $existingOutputs, int $jobStartedAt): array
+function agentCollectOutputMetadata(array $knownOutputs, array $existingOutputs, int $jobStartedAt): array
 {
     $candidates = [];
     $currentOutputs = agentListOutputFiles();
@@ -226,7 +202,7 @@ function agentCollectUploadCandidates(array $knownOutputs, array $existingOutput
     foreach ($knownOutputs as $outputName) {
         $key = strtolower(basename((string)$outputName));
         if ($key !== '' && isset($currentOutputs[$key])) {
-            $candidates[$key] = $currentOutputs[$key]['path'];
+            $candidates[$key] = $currentOutputs[$key];
         }
     }
 
@@ -234,11 +210,19 @@ function agentCollectUploadCandidates(array $knownOutputs, array $existingOutput
         $isNew = !isset($existingOutputs[$key]);
         $isRecent = (int)($info['mtime'] ?? 0) >= max(0, $jobStartedAt - 5);
         if ($isNew || $isRecent) {
-            $candidates[$key] = $info['path'];
+            $candidates[$key] = $info;
         }
     }
 
-    return array_values($candidates);
+    return array_values(array_map(static function (array $info): array {
+        return [
+            'filename' => (string)($info['name'] ?? ''),
+            'local_path' => (string)($info['path'] ?? ''),
+            'size_bytes' => (int)($info['size'] ?? 0),
+            'content_type' => (string)($info['content_type'] ?? 'application/octet-stream'),
+            'modified_at' => !empty($info['mtime']) ? gmdate('c', (int)$info['mtime']) : gmdate('c')
+        ];
+    }, $candidates));
 }
 
 $php = PHP_BINARY;
@@ -314,16 +298,13 @@ while (!feof($handle)) {
     ];
 
     if (!empty($event['done'])) {
-        $uploadedOutputs = [];
-        foreach (agentCollectUploadCandidates($knownOutputs, $existingOutputs, $jobStartedAt) as $localPath) {
-            $uploadedName = agentUploadOutput($uploadUrl, $jobId, $claimToken, $localPath);
-            if ($uploadedName !== null) {
-                $uploadedOutputs[] = $uploadedName;
-            }
-        }
-        if (!empty($uploadedOutputs)) {
-            $knownOutputs = $uploadedOutputs;
+        $localOutputs = agentCollectOutputMetadata($knownOutputs, $existingOutputs, $jobStartedAt);
+        if (!empty($localOutputs)) {
+            $knownOutputs = array_values(array_map(static function (array $item): string {
+                return (string)($item['filename'] ?? '');
+            }, $localOutputs));
             $payload['outputs'] = $knownOutputs;
+            $payload['local_output_files'] = $localOutputs;
         }
 
         $terminalSent = true;
@@ -343,33 +324,32 @@ while (!feof($handle)) {
 
 $exitCode = pclose($handle);
 if (!$terminalSent) {
-    $uploadedOutputs = [];
-    foreach (agentCollectUploadCandidates($knownOutputs, $existingOutputs, $jobStartedAt) as $localPath) {
-        $uploadedName = agentUploadOutput($uploadUrl, $jobId, $claimToken, $localPath);
-        if ($uploadedName !== null) {
-            $uploadedOutputs[] = $uploadedName;
-        }
-    }
-    if (!empty($uploadedOutputs)) {
-        $knownOutputs = $uploadedOutputs;
+    $localOutputs = agentCollectOutputMetadata($knownOutputs, $existingOutputs, $jobStartedAt);
+    if (!empty($localOutputs)) {
+        $knownOutputs = array_values(array_map(static function (array $item): string {
+            return (string)($item['filename'] ?? '');
+        }, $localOutputs));
     }
 
     $finalStatus = ($exitCode === 0) ? 'completed' : 'error';
     $finalMessage = ($exitCode === 0)
         ? 'Local agent finished processing.'
         : ('Local agent process exited with code ' . $exitCode . '.');
-    agentSendProgress(
-        $completeUrl,
-        $jobId,
-        $claimToken,
-        $finalStatus,
-        $finalStatus === 'completed' ? 'success' : 'error',
-        'local_agent',
-        $finalMessage,
-        $finalStatus === 'completed' ? 100 : max(0, $lastProgress),
-        $lastStats,
-        $knownOutputs
-    );
+    agentPostJson($completeUrl, [
+        'job_id' => $jobId,
+        'claim_token' => $claimToken,
+        'payload' => [
+            'status' => $finalStatus,
+            'event_status' => $finalStatus === 'completed' ? 'success' : 'error',
+            'step' => 'local_agent',
+            'message' => $finalMessage,
+            'progress' => $finalStatus === 'completed' ? 100 : max(0, $lastProgress),
+            'stats' => $lastStats,
+            'outputs' => array_values($knownOutputs),
+            'local_output_files' => array_values($localOutputs),
+            'time' => date('H:i:s')
+        ]
+    ]);
 }
 
 exit($exitCode);

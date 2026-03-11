@@ -254,30 +254,6 @@ async function main() {
     const legacyProgress = await requestJson('/api/check-progress.php?id=' + automationId + '&with_logs=1')
     expect(legacyProgress.data.success && legacyProgress.data.data && legacyProgress.data.data.message === 'Downloaded source clip', 'Legacy progress endpoint missing message.')
 
-    const boundary = '----codexboundary' + Date.now()
-    const encoder = new TextEncoder()
-    const fileBytes = new Uint8Array(32)
-    const prefix = encoder.encode(
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name=\"job_id\"\r\n\r\n' + String(jobId) + '\r\n' +
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name=\"claim_token\"\r\n\r\n' + String(claimToken) + '\r\n' +
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name=\"output_file\"; filename=\"sample.mp4\"\r\n' +
-      'Content-Type: video/mp4\r\n\r\n'
-    )
-    const suffix = encoder.encode('\r\n--' + boundary + '--\r\n')
-    const uploadBody = new Uint8Array(prefix.length + fileBytes.length + suffix.length)
-    uploadBody.set(prefix, 0)
-    uploadBody.set(fileBytes, prefix.length)
-    uploadBody.set(suffix, prefix.length + fileBytes.length)
-    const uploadResponse = await requestJson('/api/agent-upload-output.php', {
-      method: 'POST',
-      headers: { 'content-type': 'multipart/form-data; boundary=' + boundary },
-      body: uploadBody
-    })
-    expect(uploadResponse.data.success, 'Agent output upload failed.')
-
     const completeResponse = await requestJson('/api/agent/complete', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -290,7 +266,15 @@ async function main() {
           step: 'complete',
           message: 'Automation finished cleanly',
           progress: 100,
-          stats: { fetched: 1, downloaded: 1, processed: 1, scheduled: 0, posted: 0 }
+          stats: { fetched: 1, downloaded: 1, processed: 1, scheduled: 0, posted: 0 },
+          outputs: ['sample.mp4'],
+          local_output_files: [{
+            filename: 'sample.mp4',
+            local_path: 'C:/VideoWorkflowAgentData/output/sample.mp4',
+            size_bytes: 32,
+            content_type: 'video/mp4',
+            modified_at: new Date().toISOString()
+          }]
         }
       })
     })
@@ -298,7 +282,8 @@ async function main() {
 
     const statusDone = await requestJson('/api/automation-status?automation_id=' + automationId)
     expect(String(statusDone.data.automation.status) === 'completed', 'Unexpected final status: ' + String(statusDone.data.automation.status))
-    expect(statusDone.data.outputs.some((output) => output.filename === 'sample.mp4'), 'Uploaded output missing from status feed.')
+    expect(statusDone.data.outputs.some((output) => output.filename === 'sample.mp4'), 'Local output missing from status feed.')
+    expect(statusDone.data.outputs.some((output) => output.local_path === 'C:/VideoWorkflowAgentData/output/sample.mp4'), 'Local output path missing from status feed.')
     expect(statusDone.data.logs.some((log) => log.message === 'Automation finished cleanly'), 'Completion log missing.')
 
     const scheduledPosts = await requestJson('/api/scheduled-posts?automation_id=' + automationId)
@@ -314,6 +299,7 @@ async function main() {
 
     const legacyOutputList = await requestJson('/api/list-output-videos.php')
     expect(legacyOutputList.data.success && Number(legacyOutputList.data.total) >= 1, 'Legacy output listing endpoint failed.')
+    expect(String(legacyOutputList.data.videos[0].path || '').includes('C:/VideoWorkflowAgentData/output/sample.mp4'), 'Legacy output list did not preserve local path.')
 
     await request('/automation', {
       method: 'POST',
@@ -356,7 +342,7 @@ async function main() {
     })
     expect(!pollAfterStop.data.job, 'Cancelled queued job was still claimable after stop.')
 
-    console.log('SMOKE_OK automation_id=' + automationId + ' agent_id=' + agentId + ' job_id=' + jobId + ' output=' + uploadResponse.data.filename)
+    console.log('SMOKE_OK automation_id=' + automationId + ' agent_id=' + agentId + ' job_id=' + jobId + ' output=sample.mp4')
   } finally {
     await worker.stop()
   }
