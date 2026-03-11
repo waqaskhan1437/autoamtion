@@ -39,6 +39,28 @@ function agentNormalizeStats(array $stats): array
     return $defaults;
 }
 
+function agentApplyCurlResolution($curlHandle, string $url): void
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['host'])) {
+        return;
+    }
+
+    $host = (string)$parts['host'];
+    $scheme = strtolower((string)($parts['scheme'] ?? 'https'));
+    $port = isset($parts['port'])
+        ? (int)$parts['port']
+        : ($scheme === 'http' ? 80 : 443);
+
+    $ipv4 = gethostbyname($host);
+    if (!is_string($ipv4) || $ipv4 === '' || $ipv4 === $host || !filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        return;
+    }
+
+    curl_setopt($curlHandle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    curl_setopt($curlHandle, CURLOPT_RESOLVE, [$host . ':' . $port . ':' . $ipv4]);
+}
+
 function agentPostJson(string $url, array $payload): void
 {
     if (!function_exists('curl_init')) {
@@ -46,6 +68,7 @@ function agentPostJson(string $url, array $payload): void
     }
 
     $ch = curl_init($url);
+    agentApplyCurlResolution($ch, $url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
@@ -78,6 +101,7 @@ function agentUploadOutput(string $url, int $jobId, string $claimToken, string $
     }
 
     $ch = curl_init($url);
+    agentApplyCurlResolution($ch, $url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,

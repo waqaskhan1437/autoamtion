@@ -44,6 +44,28 @@ function agentCliSaveConfig(string $path, array $data): void
     file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 }
 
+function agentCliApplyCurlResolution($curlHandle, string $url): void
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['host'])) {
+        return;
+    }
+
+    $host = (string)$parts['host'];
+    $scheme = strtolower((string)($parts['scheme'] ?? 'https'));
+    $port = isset($parts['port'])
+        ? (int)$parts['port']
+        : ($scheme === 'http' ? 80 : 443);
+
+    $ipv4 = gethostbyname($host);
+    if (!is_string($ipv4) || $ipv4 === '' || $ipv4 === $host || !filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        return;
+    }
+
+    curl_setopt($curlHandle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    curl_setopt($curlHandle, CURLOPT_RESOLVE, [$host . ':' . $port . ':' . $ipv4]);
+}
+
 function agentCliPostJson(string $url, array $payload): array
 {
     if (!function_exists('curl_init')) {
@@ -51,6 +73,7 @@ function agentCliPostJson(string $url, array $payload): array
     }
 
     $ch = curl_init($url);
+    agentCliApplyCurlResolution($ch, $url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
