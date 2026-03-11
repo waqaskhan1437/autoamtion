@@ -28,12 +28,29 @@ const settingsTabFieldMap = {
 }
 
 const settingsCheckboxFields = new Set(['auto_install_local_runtime', 'github_runner_enabled'])
+const legacyRouteAliases = new Map([
+  ['/index.php', '/dashboard'],
+  ['/automation.php', '/automation'],
+  ['/settings.php', '/settings'],
+  ['/api-keys.php', '/api-keys'],
+  ['/users.php', '/admin/users'],
+  ['/agents.php', '/admin/agents'],
+  ['/player.php', '/player'],
+  ['/jobs.php', '/jobs'],
+  ['/magic-login.php', '/magic-login'],
+  ['/login.php', '/login'],
+  ['/logout.php', '/logout'],
+  ['/api/scheduled-posts.php', '/api/scheduled-posts'],
+  ['/api/delete-scheduled-post.php', '/api/delete-scheduled-post'],
+  ['/api/delete-all-scheduled-posts.php', '/api/delete-all-scheduled-posts']
+])
 
 export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url)
-      const path = normalizePath(url.pathname)
+      const rawPath = normalizePath(url.pathname)
+      const path = resolveWorkerPath(rawPath)
 
       await ensureSchema(env)
       await ensureDefaultAdmin(env)
@@ -77,7 +94,7 @@ export default {
 
       if (path === '/login' && request.method === 'GET') {
         if (session.user) {
-          return redirectResponse('/dashboard')
+          return redirectResponse(session.user.role === 'admin' ? legacyPageHref('/dashboard') : legacyPageHref('/automation'))
         }
         return renderLoginPage(request, env, null)
       }
@@ -101,11 +118,46 @@ export default {
         return handleAutomationRunApi(request, env, session.user)
       }
 
+      if ((rawPath === '/api/start-automation.php' || rawPath === '/run-automation-ajax.php') && ['GET', 'POST'].includes(request.method)) {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleLegacyStartAutomationApi(request, env, session.user)
+      }
+
       if (path === '/api/automation-status' && request.method === 'GET') {
         if (!session.user) {
           return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
         }
         return handleAutomationStatusApi(request, env, session.user)
+      }
+
+      if (rawPath === '/api/check-progress.php' && request.method === 'GET') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleLegacyCheckProgressApi(request, env, session.user)
+      }
+
+      if (rawPath === '/api/list-output-videos.php' && request.method === 'GET') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleLegacyListOutputVideosApi(request, env, session.user)
+      }
+
+      if (rawPath === '/api/stream-github-video.php' && request.method === 'GET') {
+        if (!session.user) {
+          return textResponse('Authentication required.', 401, { 'Content-Type': 'text/plain; charset=utf-8' })
+        }
+        return handleLegacyStreamGithubVideoApi(request, env, session.user)
+      }
+
+      if (rawPath === '/api/delete-all-output-videos.php' && request.method === 'POST') {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleLegacyDeleteAllOutputVideosApi(request, env, session.user)
       }
 
       if (path === '/api/scheduled-posts' && request.method === 'GET') {
@@ -129,12 +181,26 @@ export default {
         return handleDeleteAllScheduledPostsApi(request, env, session.user)
       }
 
+      if (rawPath === '/api/cron.php' && ['GET', 'POST'].includes(request.method)) {
+        if (!session.user) {
+          return jsonResponse({ success: false, error: 'Authentication required.' }, 401)
+        }
+        return handleLegacyCronApi(request, env, session.user)
+      }
+
+      if (rawPath === '/api/seed-demo.php' && request.method === 'GET') {
+        if (!session.user) {
+          return redirectResponse('/login?next=' + encodeURIComponent('/index.php'))
+        }
+        return handleSeedDemoApi(request, env, session.user)
+      }
+
       if (path === '/' && !session.user) {
         return redirectResponse('/login')
       }
 
       if (path === '/') {
-        return redirectResponse('/dashboard')
+        return redirectResponse(session.user.role === 'admin' ? legacyPageHref('/dashboard') : legacyPageHref('/automation'))
       }
 
       if (!session.user) {
@@ -142,10 +208,16 @@ export default {
       }
 
       if (path === '/dashboard' && request.method === 'GET') {
+        if (session.user.role !== 'admin') {
+          return redirectResponse(legacyPageHref('/automation'))
+        }
         return renderDashboardPage(request, env, session.user, null)
       }
 
       if (path === '/dashboard' && request.method === 'POST') {
+        if (session.user.role !== 'admin') {
+          return redirectResponse(legacyPageHref('/automation'))
+        }
         return handleAutomationAction(request, env, session.user)
       }
 
@@ -287,8 +359,14 @@ async function createLoginRedirect(request, env, user, nextPath) {
     role: user.role,
     exp: Math.floor(Date.now() / 1000) + defaultSessionTtlSeconds
   }, env)
+  const requestedNext = sanitizeRedirectPath(nextPath || '/dashboard')
+  const effectiveNext = user.role === 'admin'
+    ? requestedNext
+    : (resolveWorkerPath(normalizePath(requestedNext.split('?')[0])) === '/dashboard'
+        ? legacyPageHref('/automation')
+        : requestedNext)
 
-  return redirectResponse(nextPath, 303, {
+  return redirectResponse(effectiveNext, 303, {
     'Set-Cookie': buildSessionCookie(token, shouldUseSecureCookies(request))
   })
 }
@@ -1399,7 +1477,7 @@ async function renderPlayerPage(request, env, user, feedback) {
   return htmlResponse(renderPage({
     title: 'Player',
     user,
-    body: renderPlayerBody({ outputs, summary, feedback }),
+    body: renderPlayerBody({ user, outputs, summary, feedback }),
     currentPath: '/player'
   }))
 }
@@ -1415,6 +1493,8 @@ async function renderLoginPage(request, env, errorMessage) {
 }
 
 async function handleOutputDownload(request, env, user, outputId) {
+  const url = new URL(request.url)
+  const forceDownload = url.searchParams.get('download') === '1'
   const output = await env.DB.prepare(`
     SELECT o.*, a.owner_user_id
     FROM output_files o
@@ -1448,7 +1528,7 @@ async function handleOutputDownload(request, env, user, outputId) {
     }
     const headers = new Headers()
     object.writeHttpMetadata(headers)
-    headers.set('Content-Disposition', `inline; filename="${sanitizeFileName(output.filename)}"`)
+    headers.set('Content-Disposition', `${forceDownload ? 'attachment' : 'inline'}; filename="${sanitizeFileName(output.filename)}"`)
     return new Response(object.body, { headers })
   }
 
@@ -1480,6 +1560,38 @@ async function handleAutomationRunApi(request, env, user) {
       : `Automation queued on ${result.agentName}.`,
     status: refreshed?.status || 'queued',
     automation_id: automation.id,
+    job_id: result.jobId || 0
+  })
+}
+
+async function handleLegacyStartAutomationApi(request, env, user) {
+  const url = new URL(request.url)
+  let automationId = toInt(url.searchParams.get('id') || url.searchParams.get('automation_id'))
+  if (automationId <= 0 && request.method !== 'GET') {
+    const payload = await readJsonBody(request)
+    automationId = toInt(payload.automation_id || payload.id)
+  }
+  if (automationId <= 0) {
+    return jsonResponse({ success: false, error: 'No automation ID' }, 400)
+  }
+
+  const automation = await getAutomationById(env, automationId)
+  if (!automation || !canAccessAutomation(user, automation)) {
+    return jsonResponse({ success: false, error: 'Automation not found' }, 404)
+  }
+
+  const result = await queueAutomation(env, automation, 'manual_run')
+  if (!result.success) {
+    return jsonResponse({ success: false, error: result.error || 'Unable to queue automation' }, 400)
+  }
+
+  const refreshed = await getAutomationById(env, automation.id)
+  return jsonResponse({
+    success: true,
+    mode: refreshed?.run_mode || automation.run_mode || 'local',
+    status: refreshed?.status || 'queued',
+    message: result.alreadyQueued ? 'Already in queue.' : `Queued on ${result.agentName}.`,
+    automationId: automation.id,
     job_id: result.jobId || 0
   })
 }
@@ -1516,9 +1628,168 @@ async function handleAutomationStatusApi(request, env, user) {
     logs,
     outputs: outputs.map((output) => ({
       ...output,
-      download_url: output.stored_in === 'r2' ? `/outputs/${output.id}` : null
+      download_url: output.stored_in === 'r2'
+        ? `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id))}&file=${encodeURIComponent(String(output.filename || ''))}`
+        : null
     })),
     job
+  })
+}
+
+async function handleLegacyCheckProgressApi(request, env, user) {
+  const url = new URL(request.url)
+  const automationId = toInt(url.searchParams.get('id') || url.searchParams.get('automation_id'))
+  const withLogs = url.searchParams.get('with_logs') === '1'
+  const automation = await getAutomationById(env, automationId)
+  if (!automation || !canAccessAutomation(user, automation)) {
+    return jsonResponse({ success: false, error: 'Automation not found' }, 404)
+  }
+
+  const [logs, outputs, job] = await Promise.all([
+    listAutomationLogs(env, automation.id, withLogs ? 120 : 15),
+    listOutputsForAutomation(env, automation.id, 20),
+    getLatestJobForAutomation(env, automation.id)
+  ])
+
+  const progressData = parseJsonMaybe(automation.progress_data, {})
+  const progress = clampInt(progressData.progress ?? automation.progress_percent ?? 0, 0, 100)
+  const nextRunTs = toUnixTimestamp(automation.next_run_at)
+  const outputNames = outputs.map((output) => String(output.filename || '')).filter(Boolean)
+  const payload = {
+    step: String(progressData.step || 'local_agent'),
+    status: String(progressData.event_status || progressData.status || automation.status || 'info'),
+    message: String(progressData.message || defaultAutomationMessage(automation.status)),
+    progress,
+    stats: isPlainObject(progressData.stats) ? progressData.stats : {},
+    outputs: outputNames,
+    time: String(progressData.time || automation.last_progress_at || automation.updated_at || ''),
+    job_id: Number(progressData.job_id || job?.id || 0) || null
+  }
+  if (withLogs) {
+    payload.logs = logs
+  }
+
+  return jsonResponse({
+    success: true,
+    status: String(automation.status || 'inactive'),
+    progress,
+    nextRunTs,
+    data: payload
+  })
+}
+
+async function handleLegacyListOutputVideosApi(request, env, user) {
+  const outputs = await listRecentOutputsForUser(env, user, 200)
+  const videos = outputs.map((output) => {
+    const modifiedTs = toUnixTimestamp(output.created_at)
+    const source = String(output.run_mode || '') === 'github_runner' ? 'github' : 'local'
+    return {
+      name: String(output.filename || `output_${output.id}.mp4`),
+      path: source === 'github'
+        ? `github://${output.automation_id}/${output.filename}`
+        : `worker://outputs/${output.id}`,
+      size: output.size_bytes ? Number(output.size_bytes) / 1024 / 1024 : null,
+      size_formatted: formatBytes(output.size_bytes || 0),
+      modified: String(output.created_at || ''),
+      modified_ago: formatTimeAgo(output.created_at),
+      modified_ts: modifiedTs,
+      url: `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id))}&file=${encodeURIComponent(String(output.filename || ''))}`,
+      source,
+      automation_id: Number(output.automation_id || 0),
+      run_id: Number(output.job_id || 0) || null
+    }
+  })
+
+  return jsonResponse({
+    success: true,
+    folder: {
+      output_folder: 'Worker/R2 managed outputs',
+      temp_folder: 'Worker metadata only',
+      output_exists: true,
+      temp_exists: true,
+      local_count: videos.filter((item) => item.source === 'local').length,
+      github_count: videos.filter((item) => item.source === 'github').length
+    },
+    videos,
+    total: videos.length
+  })
+}
+
+async function handleLegacyStreamGithubVideoApi(request, env, user) {
+  const url = new URL(request.url)
+  const automationId = toInt(url.searchParams.get('automation_id'))
+  const file = sanitizeFileName(String(url.searchParams.get('file') || '').trim())
+  if (automationId <= 0 || file === '') {
+    return textResponse('Missing automation_id or file', 400, { 'Content-Type': 'text/plain; charset=utf-8' })
+  }
+
+  const output = await env.DB.prepare(`
+    SELECT o.*, a.owner_user_id
+    FROM output_files o
+    JOIN automations a ON a.id = o.automation_id
+    WHERE o.automation_id = ? AND LOWER(o.filename) = LOWER(?)
+    ORDER BY o.id DESC
+    LIMIT 1
+  `).bind(automationId, file).first()
+
+  if (!output) {
+    return textResponse('Video not found', 404, { 'Content-Type': 'text/plain; charset=utf-8' })
+  }
+
+  return handleOutputDownload(request, env, user, Number(output.id))
+}
+
+async function handleLegacyDeleteAllOutputVideosApi(request, env, user) {
+  requireAdmin(user)
+  const form = await request.formData()
+  const mode = String(form.get('mode') || 'all').trim().toLowerCase()
+  const allowedModes = new Set(['all', 'local', 'github'])
+  const effectiveMode = allowedModes.has(mode) ? mode : 'all'
+
+  const rows = await env.DB.prepare(`
+    SELECT o.id, o.object_key, o.stored_in, a.run_mode, a.id AS automation_id
+    FROM output_files o
+    JOIN automations a ON a.id = o.automation_id
+  `).all()
+
+  let deleted = 0
+  let remoteDeleted = 0
+  const automationIds = new Set()
+  for (const row of rows.results || []) {
+    const source = String(row.run_mode || '') === 'github_runner' ? 'github' : 'local'
+    if (effectiveMode !== 'all' && effectiveMode !== source) {
+      continue
+    }
+    if (row.stored_in === 'r2' && row.object_key && env.OUTPUTS && typeof env.OUTPUTS.delete === 'function') {
+      await env.OUTPUTS.delete(String(row.object_key))
+      remoteDeleted += 1
+    }
+    await env.DB.prepare('DELETE FROM output_files WHERE id = ?').bind(Number(row.id)).run()
+    automationIds.add(Number(row.automation_id))
+    deleted += 1
+  }
+
+  for (const automationId of automationIds) {
+    const automation = await getAutomationById(env, automationId)
+    if (!automation) {
+      continue
+    }
+    const progressData = parseJsonMaybe(automation.progress_data, {})
+    if (Array.isArray(progressData.outputs) && progressData.outputs.length) {
+      progressData.outputs = []
+      await env.DB.prepare('UPDATE automations SET progress_data = ?, updated_at = ? WHERE id = ?').bind(
+        JSON.stringify(progressData),
+        isoNow(),
+        automationId
+      ).run()
+    }
+  }
+
+  return jsonResponse({
+    success: true,
+    deleted,
+    remote_deleted: remoteDeleted,
+    message: `${deleted} output video(s) removed from Worker metadata${remoteDeleted ? ` and ${remoteDeleted} object(s)` : ''}.`
   })
 }
 
@@ -1582,6 +1853,211 @@ async function handleDeleteAllScheduledPostsApi(request, env, user) {
     success: true,
     message: `${Number(result.meta?.changes || 0)} scheduled post(s) cancelled.`
   })
+}
+
+async function handleLegacyCronApi(request, env, user) {
+  const url = new URL(request.url)
+  const limit = Math.min(25, Math.max(1, toInt(url.searchParams.get('limit')) || 10))
+  const rows = await env.DB.prepare(`
+    SELECT *
+    FROM automations
+    WHERE enabled = 1
+      AND status NOT IN ('queued', 'claimed', 'running', 'processing')
+      AND next_run_at IS NOT NULL
+      AND next_run_at <= ?
+    ORDER BY next_run_at ASC, id ASC
+    LIMIT ?
+  `).bind(isoNow(), limit).all()
+
+  const queued = []
+  for (const row of rows.results || []) {
+    const automation = normalizeAutomationRow(row)
+    const result = await queueAutomation(env, automation, 'cron')
+    if (result.success) {
+      queued.push({
+        id: automation.id,
+        name: automation.name,
+        job_id: result.jobId || 0,
+        alreadyQueued: !!result.alreadyQueued
+      })
+    }
+  }
+
+  return jsonResponse({
+    success: true,
+    queued: queued.length,
+    items: queued,
+    server_time: isoNow()
+  })
+}
+
+async function handleSeedDemoApi(request, env, user) {
+  requireAdmin(user)
+
+  let apiKey = await env.DB.prepare(`SELECT * FROM api_keys WHERE name = 'Demo Bunny Account' LIMIT 1`).first()
+  if (!apiKey) {
+    await env.DB.prepare(`
+      INSERT INTO api_keys (
+        name, api_key, library_id, storage_zone, ftp_host, ftp_username,
+        ftp_password, ftp_port, cdn_hostname, pull_zone_id, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).bind(
+      'Demo Bunny Account',
+      'demo-api-key-xxxxx',
+      '12345',
+      'demo-storage',
+      'storage.bunnycdn.com',
+      'demo-user',
+      'demo-pass',
+      21,
+      'demo.b-cdn.net',
+      '12345',
+      isoNow()
+    ).run()
+    apiKey = await env.DB.prepare(`SELECT * FROM api_keys WHERE name = 'Demo Bunny Account' LIMIT 1`).first()
+  }
+
+  let agent = await env.DB.prepare(`SELECT * FROM local_agents WHERE display_name = 'Demo Agent' LIMIT 1`).first()
+  if (!agent) {
+    const now = isoNow()
+    const agentKey = randomHex(16)
+    const agentSecret = randomHex(24)
+    await env.DB.prepare(`
+      INSERT INTO local_agents (
+        display_name, machine_name, host_name, platform, status, agent_key,
+        agent_secret_hash, last_seen_at, last_ip, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      'Demo Agent',
+      'DEMOBOX',
+      'demo-host',
+      'windows',
+      agentKey,
+      await hashPassword(agentSecret),
+      now,
+      '127.0.0.1',
+      JSON.stringify({ ffmpeg: true, yt_dlp: true }),
+      now,
+      now
+    ).run()
+    agent = await env.DB.prepare(`SELECT * FROM local_agents WHERE display_name = 'Demo Agent' LIMIT 1`).first()
+  }
+
+  const sampleAutomations = [
+    { name: 'Product Launch Video 2024', status: 'completed', progress: 100, outputs: ['product_launch_short.mp4'], scheduled: 0, posted: 1 },
+    { name: 'Customer Testimonial - John', status: 'queued', progress: 15, outputs: [], scheduled: 1, posted: 0 },
+    { name: 'Behind the Scenes Tour', status: 'error', progress: 34, outputs: [], scheduled: 0, posted: 0 },
+    { name: 'How To Use Our App', status: 'completed', progress: 100, outputs: ['how_to_use_app_short.mp4'], scheduled: 2, posted: 0 }
+  ]
+
+  for (const sample of sampleAutomations) {
+    let automation = await env.DB.prepare('SELECT * FROM automations WHERE name = ? LIMIT 1').bind(sample.name).first()
+    if (!automation) {
+      const now = isoNow()
+      const automationJson = {
+        video_source: 'bunny',
+        api_key_id: Number(apiKey?.id || 0),
+        schedule_type: 'daily',
+        schedule_hour: 9,
+        schedule_every_minutes: 10,
+        videos_per_run: 1,
+        short_duration: 60,
+        playback_speed: '1.0',
+        video_selection_method: 'days',
+        video_days_filter: 30,
+        source_shorts_mode: 'single',
+        postforme_enabled: sample.scheduled > 0 || sample.posted > 0,
+        postforme_schedule_mode: sample.scheduled > 0 ? 'offset' : 'immediate',
+        postforme_schedule_offset_minutes: 60,
+        postforme_schedule_spread_minutes: 15,
+        postforme_account_ids_csv: 'demo-account-1,demo-account-2'
+      }
+      const progressData = {
+        step: sample.status === 'error' ? 'ffmpeg' : 'complete',
+        status: sample.status === 'error' ? 'error' : 'success',
+        event_status: sample.status === 'error' ? 'error' : 'success',
+        message: sample.status === 'error' ? 'Demo failure captured for dashboard parity.' : 'Demo automation finished.',
+        progress: sample.progress,
+        stats: {
+          fetched: 1,
+          downloaded: 1,
+          processed: sample.outputs.length,
+          scheduled: sample.scheduled,
+          posted: sample.posted
+        },
+        outputs: sample.outputs,
+        time: now
+      }
+      const insert = await env.DB.prepare(`
+        INSERT INTO automations (
+          owner_user_id, name, run_mode, local_agent_id, enabled, status,
+          progress_percent, next_run_at, last_run_at, last_progress_at,
+          automation_json, api_key_json, settings_json, progress_data, created_at, updated_at
+        ) VALUES (?, ?, 'local', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        user.id,
+        sample.name,
+        Number(agent?.id || 0),
+        sample.status,
+        sample.progress,
+        calculateAutomationNextRunAt('daily', 9, 10),
+        now,
+        now,
+        JSON.stringify(automationJson),
+        apiKey ? JSON.stringify(apiKey) : null,
+        JSON.stringify({ panel_public_base_url: '' }),
+        JSON.stringify(progressData),
+        now,
+        now
+      ).run()
+      const automationId = Number(insert.meta?.last_row_id || 0)
+      const jobStatus = sample.status === 'completed' ? 'completed' : (sample.status === 'error' ? 'error' : 'queued')
+      const jobInsert = await env.DB.prepare(`
+        INSERT INTO local_agent_jobs (
+          agent_id, automation_id, trigger_source, status, queued_at, started_at, completed_at, error_message
+        ) VALUES (?, ?, 'manual_run', ?, ?, ?, ?, ?)
+      `).bind(
+        Number(agent?.id || 0),
+        automationId,
+        jobStatus,
+        now,
+        now,
+        jobStatus === 'queued' ? null : now,
+        sample.status === 'error' ? 'Demo failure.' : null
+      ).run()
+      const jobId = Number(jobInsert.meta?.last_row_id || 0)
+
+      for (const filename of sample.outputs) {
+        await env.DB.prepare(`
+          INSERT INTO output_files (
+            automation_id, job_id, filename, stored_in, object_key, content_type, size_bytes, created_at
+          ) VALUES (?, ?, ?, 'metadata', NULL, 'video/mp4', ?, ?)
+        `).bind(automationId, jobId, filename, 0, now).run()
+      }
+
+      if (sample.scheduled > 0) {
+        for (let index = 0; index < sample.scheduled; index += 1) {
+          await env.DB.prepare(`
+            INSERT INTO scheduled_posts (
+              automation_id, job_id, filename, caption, account_ids_json, remote_post_id,
+              status, scheduled_at, published_at, error_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'scheduled', ?, NULL, NULL, ?, ?)
+          `).bind(
+            automationId,
+            jobId,
+            sample.outputs[index] || `demo_${automationId}_${index + 1}.mp4`,
+            `${sample.name} Demo Post ${index + 1}`,
+            JSON.stringify(['demo-account-1', 'demo-account-2']),
+            new Date(Date.now() + ((index + 1) * 60 * 60 * 1000)).toISOString(),
+            now,
+            now
+          ).run()
+        }
+      }
+    }
+  }
+
+  return redirectResponse('/index.php')
 }
 
 function renderLoginBody({ errorMessage, next, appName }) {
@@ -1677,7 +2153,7 @@ function renderDashboardBody({ user, outputs, stats, recentJobs, scheduledPosts,
     `).join('')
     : `
       <div class="text-center py-12 text-gray-400">
-        No jobs yet. Create an automation and run it from the Automation page.
+        No jobs yet. Click "Load Demo Data" to see sample jobs, or create an automation.
       </div>
     `
 
@@ -1688,7 +2164,10 @@ function renderDashboardBody({ user, outputs, stats, recentJobs, scheduledPosts,
         <h2 class="text-xl font-semibold">Dashboard Overview</h2>
         <p class="text-sm text-gray-400 mt-1">Monitor your video workflows and automations</p>
       </div>
-      ${user.role === 'admin' ? `<a href="/automation?create=1" class="button">Create Automation</a>` : ''}
+      <div class="toolbar wrap">
+        ${user.role === 'admin' ? `<a href="/api/seed-demo.php" class="button ghost">Load Demo Data</a>` : ''}
+        ${user.role === 'admin' ? `<a href="${legacyPageHref('/automation', { create: 1 })}" class="button">Create Automation</a>` : ''}
+      </div>
     </div>
 
     <div class="stats-grid stats-grid-six">
@@ -1778,6 +2257,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
     const progressPercent = clampInt(progressState.progress ?? automation.progress_percent ?? 0, 0, 100)
     const progressMessage = String(progressState.message || (automation.enabled ? 'Waiting for next run.' : 'Automation disabled.'))
     const nextRunLabel = automation.next_run_at ? formatDisplayDateTime(automation.next_run_at) : 'Not scheduled'
+    const nextRunTs = toUnixTimestamp(automation.next_run_at)
     const selectionLabel = config.video_selection_method === 'date_range' && (config.video_start_date || config.video_end_date)
       ? `${String(config.video_start_date || '-')} to ${String(config.video_end_date || '-')}`
       : `Last ${String(config.video_days_filter || 30)} days`
@@ -1811,9 +2291,18 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
               <div class="text-sm text-gray-500">
                 ${escapeHtml(shortsLabel)} | Speed ${escapeHtml(String(config.playback_speed || '1.0'))}x | Next run ${escapeHtml(nextRunLabel)}
               </div>
+              <div class="text-xs text-gray-500 mt-1">
+                <span class="text-gray-400">Countdown:</span>
+                ${nextRunTs
+                  ? `<span class="countdown-timer" data-target="${nextRunTs}" data-automation-id="${automation.id}">${escapeHtml(nextRunLabel)}</span>`
+                  : '<span> Not scheduled</span>'}
+              </div>
             </div>
           </div>
           <div class="flex items-center gap-2">
+            <button type="button" class="p-2 hover:bg-gray-700 rounded text-sky-400" title="Test Fetch Videos" onclick="return testFetch(${automation.id}, ${JSON.stringify(String(config.video_source || 'ftp'))})">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h8m-8 5h5m-7 8h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            </button>
             <button type="button" class="p-2 hover:bg-gray-700 rounded" title="View Logs" data-open-runtime data-automation-id="${automation.id}" data-automation-name="${escapeHtml(automation.name)}">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
             </button>
@@ -1929,7 +2418,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
               <div class="text-xs text-gray-400 mb-1">Edited Outputs</div>
               <div id="progress-outputs-${automation.id}" class="space-y-1 text-xs">
                 ${outputs.length
-                  ? outputs.map((item) => `<div class="text-cyan-300 truncate">${escapeHtml(String(item))}</div>`).join('')
+                  ? outputs.map((item) => `<a href="/api/stream-github-video.php?automation_id=${encodeURIComponent(String(automation.id))}&file=${encodeURIComponent(String(item))}" target="_blank" rel="noopener" class="block text-cyan-300 truncate">${escapeHtml(String(item))}</a>`).join('')
                   : '<div class="text-gray-500">No edited output yet</div>'}
               </div>
             </div>
@@ -1947,7 +2436,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
         <p class="text-sm text-gray-400 mt-1">Auto-convert videos to shorts and post to social media</p>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
-        <a href="/player" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg flex items-center gap-2" title="View processed videos">View Processed Videos</a>
+        <a href="${legacyPageHref('/player')}" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg flex items-center gap-2" title="View processed videos">View Processed Videos</a>
         <button type="button" onclick="workerOpenScheduledModal(0, 'All Automations')" class="px-3 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg flex items-center gap-2 text-sm" title="View/Delete scheduled posts across all automations">Scheduled Queue</button>
         ${user.role === 'admin' ? `
           <form method="POST" action="/automation" onsubmit="return confirm('Stop all running and enabled automations?')">
@@ -1970,7 +2459,7 @@ function renderAutomationBody({ user, automations, agents, apiKeys, outputSummar
         </div>
         <div class="ml-auto flex items-center gap-2">
           ${Number(outputSummary.total || 0) > 0
-            ? `<a href="/player" class="px-3 py-1 bg-green-600 rounded-lg text-sm hover:bg-green-700">${Number(outputSummary.total || 0)} videos ready to view</a>`
+            ? `<a href="${legacyPageHref('/player')}" class="px-3 py-1 bg-green-600 rounded-lg text-sm hover:bg-green-700">${Number(outputSummary.total || 0)} videos ready to view</a>`
             : '<span class="text-gray-500 text-sm">No processed videos yet</span>'}
         </div>
       </div>
@@ -2159,7 +2648,7 @@ function renderSettingsBody({ tab, settings, feedback }) {
     postforme: 'Save Post for Me Settings'
   }
   const tabLinks = tabs.map(([key, label, activeColor]) => `
-    <a href="/settings?tab=${key}" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === key ? `${activeColor} text-white` : 'bg-gray-800 text-gray-400 hover:text-white'}">
+    <a href="${legacyPageHref('/settings', { tab: key })}" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === key ? `${activeColor} text-white` : 'bg-gray-800 text-gray-400 hover:text-white'}">
       ${label}
     </a>
   `).join('')
@@ -2197,18 +2686,21 @@ function renderSettingsBody({ tab, settings, feedback }) {
           ${escapeHtml(saveLabelByTab[tab] || `Save ${settingsTabLabel(tab)}`)}
         </button>
         ${testActionByTab[tab] ? `
-          <button type="submit" formaction="/settings?tab=${tab}" name="action" value="${testActionByTab[tab]}" class="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium">
+          <button type="submit" formaction="${legacyPageHref('/settings', { tab })}" name="action" value="${testActionByTab[tab]}" class="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium">
             Test Connection
           </button>
         ` : ''}
         ${tab === 'ffmpeg' ? `
-          <button type="submit" formaction="/settings?tab=ffmpeg" name="action" value="install_ffmpeg_runtime" class="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg font-medium">
+          <button type="submit" formaction="${legacyPageHref('/settings', { tab: 'ffmpeg' })}" name="action" value="install_ffmpeg_runtime" class="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg font-medium">
             Install FFmpeg
           </button>
         ` : ''}
         ${tab === 'storage' ? `
-          <button type="submit" formaction="/settings?tab=storage" name="action" value="clear_temp" class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-medium">
+          <button type="submit" formaction="${legacyPageHref('/settings', { tab: 'storage' })}" name="action" value="clear_temp" class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-medium">
             Clear Temp
+          </button>
+          <button type="submit" formaction="${legacyPageHref('/settings', { tab: 'storage' })}" name="action" value="open_folder" class="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-medium">
+            Open Output Folder
           </button>
         ` : ''}
       </div>
@@ -2360,12 +2852,14 @@ function renderJobsBody({ jobs, feedback }) {
   `
 }
 
-function renderPlayerBody({ outputs, summary, feedback }) {
-  const cards = outputs.map((output) => `
+function renderPlayerBody({ user, outputs, summary, feedback }) {
+  const cards = outputs.map((output) => {
+    const streamHref = `/api/stream-github-video.php?automation_id=${encodeURIComponent(String(output.automation_id || 0))}&file=${encodeURIComponent(String(output.filename || ''))}`
+    return `
     <article class="player-card">
       <div class="player-card-preview">
         ${output.stored_in === 'r2'
-          ? `<video controls preload="metadata"><source src="/outputs/${output.id}" type="${escapeHtml(output.content_type || 'video/mp4')}"></video>`
+          ? `<video controls preload="metadata"><source src="${streamHref}" type="${escapeHtml(output.content_type || 'video/mp4')}"></video>`
           : `<div class="player-placeholder">Metadata Only</div>`}
       </div>
       <div class="player-card-body">
@@ -2378,22 +2872,27 @@ function renderPlayerBody({ outputs, summary, feedback }) {
         </div>
         <div class="toolbar wrap">
           ${output.stored_in === 'r2'
-            ? `<a class="button primary" href="/outputs/${output.id}" target="_blank" rel="noopener">Open Output</a>`
+            ? `<a class="button primary" href="${streamHref}" target="_blank" rel="noopener">Open Output</a><a class="button ghost" href="${streamHref}&download=1" target="_blank" rel="noopener">Download</a>`
             : '<span class="muted compact">Metadata only. Configure object storage for direct streaming.</span>'}
         </div>
       </div>
     </article>
-  `).join('')
+  `}).join('')
 
   return `
     ${renderFeedback(feedback)}
     <div class="page-head">
       <div>
         <h2 class="text-xl font-semibold">Processed Shorts</h2>
-        <p class="text-sm text-gray-400 mt-1">Browse processed outputs reported by local agents</p>
+        <p class="text-sm text-gray-400 mt-1">View and manage your generated short videos</p>
       </div>
       <div class="toolbar wrap">
-        <a class="button ghost" href="/automation">Back to Automations</a>
+        <a class="button ghost" href="${legacyPageHref('/automation')}">Back to Automations</a>
+        ${user?.role === 'admin' ? `
+          <button type="button" class="button ghost danger-button" onclick="workerDeleteAllOutputVideos()">
+            Delete All Local Videos
+          </button>
+        ` : ''}
         <button type="button" class="button" onclick="window.location.reload()">Refresh</button>
       </div>
     </div>
@@ -2407,14 +2906,35 @@ function renderPlayerBody({ outputs, summary, feedback }) {
       </div>
       <div class="stats-row">
         <div class="metric"><span>${Number(summary.total || 0)}</span><small>Total</small></div>
-        <div class="metric"><span>${Number(summary.r2Count || 0)}</span><small>R2 Ready</small></div>
-        <div class="metric"><span>${Number(summary.metadataCount || 0)}</span><small>Metadata Only</small></div>
+        <div class="metric"><span>${Number(summary.metadataCount || 0)}</span><small>Local</small></div>
+        <div class="metric"><span>${Number(summary.r2Count || 0)}</span><small>GitHub</small></div>
       </div>
     </div>
 
     <div class="player-grid">
       ${cards || '<div class="card rounded-lg p-12 text-center text-gray-400">No outputs yet.</div>'}
     </div>
+    <script>
+      async function workerDeleteAllOutputVideos() {
+        if (!confirm('Delete all videos from output folder?')) return false;
+        try {
+          const response = await fetch('/api/delete-all-output-videos.php', {
+            method: 'POST',
+            body: new URLSearchParams({ mode: 'all' }),
+            headers: { 'Accept': 'application/json' }
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error((data && data.error) ? data.error : 'Unable to delete output videos.');
+          }
+          showToast(data.message || 'Output videos deleted.', 'success');
+          window.setTimeout(() => window.location.reload(), 300);
+        } catch (error) {
+          showToast(error.message || 'Unable to delete output videos.', 'error');
+        }
+        return false;
+      }
+    </script>
   `
 }
 
@@ -2564,19 +3084,25 @@ function renderAutomationEditorForm({ user, agents, apiKeys, editor }) {
               <div class="grid two">
                 <label class="field">
                   <span>Schedule Mode</span>
-                  <select name="postforme_schedule_mode">
+                  <select name="postforme_schedule_mode" onchange="workerToggleScheduleMode()">
                     <option value="immediate"${selectedAttr(editor.postforme_schedule_mode, 'immediate')}>Immediate</option>
                     <option value="scheduled"${selectedAttr(editor.postforme_schedule_mode, 'scheduled')}>Specific date/time</option>
                     <option value="offset"${selectedAttr(editor.postforme_schedule_mode, 'offset')}>Delay after processing</option>
                   </select>
                 </label>
-                <label class="field"><span>Schedule Date/Time</span><input type="datetime-local" name="postforme_schedule_datetime" value="${escapeHtml(editor.postforme_schedule_datetime)}"></label>
+                <div id="schedule_datetime_section"${editor.postforme_schedule_mode === 'scheduled' ? '' : ' class="hidden"'}>
+                  <label class="field"><span>Schedule Date/Time</span><input type="datetime-local" name="postforme_schedule_datetime" value="${escapeHtml(editor.postforme_schedule_datetime)}"></label>
+                </div>
               </div>
               <div class="grid two">
                 <label class="field"><span>Timezone</span><input type="text" name="postforme_schedule_timezone" value="${escapeHtml(editor.postforme_schedule_timezone)}" placeholder="Asia/Karachi"></label>
-                <label class="field"><span>Delay after processing (minutes)</span><input type="number" name="postforme_schedule_offset_minutes" value="${escapeHtml(String(editor.postforme_schedule_offset_minutes))}" min="0"></label>
+                <div id="schedule_offset_section"${editor.postforme_schedule_mode === 'offset' ? '' : ' class="hidden"'}>
+                  <label class="field"><span>Delay after processing (minutes)</span><input type="number" name="postforme_schedule_offset_minutes" value="${escapeHtml(String(editor.postforme_schedule_offset_minutes))}" min="0"></label>
+                </div>
               </div>
-              <label class="field"><span>Spread between posts (minutes)</span><input type="number" name="postforme_schedule_spread_minutes" value="${escapeHtml(String(editor.postforme_schedule_spread_minutes))}" min="0"></label>
+              <div id="schedule_spread_section"${editor.postforme_schedule_mode === 'immediate' ? ' class="hidden"' : ''}>
+                <label class="field"><span>Spread between posts (minutes)</span><input type="number" name="postforme_schedule_spread_minutes" value="${escapeHtml(String(editor.postforme_schedule_spread_minutes))}" min="0"></label>
+              </div>
             </div>
           </div>
           <div class="grid two">
@@ -2631,6 +3157,12 @@ function renderAutomationEditorScript({ user, defaultEditor, initialEditor, init
       function workerTogglePostForMe() {
         const enabled = !!document.getElementById('postforme_enabled')?.checked;
         document.getElementById('postforme_settings')?.classList.toggle('hidden', !enabled);
+      }
+      function workerToggleScheduleMode() {
+        const mode = document.querySelector('#automation-editor-form select[name="postforme_schedule_mode"]')?.value || 'immediate';
+        document.getElementById('schedule_datetime_section')?.classList.toggle('hidden', mode !== 'scheduled');
+        document.getElementById('schedule_offset_section')?.classList.toggle('hidden', mode !== 'offset');
+        document.getElementById('schedule_spread_section')?.classList.toggle('hidden', mode === 'immediate');
       }
       function workerToggleSourceShortsMode() {
         const mode = document.getElementById('source_shorts_mode')?.value || 'single';
@@ -2728,6 +3260,7 @@ function renderAutomationEditorScript({ user, defaultEditor, initialEditor, init
         workerToggleAutomationSource();
         workerToggleVideoSelection();
         workerTogglePostForMe();
+        workerToggleScheduleMode();
         workerToggleSourceShortsMode();
         workerShowAutomationTab('basic');
         modal.classList.remove('hidden');
@@ -2757,7 +3290,7 @@ function renderAutomationEditorScript({ user, defaultEditor, initialEditor, init
         }
         workerStopRuntimePolling();
         if (window.location.search.indexOf('logs=') !== -1) {
-          window.location.href = '/automation';
+          window.location.href = '${legacyPageHref('/automation')}';
         }
       }
 
@@ -3105,6 +3638,133 @@ function renderAutomationEditorScript({ user, defaultEditor, initialEditor, init
         return false;
       }
 
+      function workerFindAutomationName(automationId) {
+        return document.querySelector('[data-automation-card="' + String(automationId) + '"]')?.getAttribute('data-automation-name') || ('Automation #' + String(automationId || ''));
+      }
+
+      function showFormTab(tab) {
+        workerShowAutomationTab(tab === 'social' ? 'publish' : tab);
+      }
+
+      function toggleVideoSource(select) {
+        const sourceField = document.getElementById('automation_video_source');
+        if (sourceField && select && typeof select.value !== 'undefined') {
+          sourceField.value = select.value;
+        }
+        workerToggleAutomationSource();
+      }
+
+      function togglePostForMe() {
+        workerTogglePostForMe();
+      }
+
+      function toggleScheduleMode(mode) {
+        const field = document.querySelector('#automation-editor-form select[name="postforme_schedule_mode"]');
+        if (field && mode != null) {
+          field.value = String(mode);
+        }
+        workerToggleScheduleMode();
+      }
+
+      function toggleSourceShortsMode(mode) {
+        const field = document.getElementById('source_shorts_mode');
+        if (field && mode != null) {
+          field.value = String(mode);
+        }
+        workerToggleSourceShortsMode();
+      }
+
+      function openEditModal(automationData) {
+        workerOpenEditAutomationEditor(automationData);
+      }
+
+      function openScheduledModal(id, name) {
+        return workerOpenScheduledModal(id, name);
+      }
+
+      function openAllScheduledModal() {
+        return workerOpenScheduledModal(0, 'All Automations');
+      }
+
+      function runAutomationSmart(automationId) {
+        return workerQueueAutomation(automationId, workerFindAutomationName(automationId));
+      }
+
+      function testFetch(automationId, source) {
+        const mode = String(source || 'ftp');
+        showToast('Fetch validation for ' + mode + ' runs on the paired agent during the next job.', 'success');
+        return false;
+      }
+
+      function switchTab(tab) {
+        if (typeof workerSwitchDashboardTab === 'function') {
+          workerSwitchDashboardTab(tab);
+        }
+      }
+
+      async function loadOutputVideoCount() {
+        const outputCard = document.querySelector('.output-summary-card');
+        if (!outputCard) return;
+        try {
+          const response = await fetch('/api/list-output-videos.php', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+          const data = await response.json();
+          if (!response.ok || !data.success) return;
+          const target = outputCard.querySelector('.ml-auto');
+          if (!target) return;
+          if (Number(data.total || 0) > 0) {
+            target.innerHTML = '<a href="${legacyPageHref('/player')}" class="px-3 py-1 bg-green-600 rounded-lg text-sm hover:bg-green-700">' + String(data.total) + ' videos ready to view</a>';
+          } else {
+            target.innerHTML = '<span class="text-gray-500 text-sm">No processed videos yet</span>';
+          }
+        } catch (_) {}
+      }
+
+      function updateCountdownTimers() {
+        const timers = document.querySelectorAll('.countdown-timer');
+        const now = Math.floor(Date.now() / 1000);
+        timers.forEach((timer) => {
+          const target = parseInt(timer.dataset.target || '0', 10);
+          const automationId = timer.dataset.automationId || '';
+          if (!target) {
+            timer.textContent = 'Not scheduled';
+            return;
+          }
+          const remaining = target - now;
+          if (remaining <= 0) {
+            timer.innerHTML = '<span class="text-yellow-400">Overdue - checking scheduler...</span>';
+            const lastTrigger = parseInt(timer.dataset.lastTrigger || '0', 10);
+            if (!lastTrigger || (now - lastTrigger) >= 60) {
+              timer.dataset.lastTrigger = String(now);
+              fetch('/api/cron.php', { cache: 'no-store' }).catch(() => {});
+            }
+            fetch('/api/check-progress.php?id=' + encodeURIComponent(automationId), { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((data) => {
+                const nextTs = parseInt((data && data.nextRunTs) ? data.nextRunTs : '0', 10);
+                if (nextTs && nextTs > now) {
+                  timer.dataset.target = String(nextTs);
+                }
+              })
+              .catch(() => {});
+            return;
+          }
+          const hours = Math.floor(remaining / 3600);
+          const minutes = Math.floor((remaining % 3600) / 60);
+          const seconds = remaining % 60;
+          const pad = (value) => String(value).padStart(2, '0');
+          if (hours > 24) {
+            const days = Math.floor(hours / 24);
+            timer.innerHTML = '<span class="text-green-400">' + days + 'd ' + (hours % 24) + 'h ' + pad(minutes) + 'm</span>';
+          } else if (hours > 0) {
+            timer.innerHTML = '<span class="text-green-400">' + hours + 'h ' + pad(minutes) + 'm ' + pad(seconds) + 's</span>';
+          } else if (minutes > 0) {
+            timer.innerHTML = '<span class="text-green-400">' + pad(minutes) + 'm ' + pad(seconds) + 's</span>';
+          } else {
+            timer.innerHTML = '<span class="text-yellow-400">' + pad(seconds) + 's</span>';
+          }
+        });
+      }
+
       document.addEventListener('click', (event) => {
         const createButton = event.target.closest('[data-open-create]');
         if (createButton) {
@@ -3138,7 +3798,11 @@ function renderAutomationEditorScript({ user, defaultEditor, initialEditor, init
         workerToggleAutomationSource();
         workerToggleVideoSelection();
         workerTogglePostForMe();
+        workerToggleScheduleMode();
         workerToggleSourceShortsMode();
+        loadOutputVideoCount();
+        updateCountdownTimers();
+        window.setInterval(updateCountdownTimers, 1000);
         const editorModal = document.getElementById('automation-editor-modal');
         if (editorModal && editorModal.dataset.editorOpen === '1') {
           editorModal.classList.remove('hidden');
@@ -3944,19 +4608,19 @@ function renderPage({ title, user, body, currentPath = '' }) {
         <div class="flex items-center gap-4">
           <nav class="flex gap-2 flex-wrap">
             ${user.role === 'admin' ? `
-              <a href="/dashboard" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/dashboard' ? 'bg-gray-800' : ''}">Dashboard</a>
-              <a href="/api-keys" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/api-keys' ? 'bg-gray-800' : ''}">API Keys</a>
-              <a href="/jobs" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/jobs' ? 'bg-gray-800' : ''}">Jobs</a>
+              <a href="${legacyPageHref('/dashboard')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/dashboard' ? 'bg-gray-800' : ''}">Dashboard</a>
+              <a href="${legacyPageHref('/api-keys')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/api-keys' ? 'bg-gray-800' : ''}">API Keys</a>
+              <a href="${legacyPageHref('/jobs')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/jobs' ? 'bg-gray-800' : ''}">Jobs</a>
             ` : ''}
-            <a href="/automation" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/automation' ? 'bg-gray-800' : ''}">Automation</a>
+            <a href="${legacyPageHref('/automation')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/automation' ? 'bg-gray-800' : ''}">Automation</a>
             ${user.role === 'admin' ? `
-              <a href="/admin/agents" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/agents' ? 'bg-gray-800' : ''}">Agents</a>
-              <a href="/admin/users" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/users' ? 'bg-gray-800' : ''}">Users</a>
+              <a href="${legacyPageHref('/admin/agents')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/agents' ? 'bg-gray-800' : ''}">Agents</a>
+              <a href="${legacyPageHref('/admin/users')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/admin/users' ? 'bg-gray-800' : ''}">Users</a>
             ` : ''}
-            <a href="/player" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/player' ? 'bg-indigo-600' : ''}">
+            <a href="${legacyPageHref('/player')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/player' ? 'bg-indigo-600' : ''}">
               <span class="flex items-center gap-1">Player</span>
             </a>
-            ${user.role === 'admin' ? `<a href="/settings" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/settings' ? 'bg-gray-800' : ''}">Settings</a>` : ''}
+            ${user.role === 'admin' ? `<a href="${legacyPageHref('/settings')}" class="px-4 py-2 rounded hover:bg-gray-800 ${currentPath === '/settings' ? 'bg-gray-800' : ''}">Settings</a>` : ''}
           </nav>
           <div class="flex items-center gap-3 text-sm">
             <div class="text-right">
@@ -3966,7 +4630,7 @@ function renderPage({ title, user, body, currentPath = '' }) {
             <form method="POST" action="/logout"><button type="submit" class="px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200">Logout</button></form>
           </div>
         </div>
-      ` : '<a class="px-4 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100" href="/login">Login</a>'}
+      ` : `<a class="px-4 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100" href="${legacyPageHref('/login')}">Login</a>`}
     </div>
   </div>
   <main class="max-w-7xl mx-auto px-6 py-8">
@@ -4577,14 +5241,14 @@ async function getOutputSummaryForUser(env, user) {
 async function listRecentOutputsForUser(env, user, limit) {
   const sql = user.role === 'admin'
     ? `
-      SELECT o.*, a.owner_user_id
+      SELECT o.*, a.owner_user_id, a.run_mode
       FROM output_files o
       JOIN automations a ON a.id = o.automation_id
       ORDER BY o.created_at DESC, o.id DESC
       LIMIT ?
     `
     : `
-      SELECT o.*, a.owner_user_id
+      SELECT o.*, a.owner_user_id, a.run_mode
       FROM output_files o
       JOIN automations a ON a.id = o.automation_id
       WHERE a.owner_user_id = ?
@@ -4611,14 +5275,18 @@ function normalizeScheduledPost(row) {
 
 async function getAutomationById(env, automationId) {
   const row = await env.DB.prepare('SELECT * FROM automations WHERE id = ? LIMIT 1').bind(automationId).first()
-  return row ? {
+  return row ? normalizeAutomationRow(row) : null
+}
+
+function normalizeAutomationRow(row) {
+  return {
     ...row,
     id: Number(row.id),
     owner_user_id: Number(row.owner_user_id),
     local_agent_id: row.local_agent_id === null ? null : Number(row.local_agent_id),
     enabled: Number(row.enabled || 0),
     progress_percent: Number(row.progress_percent || 0)
-  } : null
+  }
 }
 
 function canAccessAutomation(user, automation) {
@@ -5077,6 +5745,17 @@ function formatDisplayDateTime(value) {
   })
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) {
+    return '-'
+  }
+  if (value >= 1073741824) return `${Math.round((value / 1073741824) * 100) / 100} GB`
+  if (value >= 1048576) return `${Math.round((value / 1048576) * 100) / 100} MB`
+  if (value >= 1024) return `${Math.round((value / 1024) * 100) / 100} KB`
+  return `${Math.round(value)} bytes`
+}
+
 function automationStatusClass(status) {
   switch (String(status || '').toLowerCase()) {
     case 'running':
@@ -5234,11 +5913,48 @@ function parseCookies(header) {
   return cookies
 }
 
+function resolveWorkerPath(pathname) {
+  return legacyRouteAliases.get(pathname) || pathname
+}
+
 function normalizePath(pathname) {
   if (!pathname || pathname === '/') {
     return '/'
   }
   return pathname.replace(/\/+$/, '') || '/'
+}
+
+function legacyPageHref(path, query = null) {
+  const canonical = resolveWorkerPath(normalizePath(path))
+  const alias = {
+    '/dashboard': '/index.php',
+    '/automation': '/automation.php',
+    '/settings': '/settings.php',
+    '/api-keys': '/api-keys.php',
+    '/admin/users': '/users.php',
+    '/admin/agents': '/agents.php',
+    '/player': '/player.php',
+    '/jobs': '/jobs.php',
+    '/login': '/login.php',
+    '/magic-login': '/magic-login.php'
+  }[canonical] || canonical
+  if (!query || (typeof query === 'object' && !Object.keys(query).length)) {
+    return alias
+  }
+  const url = new URL('https://worker.local' + alias)
+  if (typeof query === 'string') {
+    const queryString = query.startsWith('?') ? query.slice(1) : query
+    for (const [key, value] of new URLSearchParams(queryString)) {
+      url.searchParams.set(key, value)
+    }
+  } else {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && String(value) !== '') {
+        url.searchParams.set(key, String(value))
+      }
+    }
+  }
+  return url.pathname + url.search
 }
 
 function normalizeEmail(value) {
@@ -5259,6 +5975,47 @@ function sanitizeRunMode(value) {
 
 function sanitizeAgentStatus(value) {
   return ['online', 'offline', 'disabled'].includes(value) ? value : 'offline'
+}
+
+function toUnixTimestamp(value) {
+  const raw = String(value || '').trim()
+  if (raw === '') {
+    return 0
+  }
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? 0 : Math.floor(date.getTime() / 1000)
+}
+
+function formatTimeAgo(value) {
+  const unix = typeof value === 'number' ? value : toUnixTimestamp(value)
+  if (!unix) {
+    return 'unknown'
+  }
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unix)
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`
+  return `${Math.floor(diff / 86400)} days ago`
+}
+
+function defaultAutomationMessage(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'queued':
+      return 'Automation is queued.'
+    case 'running':
+    case 'processing':
+    case 'claimed':
+      return 'Automation is processing.'
+    case 'completed':
+      return 'Automation completed.'
+    case 'error':
+    case 'failed':
+      return 'Automation failed.'
+    case 'stopped':
+      return 'Automation stopped.'
+    default:
+      return 'Waiting for next run.'
+  }
 }
 
 function normalizeRemoteStatus(value) {

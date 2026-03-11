@@ -103,8 +103,14 @@ async function main() {
     expect(dashboard.text.includes('Administrator'), 'Dashboard did not load after login.')
     expect(dashboard.text.includes('Scheduled Posts'), 'Dashboard scheduled posts section missing.')
 
+    const legacyDashboard = await requestText('/index.php')
+    expect(legacyDashboard.text.includes('Dashboard Overview') && legacyDashboard.text.includes('Load Demo Data'), 'Legacy dashboard alias missing.')
+
     const settingsPage = await requestText('/settings')
     expect(settingsPage.text.includes('GitHub Runner') && settingsPage.text.includes('FFmpeg'), 'Settings tabs missing.')
+
+    const legacySettingsPage = await requestText('/settings.php?tab=storage')
+    expect(legacySettingsPage.text.includes('Open Output Folder'), 'Legacy settings alias missing.')
 
     const apiKeysPage = await requestText('/api-keys')
     expect(apiKeysPage.text.includes('Create Connection'), 'API Keys page missing.')
@@ -120,6 +126,9 @@ async function main() {
       createModalPage.text.includes('View Processed Videos'),
       'Automation shell parity controls missing.'
     )
+
+    const legacyCreateModalPage = await requestText('/automation.php?create=1')
+    expect(legacyCreateModalPage.text.includes('Create Automation'), 'Legacy automation alias missing.')
 
     const agentsPage = await requestText('/admin/agents')
     const tokenMatches = [...agentsPage.text.matchAll(/<div class=\"mono-block\">([^<]+)<\/div>/g)]
@@ -208,6 +217,9 @@ async function main() {
     expect(queueResponse.data.success && Number(queueResponse.data.job_id) > 0, 'Queue endpoint failed.')
     const jobId = Number(queueResponse.data.job_id)
 
+    const legacyQueueResponse = await requestJson('/api/start-automation.php?id=' + automationId)
+    expect(legacyQueueResponse.data.success, 'Legacy start-automation endpoint failed.')
+
     const claimResponse = await requestJson('/api/agent/poll', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -238,6 +250,9 @@ async function main() {
     const statusMid = await requestJson('/api/automation-status?automation_id=' + automationId)
     expect(['processing', 'running'].includes(String(statusMid.data.automation.status)), 'Unexpected mid-run status: ' + String(statusMid.data.automation.status))
     expect(statusMid.data.logs.some((log) => log.message === 'Downloaded source clip'), 'Progress log missing from status feed.')
+
+    const legacyProgress = await requestJson('/api/check-progress.php?id=' + automationId + '&with_logs=1')
+    expect(legacyProgress.data.success && legacyProgress.data.data && legacyProgress.data.data.message === 'Downloaded source clip', 'Legacy progress endpoint missing message.')
 
     const boundary = '----codexboundary' + Date.now()
     const encoder = new TextEncoder()
@@ -293,6 +308,12 @@ async function main() {
 
     const playerPage = await requestText('/player')
     expect(playerPage.text.includes('Processed Shorts') && playerPage.text.includes('Back to Automations'), 'Player parity shell missing.')
+
+    const legacyPlayerPage = await requestText('/player.php')
+    expect(legacyPlayerPage.text.includes('Delete All Local Videos'), 'Legacy player alias missing.')
+
+    const legacyOutputList = await requestJson('/api/list-output-videos.php')
+    expect(legacyOutputList.data.success && Number(legacyOutputList.data.total) >= 1, 'Legacy output listing endpoint failed.')
 
     await request('/automation', {
       method: 'POST',
