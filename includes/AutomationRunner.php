@@ -12,6 +12,7 @@ require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
 require_once __DIR__ . '/FacebookSafeVideoHelper.php';
+require_once __DIR__ . '/FacebookReelsPublisher.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishSocialContent.php';
@@ -1328,6 +1329,45 @@ class AutomationRunner {
                 $this->log('postforme_schedule', 'info', "Post scheduled for: {$scheduledAt}", $videoId, 'postforme');
             }
 
+            $facebookAccounts = [];
+            $postForMeAccountIds = $accountIds;
+            if (!$scheduledAt) {
+                $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $accountIds);
+                if (!empty($publishTargets['success'])) {
+                    $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
+                        ? $publishTargets['facebook_accounts']
+                        : [];
+                    $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
+                        ? $publishTargets['postforme_account_ids']
+                        : $accountIds;
+
+                    foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
+                        $warning = trim((string)$warning);
+                        if ($warning !== '') {
+                            $this->log('facebook_direct', 'warning', $warning, $videoId, 'facebook');
+                        }
+                    }
+
+                    if (!empty($facebookAccounts)) {
+                        $this->log(
+                            'facebook_direct',
+                            'info',
+                            'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
+                            $videoId,
+                            'facebook'
+                        );
+                    }
+                } else {
+                    $this->log(
+                        'facebook_direct',
+                        'warning',
+                        (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
+                        $videoId,
+                        'facebook'
+                    );
+                }
+            }
+
             $preparedVideo = [
                 'success' => true,
                 'path' => $videoPath,
@@ -1355,37 +1395,77 @@ class AutomationRunner {
                     );
                 }
 
-                // Post video to all selected accounts
-                $result = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $videoPath), $postCaption, $accountIds, $options);
+                $countedAsPosted = false;
+                $countedAsScheduled = false;
 
-                // Log detailed result for debugging
-                $safeResult = $this->redactSensitiveData($result);
-                $this->log('postforme_debug', 'info', 'API Response: ' . json_encode($safeResult), $videoId, 'postforme');
+                if (!empty($postForMeAccountIds)) {
+                    $result = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $videoPath), $postCaption, $postForMeAccountIds, $options);
 
-                if ($result['success']) {
-                    $postId = $result['post_id'] ?? 'unknown';
-                    $scheduleInfo = $scheduledAt ? " (scheduled: {$scheduledAt})" : ' (immediate)';
-                    $this->log('postforme_success', 'success', "Posted via Post for Me (ID: {$postId}) to " . count($accountIds) . " accounts" . $scheduleInfo, $videoId, 'postforme');
-                    if ($scheduledAt) {
-                        $stats['scheduled']++;
-                        $this->log('posting', 'success', "SCHEDULED! Post ID: {$postId} (scheduled: {$scheduledAt})", $videoId, 'postforme');
+                    $safeResult = $this->redactSensitiveData($result);
+                    $this->log('postforme_debug', 'info', 'API Response: ' . json_encode($safeResult), $videoId, 'postforme');
+
+                    if ($result['success']) {
+                        $postId = $result['post_id'] ?? 'unknown';
+                        $scheduleInfo = $scheduledAt ? " (scheduled: {$scheduledAt})" : ' (immediate)';
+                        $this->log('postforme_success', 'success', "Posted via Post for Me (ID: {$postId}) to " . count($postForMeAccountIds) . " accounts" . $scheduleInfo, $videoId, 'postforme');
+                        if ($scheduledAt) {
+                            $stats['scheduled']++;
+                            $countedAsScheduled = true;
+                            $this->log('posting', 'success', "SCHEDULED! Post ID: {$postId} (scheduled: {$scheduledAt})", $videoId, 'postforme');
+                        } else {
+                            $stats['posted']++;
+                            $countedAsPosted = true;
+                            $this->log('posting', 'success', "POSTED! Post ID: {$postId}", $videoId, 'postforme');
+                        }
+
+                        $this->logPostForMePost($postId, $videoId, $postCaption, $postForMeAccountIds, $scheduledAt);
+
+                        if (!empty($result['post_id']) && !$scheduledAt) {
+                            $this->pollPostForMeResults($postForMe, $result['post_id'], $videoId);
+                        }
                     } else {
+                        $error = $result['error'] ?? 'Unknown error';
+                        $rawResponse = isset($result['raw']) ? ' | Raw: ' . substr($result['raw'] ?? '', 0, 500) : '';
+                        $httpCode = isset($result['http_code']) ? ' | HTTP: ' . $result['http_code'] : '';
+                        $this->log('postforme_error', 'error', 'Post for Me failed: ' . $error . $httpCode . $rawResponse, $videoId, 'postforme');
+                    }
+                }
+
+                if (!$scheduledAt && !empty($facebookAccounts)) {
+                    $facebookPayload = FacebookReelsPublisher::buildFacebookPayload($postCaption, $options);
+                    $facebookResult = FacebookReelsPublisher::publishLocalVideo(
+                        $postForMe,
+                        (string) ($preparedVideo['path'] ?? $videoPath),
+                        $facebookAccounts,
+                        $facebookPayload
+                    );
+
+                    foreach ((array)($facebookResult['results'] ?? []) as $fbPosted) {
+                        $accountLabel = trim((string)($fbPosted['account_name'] ?? $fbPosted['account_id'] ?? 'Facebook'));
+                        $publishedId = trim((string)($fbPosted['post_id'] ?? $fbPosted['video_id'] ?? ''));
+                        $message = "Direct Facebook Reel posted on {$accountLabel}";
+                        if ($publishedId !== '') {
+                            $message .= " ({$publishedId})";
+                        }
+                        $this->log('facebook_direct', 'success', $message, $videoId, 'facebook');
+                    }
+
+                    foreach ((array)($facebookResult['errors'] ?? []) as $fbError) {
+                        $accountLabel = trim((string)($fbError['account_name'] ?? $fbError['account_id'] ?? 'Facebook'));
+                        $errorText = trim((string)($fbError['error'] ?? 'Unknown Facebook publishing error'));
+                        $this->log('facebook_direct', 'error', "Direct Facebook Reel failed on {$accountLabel}: {$errorText}", $videoId, 'facebook');
+                    }
+
+                    if (!empty($facebookResult['success']) && !$countedAsPosted && !$countedAsScheduled) {
                         $stats['posted']++;
-                        $this->log('posting', 'success', "POSTED! Post ID: {$postId}", $videoId, 'postforme');
+                        $countedAsPosted = true;
+                        $firstFacebook = (array)($facebookResult['results'][0] ?? []);
+                        $postedId = trim((string)($firstFacebook['post_id'] ?? $firstFacebook['video_id'] ?? 'Facebook'));
+                        $this->log('posting', 'success', "FACEBOOK REEL POSTED! {$postedId}", $videoId, 'facebook');
+                    } elseif (empty($facebookResult['success']) && empty($postForMeAccountIds)) {
+                        $errorSummary = trim((string)($facebookResult['error'] ?? 'Facebook direct publishing failed.'));
+                        $this->log('postforme_error', 'error', $errorSummary, $videoId, 'facebook');
                     }
-
-                    // Log the post to postforme_posts table
-                    $this->logPostForMePost($postId, $videoId, $postCaption, $accountIds, $scheduledAt);
-
-                    // Get and log individual results per platform (skip polling for scheduled posts)
-                    if (!empty($result['post_id']) && !$scheduledAt) {
-                        $this->pollPostForMeResults($postForMe, $result['post_id'], $videoId);
-                    }
-                } else {
-                    $error = $result['error'] ?? 'Unknown error';
-                    $rawResponse = isset($result['raw']) ? ' | Raw: ' . substr($result['raw'] ?? '', 0, 500) : '';
-                    $httpCode = isset($result['http_code']) ? ' | HTTP: ' . $result['http_code'] : '';
-                    $this->log('postforme_error', 'error', 'Post for Me failed: ' . $error . $httpCode . $rawResponse, $videoId, 'postforme');
                 }
             } finally {
                 FacebookSafeVideoHelper::cleanupPreparedVideo($preparedVideo);

@@ -239,6 +239,7 @@ try {
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
     require_once __DIR__ . '/../includes/FacebookSafeVideoHelper.php';
+    require_once __DIR__ . '/../includes/FacebookReelsPublisher.php';
     require_once __DIR__ . '/../includes/PrankWishSocialContent.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
@@ -1131,6 +1132,51 @@ foreach ($videos as $index => $video) {
                     $postOptions['scheduled_at'] = $scheduledAt;
                 }
 
+                $facebookAccounts = [];
+                $postForMeAccountIds = $pfAccounts;
+                if (!$scheduledAt) {
+                    $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $pfAccounts);
+                    if (!empty($publishTargets['success'])) {
+                        $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
+                            ? $publishTargets['facebook_accounts']
+                            : [];
+                        $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
+                            ? $publishTargets['postforme_account_ids']
+                            : $pfAccounts;
+
+                        foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
+                            $warning = trim((string)$warning);
+                            if ($warning !== '') {
+                                sendProgress(
+                                    'posting',
+                                    'warning',
+                                    $warning,
+                                    $clipProgressBase + ($progressPerVideo * 0.135),
+                                    $stats
+                                );
+                            }
+                        }
+
+                        if (!empty($facebookAccounts)) {
+                            sendProgress(
+                                'posting',
+                                'info',
+                                'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
+                                $clipProgressBase + ($progressPerVideo * 0.138),
+                                $stats
+                            );
+                        }
+                    } else {
+                        sendProgress(
+                            'posting',
+                            'warning',
+                            (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
+                            $clipProgressBase + ($progressPerVideo * 0.135),
+                            $stats
+                        );
+                    }
+                }
+
                 $preparedVideo = [
                     'success' => true,
                     'path' => $outputPath,
@@ -1158,66 +1204,121 @@ foreach ($videos as $index => $video) {
                         );
                     }
 
-                    $postResult = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $outputPath), $caption, $pfAccounts, $postOptions);
-                    if ($postResult['success']) {
-                        $postId = $postResult['post_id'] ?? 'unknown';
-                        $dbScheduledAt = null;
-                        if (!empty($scheduledAt)) {
-                            $ts = strtotime((string)$scheduledAt);
-                            if ($ts !== false) {
-                                $dbScheduledAt = gmdate('Y-m-d H:i:s', $ts);
+                    $countedAsPosted = false;
+                    $countedAsScheduled = false;
+
+                    if (!empty($postForMeAccountIds)) {
+                        $postResult = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $outputPath), $caption, $postForMeAccountIds, $postOptions);
+                        if ($postResult['success']) {
+                            $postId = $postResult['post_id'] ?? 'unknown';
+                            $dbScheduledAt = null;
+                            if (!empty($scheduledAt)) {
+                                $ts = strtotime((string)$scheduledAt);
+                                if ($ts !== false) {
+                                    $dbScheduledAt = gmdate('Y-m-d H:i:s', $ts);
+                                }
                             }
-                        }
 
-                        try {
-                            $existingStmt = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
-                            $existingStmt->execute([$postId]);
-                            $existingPostId = $existingStmt->fetchColumn();
-                            $localStatus = $dbScheduledAt ? 'scheduled' : 'pending';
-                            $accountsJson = json_encode(array_values($pfAccounts));
+                            try {
+                                $existingStmt = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
+                                $existingStmt->execute([$postId]);
+                                $existingPostId = $existingStmt->fetchColumn();
+                                $localStatus = $dbScheduledAt ? 'scheduled' : 'pending';
+                                $accountsJson = json_encode(array_values($postForMeAccountIds));
 
-                            if ($existingPostId) {
-                                $upStmt = $pdo->prepare("
-                                    UPDATE postforme_posts
-                                    SET automation_id = ?,
-                                        video_id = ?,
-                                        caption = ?,
-                                        account_ids = ?,
-                                        status = ?,
-                                        scheduled_at = ?
-                                    WHERE id = ?
-                                ");
-                                $upStmt->execute([$automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
+                                if ($existingPostId) {
+                                    $upStmt = $pdo->prepare("
+                                        UPDATE postforme_posts
+                                        SET automation_id = ?,
+                                            video_id = ?,
+                                            caption = ?,
+                                            account_ids = ?,
+                                            status = ?,
+                                            scheduled_at = ?
+                                        WHERE id = ?
+                                    ");
+                                    $upStmt->execute([$automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
+                                } else {
+                                    $insStmt = $pdo->prepare("
+                                        INSERT INTO postforme_posts (post_id, automation_id, video_id, caption, account_ids, status, scheduled_at)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    ");
+                                    $insStmt->execute([$postId, $automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
+                                }
+                            } catch (Exception $e) {
+                                error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
+                            }
+
+                            if ($scheduledAt) {
+                                $stats['scheduled']++;
+                                $countedAsScheduled = true;
+                                sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                             } else {
-                                $insStmt = $pdo->prepare("
-                                    INSERT INTO postforme_posts (post_id, automation_id, video_id, caption, account_ids, status, scheduled_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ");
-                                $insStmt->execute([$postId, $automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
+                                $stats['posted']++;
+                                $countedAsPosted = true;
+                                sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                             }
-                        } catch (Exception $e) {
-                            error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
-                        }
 
-                        if ($scheduledAt) {
-                            $stats['scheduled']++;
-                            sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
+                            } catch (Exception $e) {}
                         } else {
-                            $stats['posted']++;
-                            sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                            $errMsg = $postResult['error'] ?? 'Unknown error';
+                            sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
+                            } catch (Exception $e) {}
+                        }
+                    }
+
+                    if (!$scheduledAt && !empty($facebookAccounts)) {
+                        $facebookPayload = FacebookReelsPublisher::buildFacebookPayload($caption, $postOptions);
+                        $facebookResult = FacebookReelsPublisher::publishLocalVideo(
+                            $postForMe,
+                            (string) ($preparedVideo['path'] ?? $outputPath),
+                            $facebookAccounts,
+                            $facebookPayload
+                        );
+
+                        foreach ((array)($facebookResult['results'] ?? []) as $fbPosted) {
+                            $accountLabel = trim((string)($fbPosted['account_name'] ?? $fbPosted['account_id'] ?? 'Facebook'));
+                            $publishedId = trim((string)($fbPosted['post_id'] ?? $fbPosted['video_id'] ?? ''));
+                            $message = "Direct Facebook Reel posted on {$accountLabel}";
+                            if ($publishedId !== '') {
+                                $message .= " ({$publishedId})";
+                            }
+                            sendProgress('posting', 'success', $message, $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'facebook_direct_success', 'success', $message, $segmentVideoName, 'facebook']);
+                            } catch (Exception $e) {}
                         }
 
-                        try {
-                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                            $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
-                        } catch (Exception $e) {}
-                    } else {
-                        $errMsg = $postResult['error'] ?? 'Unknown error';
-                        sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
-                        try {
-                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                            $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
-                        } catch (Exception $e) {}
+                        foreach ((array)($facebookResult['errors'] ?? []) as $fbError) {
+                            $accountLabel = trim((string)($fbError['account_name'] ?? $fbError['account_id'] ?? 'Facebook'));
+                            $errorText = trim((string)($fbError['error'] ?? 'Unknown Facebook publishing error'));
+                            $message = "Direct Facebook Reel failed on {$accountLabel}: {$errorText}";
+                            sendProgress('posting', 'error', $message, $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'facebook_direct_error', 'error', $message, $segmentVideoName, 'facebook']);
+                            } catch (Exception $e) {}
+                        }
+
+                        if (!empty($facebookResult['success']) && !$countedAsPosted && !$countedAsScheduled) {
+                            $stats['posted']++;
+                            $countedAsPosted = true;
+                            $firstFacebook = (array)($facebookResult['results'][0] ?? []);
+                            $postedId = trim((string)($firstFacebook['post_id'] ?? $firstFacebook['video_id'] ?? 'Facebook'));
+                            sendProgress('posting', 'success', "Posted {$clipLabel}: Facebook reel {$postedId}", $clipProgressBase + ($progressPerVideo * 0.186), $stats);
+                        } elseif (empty($facebookResult['success']) && empty($postForMeAccountIds)) {
+                            $errorSummary = trim((string)($facebookResult['error'] ?? 'Facebook direct publishing failed.'));
+                            sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errorSummary}", $clipProgressBase + ($progressPerVideo * 0.186), $stats);
+                        }
                     }
                 } finally {
                     FacebookSafeVideoHelper::cleanupPreparedVideo($preparedVideo);
