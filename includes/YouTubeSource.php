@@ -369,7 +369,6 @@ class YouTubeSource
                 '--playlist-end',
                 (string)$playlistEnd,
             ],
-            $this->getCookiesArgs(),
             $this->getJsRuntimeArgs(),
             [$this->channelUrl]
         );
