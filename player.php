@@ -32,7 +32,8 @@ try {
 $videos = [];
 $localCount = 0;
 $githubCount = 0;
-$accessibleOutputs = vwm_is_admin() ? [] : vwm_collect_accessible_output_names($pdo);
+$canBrowseAllOutputs = vwm_can_access_all_outputs();
+$accessibleOutputs = $canBrowseAllOutputs ? [] : vwm_collect_accessible_output_names($pdo);
 
 if (is_dir($outputDir)) {
     $files = glob($outputDir . '*.mp4');
@@ -56,7 +57,7 @@ if (is_dir($outputDir)) {
 
 // Add GitHub runner outputs as direct stream links (not output folder files).
 try {
-    if (vwm_is_admin()) {
+    if ($canBrowseAllOutputs) {
         $stmt = $pdo->query("
             SELECT id, name, last_run_at, progress_data
             FROM automation_settings

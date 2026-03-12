@@ -150,9 +150,32 @@ function vwm_is_admin(): bool
     return (string)(vwm_current_user()['role'] ?? '') === 'admin';
 }
 
+function vwm_can_access_all_outputs(): bool
+{
+    return vwm_is_admin() || vwm_is_local_automation_bypass();
+}
+
 function vwm_current_user_can_use_github_runner(): bool
 {
-    return vwm_is_admin() || !empty(vwm_current_user()['can_use_github_runner']);
+    if (vwm_is_admin() || !empty(vwm_current_user()['can_use_github_runner'])) {
+        return true;
+    }
+
+    if (vwm_is_local_automation_bypass()) {
+        return true;
+    }
+
+    return false;
+}
+
+function vwm_is_local_automation_bypass(): bool
+{
+    if (vwm_is_authenticated()) {
+        return false;
+    }
+
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? '');
+    return vwm_is_local_host((string)$host);
 }
 
 function vwm_current_user_assigned_local_agent_id(): int
@@ -273,6 +296,12 @@ function vwm_require_live_password(?PDO $pdo = null): void
         return;
     }
 
+    // Bypass for localhost/development environments
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? '');
+    if (vwm_is_local_host($host)) {
+        return;
+    }
+
     $pdo = vwm_auth_pdo($pdo);
     if ($pdo && vwm_user_auth_enabled($pdo)) {
         if (isset($_GET['logout']) && $_GET['logout'] === '1') {
@@ -326,7 +355,7 @@ function vwm_require_app_user(?PDO $pdo = null, bool $adminOnly = false): void
 
 function vwm_get_automation_scope_clause(string $alias = 'automation_settings'): array
 {
-    if (vwm_is_admin()) {
+    if (vwm_is_admin() || vwm_is_local_automation_bypass()) {
         return ['1=1', []];
     }
 
@@ -336,7 +365,7 @@ function vwm_get_automation_scope_clause(string $alias = 'automation_settings'):
 
 function vwm_can_access_automation(array $automation): bool
 {
-    if (vwm_is_admin()) {
+    if (vwm_is_admin() || vwm_is_local_automation_bypass()) {
         return true;
     }
 
@@ -360,7 +389,7 @@ function vwm_fetch_accessible_automation(PDO $pdo, int $automationId): ?array
 
 function vwm_collect_accessible_output_names(PDO $pdo): array
 {
-    if (vwm_is_admin()) {
+    if (vwm_can_access_all_outputs()) {
         return [];
     }
 
@@ -392,7 +421,7 @@ function vwm_collect_accessible_output_names(PDO $pdo): array
 
 function vwm_user_can_access_output_file(PDO $pdo, string $filename): bool
 {
-    if (vwm_is_admin()) {
+    if (vwm_can_access_all_outputs()) {
         return true;
     }
 
