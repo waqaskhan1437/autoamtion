@@ -41,16 +41,15 @@ class YouTubeSource
         $seen = [];
         $metadataTemplate = "%(id)s\t%(upload_date)s\t%(timestamp)s\t%(duration)s\t%(webpage_url)s\t%(live_status)s\t%(title)s";
 
-        foreach (array_chunk($candidates, 5) as $chunk) {
-            $urls = [];
-            foreach ($chunk as $candidate) {
-                if (!empty($candidate['url'])) {
-                    $urls[] = $candidate['url'];
-                }
-            }
-            if (empty($urls)) {
+        $metadataErrors = [];
+
+        foreach ($candidates as $candidate) {
+            $url = trim((string)($candidate['url'] ?? ''));
+            if ($url === '') {
                 continue;
             }
+
+            $stopAfterRange = false;
 
             $command = array_merge(
                 [
@@ -65,7 +64,7 @@ class YouTubeSource
                 $this->getCookiesArgs(),
                 $this->getYouTubeExtractorArgs(),
                 $this->getJsRuntimeArgs(),
-                $urls
+                [$url]
             );
 
             $result = $this->runCommandWithCookiesFallback($command);
@@ -83,11 +82,11 @@ class YouTubeSource
                 }
             }
             
-            if ($result['exit_code'] !== 0 && trim($result['stdout']) === '') {
-                throw new RuntimeException('yt-dlp could not fetch video metadata: ' . $this->summarizeError($result['stderr']));
+            if ($result['exit_code'] !== 0 && trim((string)$result['stdout']) === '') {
+                $metadataErrors[] = $this->summarizeError($result['stderr']);
+                continue;
             }
 
-            $stopAfterChunk = false;
             foreach (preg_split("/\r\n|\n|\r/", (string)$result['stdout']) ?: [] as $line) {
                 $parsed = $this->parseMetadataLine($line);
                 if ($parsed === null) {
@@ -99,7 +98,7 @@ class YouTubeSource
                     continue;
                 }
                 if ($uploadDate < $startYmd) {
-                    $stopAfterChunk = true;
+                    $stopAfterRange = true;
                     continue;
                 }
                 if ($parsed['live_status'] === 'is_live') {
@@ -116,9 +115,18 @@ class YouTubeSource
                 }
             }
 
-            if ($stopAfterChunk) {
+            if (!empty($videos) && count($videos) >= $resultLimit) {
                 break;
             }
+
+            if ($stopAfterRange) {
+                break;
+            }
+        }
+
+        if (empty($videos) && !empty($metadataErrors)) {
+            $metadataErrors = array_values(array_unique(array_filter($metadataErrors)));
+            throw new RuntimeException('yt-dlp could not fetch video metadata: ' . implode(' | ', array_slice($metadataErrors, 0, 3)));
         }
 
         return $videos;
