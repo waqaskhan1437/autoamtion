@@ -48,9 +48,15 @@ jobs:
       - name: Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg default-mysql-client
-          python3 -m pip install --user yt-dlp
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y default-mysql-client
+
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+
+      - name: Setup yt-dlp YouTube cookies
+        uses: AnimMouse/setup-yt-dlp/cookies@v3
+        with:
+          cookies: ${{ secrets.YTDLP_COOKIES_B64 }}
 
       - name: Decode automation payload
         id: payload
@@ -116,78 +122,6 @@ jobs:
         run: |
           php scripts/bootstrap-runner-db.php payload.json
 
-      - name: Prepare yt-dlp cookies
-        env:
-          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
-          YTDLP_COOKIES_B64_1: ${{ secrets.YTDLP_COOKIES_B64_1 }}
-          YTDLP_COOKIES_B64_2: ${{ secrets.YTDLP_COOKIES_B64_2 }}
-          YTDLP_COOKIES_B64_3: ${{ secrets.YTDLP_COOKIES_B64_3 }}
-          YTDLP_COOKIES_B64_4: ${{ secrets.YTDLP_COOKIES_B64_4 }}
-          YTDLP_COOKIES_B64_5: ${{ secrets.YTDLP_COOKIES_B64_5 }}
-          YTDLP_COOKIES_B64_6: ${{ secrets.YTDLP_COOKIES_B64_6 }}
-          YTDLP_COOKIES_B64_7: ${{ secrets.YTDLP_COOKIES_B64_7 }}
-          YTDLP_COOKIES_B64_8: ${{ secrets.YTDLP_COOKIES_B64_8 }}
-          YTDLP_COOKIES_B64_9: ${{ secrets.YTDLP_COOKIES_B64_9 }}
-          YTDLP_COOKIES_B64_10: ${{ secrets.YTDLP_COOKIES_B64_10 }}
-        run: |
-          if [ -z "${YTDLP_COOKIES_B64}" ] && [ -z "${YTDLP_COOKIES_B64_1}" ]; then
-            echo "No YTDLP_COOKIES_B64 secret configured; YouTube may hit bot checks."
-            exit 0
-          fi
-          python3 - <<'PY'
-          import base64
-          import os
-          from pathlib import Path
-
-          def decode_candidate(label: str, value: str):
-              value = (value or "").strip()
-              if not value:
-                  return None
-              try:
-                  raw_bytes = base64.b64decode(value, validate=True)
-              except Exception:
-                  return None
-
-              text = raw_bytes.decode("utf-8", errors="ignore")
-              score = 0
-              if "# Netscape HTTP Cookie File" in text:
-                  score += 10
-              if "youtube.com" in text:
-                  score += 5
-              if "\t" in text:
-                  score += 1
-              return {"label": label, "raw": raw_bytes, "score": score}
-
-          chunks = []
-          for idx in range(1, 11):
-              value = os.environ.get(f"YTDLP_COOKIES_B64_{idx}", "").strip()
-              if value:
-                  chunks.append(value)
-
-          candidates = []
-          single_secret = os.environ.get("YTDLP_COOKIES_B64", "").strip()
-          if single_secret:
-              decoded = decode_candidate("single", single_secret)
-              if decoded:
-                  candidates.append(decoded)
-
-          if chunks:
-              decoded = decode_candidate("chunked", "".join(chunks))
-              if decoded:
-                  candidates.append(decoded)
-
-          if not candidates:
-              raise SystemExit("Configured cookie secret could not be base64-decoded")
-
-          candidates.sort(key=lambda item: item["score"], reverse=True)
-          chosen = candidates[0]
-          target = Path(os.environ["RUNNER_TEMP"]) / "youtube-cookies.txt"
-          target.write_bytes(chosen["raw"])
-          print(f"Wrote cookies file to {target} using {chosen['label']} secret")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
-              fh.write(f"VW_YTDLP_COOKIES_FILE={target}\n")
-          PY
-
       - name: Run automation job
         env:
           VW_DB_HOST: 127.0.0.1
@@ -197,6 +131,7 @@ jobs:
           VW_BASE_DATA_DIR: /tmp/VideoWorkflow
           VW_FFMPEG_PATH: ffmpeg
           VW_FFPROBE_PATH: ffprobe
+          VW_YTDLP_COOKIES_FILE: /home/runner/.cache/yt-dlp/youtube/cookies.txt
           RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
           RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
         run: |
