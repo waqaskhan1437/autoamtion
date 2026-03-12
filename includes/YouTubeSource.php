@@ -68,7 +68,7 @@ class YouTubeSource
                 $urls
             );
 
-            $result = $this->runCommand($command);
+            $result = $this->runCommandWithCookiesFallback($command);
             
             // Log unavailable videos from stderr but don't fail
             if (!empty($result['stderr'])) {
@@ -204,7 +204,7 @@ class YouTubeSource
             [$videoUrl]
         );
 
-        $result = $this->runCommand($command, $dir);
+        $result = $this->runCommandWithCookiesFallback($command, $dir);
         if ($result['exit_code'] !== 0) {
             $errorMessage = $this->summarizeError($result['stderr']);
             
@@ -361,11 +361,12 @@ class YouTubeSource
                 '--playlist-end',
                 (string)$playlistEnd,
             ],
+            $this->getCookiesArgs(),
             $this->getJsRuntimeArgs(),
             [$this->channelUrl]
         );
 
-        $result = $this->runCommand($command);
+        $result = $this->runCommandWithCookiesFallback($command);
         if ($result['exit_code'] !== 0 && trim($result['stdout']) === '') {
             throw new RuntimeException('yt-dlp could not list channel videos: ' . $this->summarizeError($result['stderr']));
         }
@@ -576,7 +577,7 @@ class YouTubeSource
             $cookiesFile = trim((string)YTDLP_COOKIES_FILE);
         }
 
-        if ($cookiesFile !== '' && is_file($cookiesFile) && filesize($cookiesFile) > 0) {
+        if ($this->isUsableCookiesFile($cookiesFile)) {
             return ['--cookies', $cookiesFile];
         }
 
@@ -598,7 +599,24 @@ class YouTubeSource
             return ['--cookies-from-browser', $browserSpec];
         }
 
+        $projectCookiesFile = $this->resolveProjectCookiesFile();
+        if ($projectCookiesFile !== '') {
+            return ['--cookies', $projectCookiesFile];
+        }
+
         return [];
+    }
+
+    private function resolveProjectCookiesFile(): string
+    {
+        $candidate = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'cookies.txt';
+        return $this->isUsableCookiesFile($candidate) ? $candidate : '';
+    }
+
+    private function isUsableCookiesFile(?string $path): bool
+    {
+        $path = trim((string)$path);
+        return $path !== '' && is_file($path) && filesize($path) > 0;
     }
 
     private function getYouTubeExtractorArgs(): array
@@ -609,6 +627,81 @@ class YouTubeSource
             '--extractor-args',
             'youtube:skip=hls,dash',
         ];
+    }
+
+    private function runCommandWithCookiesFallback(array $command, ?string $workingDirectory = null): array
+    {
+        $result = $this->runCommand($command, $workingDirectory);
+        if (!$this->shouldRetryWithoutCookies($result)) {
+            return $result;
+        }
+
+        $fallbackCommand = $this->stripCookiesArgs($command);
+        if ($fallbackCommand === $command) {
+            return $result;
+        }
+
+        $retry = $this->runCommand($fallbackCommand, $workingDirectory);
+        if ($this->isUsableYtDlpResult($retry)) {
+            return $retry;
+        }
+
+        return $result;
+    }
+
+    private function shouldRetryWithoutCookies(array $result): bool
+    {
+        if ($this->getCookiesArgs() === []) {
+            return false;
+        }
+
+        $stderr = strtolower(trim((string)($result['stderr'] ?? '')));
+        if ($stderr === '') {
+            return false;
+        }
+
+        foreach ([
+            'the page needs to be reloaded',
+            'sign in to confirm you\'re not a bot',
+            'use --cookies',
+        ] as $needle) {
+            if (strpos($stderr, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function stripCookiesArgs(array $command): array
+    {
+        $clean = [];
+        $skipNext = false;
+
+        foreach ($command as $part) {
+            if ($skipNext) {
+                $skipNext = false;
+                continue;
+            }
+
+            if ($part === '--cookies' || $part === '--cookies-from-browser') {
+                $skipNext = true;
+                continue;
+            }
+
+            $clean[] = $part;
+        }
+
+        return $clean;
+    }
+
+    private function isUsableYtDlpResult(array $result): bool
+    {
+        if ((int)($result['exit_code'] ?? 1) === 0) {
+            return true;
+        }
+
+        return trim((string)($result['stdout'] ?? '')) !== '';
     }
 
     private function resolveExistingBinary(?string $candidate): ?string
