@@ -238,6 +238,7 @@ try {
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
+    require_once __DIR__ . '/../includes/PrankWishSocialContent.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
     require_once __DIR__ . '/../includes/ManualVideoDownloader.php';
@@ -981,80 +982,143 @@ foreach ($videos as $index => $video) {
             try {
                 $postForMe = new PostForMeAPI($postformeApiKey);
                 $aiPrompt = $automation['ai_tagline_prompt'] ?? 'Create engaging social media content';
-                $socialContent = [];
+                $caption = '';
+                $platformOverrides = [];
 
-                try {
-                    require_once __DIR__ . '/../includes/AITaglineGenerator.php';
-                    $aiGen = new AITaglineGenerator($pdo);
-                    $socialContent = $aiGen->generateSocialContent($aiPrompt, $segmentVideoName, $topText);
-                } catch (Exception $e) {
-                    $socialContent = [
-                        'title' => $topText ?: $segmentVideoName,
-                        'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
-                        'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
-                        'tags' => ['shorts', 'viral', 'trending']
+                if (!empty($automation['prankwish_enabled'])) {
+                    try {
+                        $pwSocial = new PrankWishSocialContent($pdo);
+                        $socialPackage = $pwSocial->getNextPostPackage(
+                            $automationId,
+                            (string) ($topText ?: $segmentVideoName),
+                            $automation['prankwish_occasion'] ?? null,
+                            basename($outputPath)
+                        );
+
+                        if (!empty($socialPackage['success'])) {
+                            $caption = (string) ($socialPackage['caption'] ?? '');
+                            $platformOverrides = is_array($socialPackage['platform_overrides'] ?? null)
+                                ? $socialPackage['platform_overrides']
+                                : [];
+                            sendProgress(
+                                'posting',
+                                'info',
+                                "PrankWish social pack {$socialPackage['cycle']} ({$socialPackage['occasion_key']})",
+                                $clipProgressBase + ($progressPerVideo * 0.13),
+                                $stats
+                            );
+                        }
+                    } catch (Exception $e) {
+                        sendProgress(
+                            'posting',
+                            'warning',
+                            'PrankWish social content fallback: ' . $e->getMessage(),
+                            $clipProgressBase + ($progressPerVideo * 0.13),
+                            $stats
+                        );
+                    }
+                }
+
+                if (empty($platformOverrides)) {
+                    $socialContent = [];
+
+                    try {
+                        require_once __DIR__ . '/../includes/AITaglineGenerator.php';
+                        $aiGen = new AITaglineGenerator($pdo);
+                        $socialContent = $aiGen->generateSocialContent($aiPrompt, $segmentVideoName, $topText);
+                    } catch (Exception $e) {
+                        $socialContent = [
+                            'title' => $topText ?: $segmentVideoName,
+                            'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
+                            'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
+                            'tags' => ['shorts', 'viral', 'trending']
+                        ];
+                    }
+
+                    $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
+                    $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
+                    $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
+                    $shortCaption = substr($caption, 0, 280);
+                    $youtubeTitle = $socialContent['title'] ?? ($topText ?: $segmentVideoName);
+                    $youtubeTags = $socialContent['tags'] ?? ['shorts', 'viral', 'trending'];
+
+                    $platformOverrides = [
+                        'youtube' => [
+                            'title' => substr($youtubeTitle, 0, 100),
+                            'description' => $fullDescription,
+                            'tags' => $youtubeTags,
+                            'privacy' => 'public',
+                            'shorts' => true
+                        ],
+                        'tiktok' => [
+                            'caption' => $caption,
+                            'allow_comments' => true,
+                            'allow_duet' => true,
+                            'allow_stitch' => true
+                        ],
+                        'instagram' => [
+                            'caption' => $caption,
+                            'share_to_feed' => true
+                        ],
+                        'facebook' => [
+                            'caption' => $caption,
+                            'description' => $fullDescription
+                        ],
+                        'twitter' => [
+                            'caption' => $shortCaption
+                        ],
+                        'threads' => [
+                            'caption' => $caption
+                        ],
+                        'linkedin' => [
+                            'caption' => $caption,
+                            'title' => $youtubeTitle
+                        ],
+                        'pinterest' => [
+                            'title' => $youtubeTitle,
+                            'description' => $fullDescription,
+                            'link' => ''
+                        ],
+                        'bluesky' => [
+                            'caption' => $shortCaption
+                        ]
                     ];
                 }
 
-                $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
-                $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
                 if ($segmentTotal > 1) {
-                    $caption .= "`n`nPart {$clipIndex}/{$segmentTotal}";
+                    $partLabel = "Part {$clipIndex}/{$segmentTotal}";
+                    $caption = rtrim($caption) . "`n`n" . $partLabel;
+
+                    foreach ($platformOverrides as &$override) {
+                        if (!empty($override['caption'])) {
+                            $override['caption'] = rtrim((string) $override['caption']) . "`n`n" . $partLabel;
+                        }
+                        if (!empty($override['description'])) {
+                            $override['description'] = rtrim((string) $override['description']) . "`n`n" . $partLabel;
+                        }
+                    }
+                    unset($override);
+
+                    if (!empty($platformOverrides['youtube']['title'])) {
+                        $platformOverrides['youtube']['title'] = substr($platformOverrides['youtube']['title'] . ' Part ' . $clipIndex, 0, 100);
+                    }
+                    if (!empty($platformOverrides['linkedin']['title'])) {
+                        $platformOverrides['linkedin']['title'] = substr($platformOverrides['linkedin']['title'] . ' Part ' . $clipIndex, 0, 120);
+                    }
+                    if (!empty($platformOverrides['pinterest']['title'])) {
+                        $platformOverrides['pinterest']['title'] = substr($platformOverrides['pinterest']['title'] . ' Part ' . $clipIndex, 0, 100);
+                    }
                 }
 
-                $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
-                if ($segmentTotal > 1) {
-                    $fullDescription .= "`n`nPart {$clipIndex}/{$segmentTotal}";
+                if (!empty($platformOverrides['twitter']['caption'])) {
+                    $platformOverrides['twitter']['caption'] = substr($platformOverrides['twitter']['caption'], 0, 280);
                 }
-
-                $shortCaption = substr($caption, 0, 280);
-                $youtubeTitle = $socialContent['title'] ?? ($topText ?: $segmentVideoName);
-                if ($segmentTotal > 1) {
-                    $youtubeTitle .= ' Part ' . $clipIndex;
+                if (!empty($platformOverrides['x']['caption'])) {
+                    $platformOverrides['x']['caption'] = substr($platformOverrides['x']['caption'], 0, 280);
                 }
-                $youtubeTags = $socialContent['tags'] ?? ['shorts', 'viral', 'trending'];
-
-                $platformOverrides = [
-                    'youtube' => [
-                        'title' => substr($youtubeTitle, 0, 100),
-                        'description' => $fullDescription,
-                        'tags' => $youtubeTags,
-                        'privacy' => 'public',
-                        'shorts' => true
-                    ],
-                    'tiktok' => [
-                        'caption' => $caption,
-                        'allow_comments' => true,
-                        'allow_duet' => true,
-                        'allow_stitch' => true
-                    ],
-                    'instagram' => [
-                        'caption' => $caption,
-                        'share_to_feed' => true
-                    ],
-                    'facebook' => [
-                        'caption' => $caption,
-                        'description' => $fullDescription
-                    ],
-                    'twitter' => [
-                        'caption' => $shortCaption
-                    ],
-                    'threads' => [
-                        'caption' => $caption
-                    ],
-                    'linkedin' => [
-                        'caption' => $caption,
-                        'title' => $youtubeTitle
-                    ],
-                    'pinterest' => [
-                        'title' => $youtubeTitle,
-                        'description' => $fullDescription,
-                        'link' => ''
-                    ],
-                    'bluesky' => [
-                        'caption' => $shortCaption
-                    ]
-                ];
+                if (!empty($platformOverrides['bluesky']['caption'])) {
+                    $platformOverrides['bluesky']['caption'] = substr($platformOverrides['bluesky']['caption'], 0, 300);
+                }
 
                 $postOptions = [
                     'platform_overrides' => $platformOverrides

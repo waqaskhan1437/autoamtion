@@ -1238,16 +1238,27 @@ refreshOutputVideoCount();
                                 <label class="block text-sm text-gray-400 mb-2">Content Type (Optional - for social media SEO)</label>
                                 <select name="prankwish_occasion" id="prankwish_occasion" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
                                     <option value="">General (Any Occasion)</option>
-                                    <option value="birthday">Birthday</option>
+                                    <option value="birthday">Birthday / Family</option>
+                                    <option value="birthday_mother">Birthday For Mother / Mom</option>
+                                    <option value="birthday_father">Birthday For Father / Dad</option>
+                                    <option value="birthday_brother">Birthday Gift For Brother</option>
+                                    <option value="birthday_sister">Birthday Gift For Sister</option>
+                                    <option value="birthday_friend">Birthday Gift For Friend</option>
+                                    <option value="birthday_best_friend">Birthday For Best Friend</option>
+                                    <option value="birthday_girlfriend">Birthday For Girlfriend</option>
+                                    <option value="birthday_boyfriend">Birthday For Boyfriend</option>
+                                    <option value="funny_roast_friend">Funny Roast Friend</option>
                                     <option value="mothers_day">Mother's Day</option>
                                     <option value="fathers_day">Father's Day</option>
-                                    <option value="wedding">Wedding / Anniversary</option>
+                                    <option value="valentines">Valentine's Day</option>
+                                    <option value="anniversary">Anniversary</option>
+                                    <option value="wedding">Wedding</option>
                                     <option value="christmas">Christmas</option>
                                     <option value="new_year">New Year</option>
-                                    <option value="valentines">Valentine's Day</option>
                                     <option value="graduation">Graduation</option>
-                                    <option value="promotion">Job Promotion</option>
                                     <option value="thank_you">Thank You</option>
+                                    <option value="eid">Eid</option>
+                                    <option value="promotion">Legacy: Promotion</option>
                                 </select>
                                 <p class="text-xs text-gray-500 mt-2">This helps with social media SEO. Video taglines remain universal.</p>
                             </div>
@@ -1790,16 +1801,27 @@ refreshOutputVideoCount();
                                 <label class="block text-sm text-gray-400 mb-2">Content Type (Optional - for social media SEO)</label>
                                 <select name="prankwish_occasion" id="edit_prankwish_occasion" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
                                     <option value="">General (Any Occasion)</option>
-                                    <option value="birthday">Birthday</option>
+                                    <option value="birthday">Birthday / Family</option>
+                                    <option value="birthday_mother">Birthday For Mother / Mom</option>
+                                    <option value="birthday_father">Birthday For Father / Dad</option>
+                                    <option value="birthday_brother">Birthday Gift For Brother</option>
+                                    <option value="birthday_sister">Birthday Gift For Sister</option>
+                                    <option value="birthday_friend">Birthday Gift For Friend</option>
+                                    <option value="birthday_best_friend">Birthday For Best Friend</option>
+                                    <option value="birthday_girlfriend">Birthday For Girlfriend</option>
+                                    <option value="birthday_boyfriend">Birthday For Boyfriend</option>
+                                    <option value="funny_roast_friend">Funny Roast Friend</option>
                                     <option value="mothers_day">Mother's Day</option>
                                     <option value="fathers_day">Father's Day</option>
-                                    <option value="wedding">Wedding / Anniversary</option>
+                                    <option value="valentines">Valentine's Day</option>
+                                    <option value="anniversary">Anniversary</option>
+                                    <option value="wedding">Wedding</option>
                                     <option value="christmas">Christmas</option>
                                     <option value="new_year">New Year</option>
-                                    <option value="valentines">Valentine's Day</option>
                                     <option value="graduation">Graduation</option>
-                                    <option value="promotion">Job Promotion</option>
                                     <option value="thank_you">Thank You</option>
+                                    <option value="eid">Eid</option>
+                                    <option value="promotion">Legacy: Promotion</option>
                                 </select>
                             </div>
                         </div>
