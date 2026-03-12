@@ -11,6 +11,8 @@ date_default_timezone_set('Asia/Karachi');
 // DATABASE SETTINGS
 // ============================================
 $host = getenv('VW_DB_HOST') ?: 'localhost';
+$dbPortFromEnv = getenv('VW_DB_PORT');
+$dbPort = ($dbPortFromEnv === false || trim($dbPortFromEnv) === '') ? '3306' : trim($dbPortFromEnv);
 $dbname = getenv('VW_DB_NAME') ?: 'video_workflow';
 $username = getenv('VW_DB_USER') ?: 'root';
 $passwordFromEnv = getenv('VW_DB_PASS');
@@ -89,14 +91,14 @@ foreach ([BASE_DATA_DIR, TEMP_DIR, OUTPUT_DIR, LOGS_DIR, SUBTITLES_DIR] as $dir)
 // ============================================
 try {
     // First connect without database to check/create it
-    $pdoInit = new PDO("mysql:host=$host;charset=utf8mb4", $username, $password);
+    $pdoInit = new PDO("mysql:host=$host;port=$dbPort;charset=utf8mb4", $username, $password);
     $pdoInit->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
     // Create database if not exists
     $pdoInit->exec("CREATE DATABASE IF NOT EXISTS `$dbname` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
     
     // Now connect to the database
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
+    $pdo = new PDO("mysql:host=$host;port=$dbPort;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     
@@ -799,6 +801,21 @@ if ($ytdlpCookiesFile === '' && isset($pdo)) {
     }
 }
 define('YTDLP_COOKIES_FILE', $ytdlpCookiesFile);
+
+$ytdlpPath = trim((string)(getenv('VW_YTDLP_PATH') ?: ''));
+if ($ytdlpPath === '' && isset($pdo)) {
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'ytdlp_path' LIMIT 1");
+        $stmt->execute();
+        $dbYtdlpPath = $stmt->fetchColumn();
+        if (is_string($dbYtdlpPath)) {
+            $ytdlpPath = trim($dbYtdlpPath);
+        }
+    } catch (Exception $e) {
+        // Ignore optional yt-dlp path failures.
+    }
+}
+define('YTDLP_PATH', $ytdlpPath);
 
 $ytdlpCookiesBrowser = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER') ?: ''));
 $ytdlpCookiesBrowserProfile = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER_PROFILE') ?: ''));
