@@ -107,6 +107,16 @@ function extractOutputName(string $message): ?string
     return null;
 }
 
+function normalizeEventStreamLine(string $line): string
+{
+    if (strncmp($line, "\xEF\xBB\xBF", 3) === 0) {
+        $line = substr($line, 3);
+    }
+
+    $line = preg_replace('/^\x{FEFF}/u', '', $line) ?? $line;
+    return ltrim($line, "\x00..\x09\x0B\x0C\x0E..\x1F");
+}
+
 function appendOutput(array $outputs, ?string $name): array
 {
     if ($name === null || $name === '') {
@@ -174,6 +184,7 @@ if ($runUrl !== '') {
 $lastStats = normalizeStats([]);
 $lastProgress = 10;
 $terminalSent = false;
+$terminalSuccess = null;
 
 publishEvent(
     $callbackUrl,
@@ -241,7 +252,7 @@ while (!feof($handle)) {
         continue;
     }
 
-    $trim = rtrim($line, "\r\n");
+    $trim = rtrim(normalizeEventStreamLine($line), "\r\n");
     if ($trim !== '') {
         echo $trim . PHP_EOL;
     }
@@ -279,6 +290,7 @@ while (!feof($handle)) {
 
     if (!empty($event['done'])) {
         $ok = !empty($event['success']);
+        $terminalSuccess = $ok;
         publishEvent(
             $callbackUrl,
             $callbackSecret,
@@ -315,6 +327,10 @@ while (!feof($handle)) {
 
 $exitCode = pclose($handle);
 if ($exitCode === -1) {
+    $exitCode = 1;
+}
+
+if ($terminalSuccess === false) {
     $exitCode = 1;
 }
 

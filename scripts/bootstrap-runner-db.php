@@ -27,12 +27,16 @@ if (!is_array($payload)) {
 $automation = $payload['automation'] ?? null;
 $apiKey = $payload['api_key'] ?? null;
 $settings = $payload['settings'] ?? [];
+$processedVideos = $payload['processed_videos'] ?? [];
 if (!is_array($automation)) {
     fwrite(STDERR, "Automation payload missing.\n");
     exit(1);
 }
 if (!is_array($settings)) {
     $settings = [];
+}
+if (!is_array($processedVideos)) {
+    $processedVideos = [];
 }
 
 $dbHost = getenv('VW_DB_HOST') ?: '127.0.0.1';
@@ -137,6 +141,23 @@ try {
     $columns = implode(',', array_map(static fn($c) => "`{$c}`", $autoCols));
     $sql = "INSERT INTO automation_settings ({$columns}) VALUES ({$placeholders})";
     $pdo->prepare($sql)->execute($autoVals);
+
+    $processedCols = $fetchCols($pdo, 'processed_videos');
+    foreach ($processedVideos as $row) {
+        if (!is_array($row) || empty($row)) {
+            continue;
+        }
+        $filtered = $filterPayload($row, $processedCols);
+        $cols = array_keys($filtered);
+        if (empty($cols)) {
+            continue;
+        }
+        $vals = array_values($filtered);
+        $placeholders = implode(',', array_fill(0, count($cols), '?'));
+        $columns = implode(',', array_map(static fn($c) => "`{$c}`", $cols));
+        $sql = "INSERT INTO processed_videos ({$columns}) VALUES ({$placeholders})";
+        $pdo->prepare($sql)->execute($vals);
+    }
 
     $pdo->commit();
 } catch (Throwable $e) {

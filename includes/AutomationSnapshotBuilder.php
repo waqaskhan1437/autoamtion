@@ -36,12 +36,22 @@ class AutomationSnapshotBuilder
             $settings[$key] = (string)($row['setting_value'] ?? '');
         }
 
+        $processedStmt = $this->pdo->prepare("
+            SELECT automation_id, video_identifier, video_filename, file_size, content_hash, cycle_number, processed_at
+            FROM processed_videos
+            WHERE automation_id = ?
+            ORDER BY id ASC
+        ");
+        $processedStmt->execute([$automationId]);
+        $processedVideos = $processedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
         return [
             'success' => true,
             'data' => [
                 'automation' => $automation,
                 'api_key' => $apiKey,
                 'settings' => $settings,
+                'processed_videos' => $processedVideos,
                 'snapshot_at' => gmdate('c')
             ]
         ];
