@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     short_aspect_ratio VARCHAR(20) DEFAULT '9:16',
     ai_taglines_enabled TINYINT(1) DEFAULT 0,
     ai_tagline_prompt TEXT,
+    prankwish_enabled TINYINT(1) DEFAULT 0,
+    prankwish_occasion VARCHAR(50) DEFAULT NULL,
+    prankwish_cycle_override INT DEFAULT NULL,
+    prankwish_use_universal TINYINT(1) DEFAULT 1,
     
     -- Branding Settings
     branding_text_top VARCHAR(255),
@@ -203,6 +207,59 @@ CREATE TABLE IF NOT EXISTS automation_logs (
     FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS prankwish_universal_taglines (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cycle_number INT NOT NULL UNIQUE,
+    top_tagline VARCHAR(255) NOT NULL,
+    bottom_tagline VARCHAR(255) DEFAULT 'prankwish.com',
+    emoji VARCHAR(50) DEFAULT '',
+    is_active TINYINT(1) DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_cycle (cycle_number),
+    INDEX idx_active (is_active)
+);
+
+CREATE TABLE IF NOT EXISTS prankwish_usage_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    automation_id INT NOT NULL,
+    job_id INT DEFAULT NULL,
+    cycle_number INT NOT NULL,
+    top_tagline_used VARCHAR(255) NOT NULL,
+    video_filename VARCHAR(255),
+    occasion_type VARCHAR(50) DEFAULT NULL,
+    platform_posted VARCHAR(50) DEFAULT NULL,
+    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_automation (automation_id),
+    INDEX idx_cycle (cycle_number),
+    INDEX idx_used_at (used_at)
+);
+
+CREATE TABLE IF NOT EXISTS prankwish_social_content (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    occasion_key VARCHAR(50) NOT NULL,
+    occasion_name VARCHAR(100) NOT NULL,
+    platform VARCHAR(50) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    description TEXT NOT NULL,
+    hashtags TEXT NOT NULL,
+    call_to_action VARCHAR(255) DEFAULT 'Visit prankwish.com to create your own!',
+    is_active TINYINT(1) DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_occasion_platform (occasion_key, platform),
+    INDEX idx_occasion (occasion_key),
+    INDEX idx_platform (platform),
+    INDEX idx_active (is_active)
+);
+
+CREATE TABLE IF NOT EXISTS prankwish_settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    setting_key VARCHAR(100) NOT NULL UNIQUE,
+    setting_value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 -- Settings Table (for global settings)
 CREATE TABLE IF NOT EXISTS settings (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -218,6 +275,15 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('default_language', 'en'),
 ('local_agent_pairing_token', ''),
 ('panel_public_base_url', '')
+ON DUPLICATE KEY UPDATE setting_value = setting_value;
+
+INSERT INTO prankwish_settings (setting_key, setting_value) VALUES
+('system_enabled', '1'),
+('current_cycle', '1'),
+('total_cycles', '20'),
+('bottom_tagline_default', 'prankwish.com'),
+('enable_occasion_detection', '0'),
+('enable_social_content', '1')
 ON DUPLICATE KEY UPDATE setting_value = setting_value;
 
 CREATE TABLE IF NOT EXISTS local_agents (

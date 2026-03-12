@@ -127,6 +127,15 @@ try {
         if (!in_array('ftp_password', $apiKeyColumns)) {
             $pdo->exec("ALTER TABLE api_keys ADD COLUMN ftp_password VARCHAR(255)");
         }
+        if (!in_array('ftp_port', $apiKeyColumns)) {
+            $pdo->exec("ALTER TABLE api_keys ADD COLUMN ftp_port INT DEFAULT 21");
+        }
+        if (!in_array('cdn_hostname', $apiKeyColumns)) {
+            $pdo->exec("ALTER TABLE api_keys ADD COLUMN cdn_hostname VARCHAR(255)");
+        }
+        if (!in_array('pull_zone_id', $apiKeyColumns)) {
+            $pdo->exec("ALTER TABLE api_keys ADD COLUMN pull_zone_id VARCHAR(255)");
+        }
 
         // Ensure video_jobs has completed_at for compatibility with newer runners
         try {
@@ -156,6 +165,18 @@ try {
         }
         if (!in_array('ai_tagline_prompt', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN ai_tagline_prompt TEXT");
+        }
+        if (!in_array('prankwish_enabled', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_enabled TINYINT(1) DEFAULT 0");
+        }
+        if (!in_array('prankwish_occasion', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_occasion VARCHAR(50) DEFAULT NULL");
+        }
+        if (!in_array('prankwish_cycle_override', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_cycle_override INT DEFAULT NULL");
+        }
+        if (!in_array('prankwish_use_universal', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_use_universal TINYINT(1) DEFAULT 1");
         }
         
         // Add progress tracking columns
@@ -400,6 +421,83 @@ try {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS prankwish_universal_taglines (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                cycle_number INT NOT NULL UNIQUE,
+                top_tagline VARCHAR(255) NOT NULL,
+                bottom_tagline VARCHAR(255) DEFAULT 'prankwish.com',
+                emoji VARCHAR(50) DEFAULT '',
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_cycle (cycle_number),
+                INDEX idx_active (is_active)
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS prankwish_usage_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                automation_id INT NOT NULL,
+                job_id INT DEFAULT NULL,
+                cycle_number INT NOT NULL,
+                top_tagline_used VARCHAR(255) NOT NULL,
+                video_filename VARCHAR(255),
+                occasion_type VARCHAR(50) DEFAULT NULL,
+                platform_posted VARCHAR(50) DEFAULT NULL,
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_automation (automation_id),
+                INDEX idx_cycle (cycle_number),
+                INDEX idx_used_at (used_at)
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS prankwish_social_content (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                occasion_key VARCHAR(50) NOT NULL,
+                occasion_name VARCHAR(100) NOT NULL,
+                platform VARCHAR(50) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                description TEXT NOT NULL,
+                hashtags TEXT NOT NULL,
+                call_to_action VARCHAR(255) DEFAULT 'Visit prankwish.com to create your own!',
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_occasion_platform (occasion_key, platform),
+                INDEX idx_occasion (occasion_key),
+                INDEX idx_platform (platform),
+                INDEX idx_active (is_active)
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS prankwish_settings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) NOT NULL UNIQUE,
+                setting_value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        ");
+
+        $stmtPrankWishSetting = $pdo->prepare("
+            INSERT INTO prankwish_settings (setting_key, setting_value)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+        ");
+        foreach ([
+            'system_enabled' => '1',
+            'current_cycle' => '1',
+            'total_cycles' => '20',
+            'bottom_tagline_default' => 'prankwish.com',
+            'enable_occasion_detection' => '0',
+            'enable_social_content' => '1',
+        ] as $settingKey => $settingValue) {
+            $stmtPrankWishSetting->execute([$settingKey, $settingValue]);
+        }
         
         // Add missing columns to postforme_posts for existing installs
         try {
@@ -526,6 +624,10 @@ try {
                 short_aspect_ratio VARCHAR(10) DEFAULT '9:16',
                 ai_taglines_enabled TINYINT(1) DEFAULT 0,
                 ai_tagline_prompt TEXT,
+                prankwish_enabled TINYINT(1) DEFAULT 0,
+                prankwish_occasion VARCHAR(50) DEFAULT NULL,
+                prankwish_cycle_override INT DEFAULT NULL,
+                prankwish_use_universal TINYINT(1) DEFAULT 1,
                 branding_text_top VARCHAR(255),
                 branding_text_bottom VARCHAR(255),
                 random_words JSON,
@@ -577,6 +679,59 @@ try {
                 platform VARCHAR(50),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS prankwish_universal_taglines (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                cycle_number INT NOT NULL UNIQUE,
+                top_tagline VARCHAR(255) NOT NULL,
+                bottom_tagline VARCHAR(255) DEFAULT 'prankwish.com',
+                emoji VARCHAR(50) DEFAULT '',
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_cycle (cycle_number),
+                INDEX idx_active (is_active)
+            );
+
+            CREATE TABLE IF NOT EXISTS prankwish_usage_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                automation_id INT NOT NULL,
+                job_id INT DEFAULT NULL,
+                cycle_number INT NOT NULL,
+                top_tagline_used VARCHAR(255) NOT NULL,
+                video_filename VARCHAR(255),
+                occasion_type VARCHAR(50) DEFAULT NULL,
+                platform_posted VARCHAR(50) DEFAULT NULL,
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_automation (automation_id),
+                INDEX idx_cycle (cycle_number),
+                INDEX idx_used_at (used_at)
+            );
+
+            CREATE TABLE IF NOT EXISTS prankwish_social_content (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                occasion_key VARCHAR(50) NOT NULL,
+                occasion_name VARCHAR(100) NOT NULL,
+                platform VARCHAR(50) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                description TEXT NOT NULL,
+                hashtags TEXT NOT NULL,
+                call_to_action VARCHAR(255) DEFAULT 'Visit prankwish.com to create your own!',
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_occasion_platform (occasion_key, platform),
+                INDEX idx_occasion (occasion_key),
+                INDEX idx_platform (platform),
+                INDEX idx_active (is_active)
+            );
+
+            CREATE TABLE IF NOT EXISTS prankwish_settings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) NOT NULL UNIQUE,
+                setting_value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             );
             
             CREATE TABLE IF NOT EXISTS settings (
@@ -666,6 +821,22 @@ try {
                 UNIQUE KEY unique_video_per_cycle (automation_id, video_identifier, cycle_number)
             );
         ");
+
+        $stmtPrankWishSetting = $pdo->prepare("
+            INSERT INTO prankwish_settings (setting_key, setting_value)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+        ");
+        foreach ([
+            'system_enabled' => '1',
+            'current_cycle' => '1',
+            'total_cycles' => '20',
+            'bottom_tagline_default' => 'prankwish.com',
+            'enable_occasion_detection' => '0',
+            'enable_social_content' => '1',
+        ] as $settingKey => $settingValue) {
+            $stmtPrankWishSetting->execute([$settingKey, $settingValue]);
+        }
     }
     
 } catch (PDOException $e) {

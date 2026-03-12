@@ -363,6 +363,10 @@ class FFmpegProcessor {
         if (!is_dir($outputDir)) {
             mkdir($outputDir, 0777, true);
         }
+
+        // Keep output broadly compatible with hosted upload APIs.
+        $videoEncodeArgs = '-c:v libx264 -preset fast -crf 23 -profile:v high -level 4.1 -pix_fmt yuv420p -movflags +faststart -r 30';
+        $audioEncodeArgs = '-c:a aac -b:a 128k -ar 48000';
         
         // Build FFmpeg command - with colorful PNG emoji overlay
         if ($hasEmoji && isset($this->emojiXOffset)) {
@@ -374,7 +378,7 @@ class FFmpegProcessor {
             // Filter complex: apply video filters, then overlay emoji PNG
             // Emoji size 48x48 to match font size, position at end of text line
             $command = sprintf(
-                '"%s" -y -ss %s -t %d -i "%s" -i "%s" -filter_complex "[0:v]%s[text];[1:v]scale=48:48[emoji];[text][emoji]overlay=x=(main_w/2)+%d:y=%d" %s -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
+                '"%s" -y -ss %s -t %d -i "%s" -i "%s" -filter_complex "[0:v]%s[text];[1:v]scale=48:48[emoji];[text][emoji]overlay=x=(main_w/2)+%d:y=%d" %s %s %s "%s" 2>&1',
                 $this->ffmpegPath,
                 $startTime,
                 $duration,
@@ -384,19 +388,23 @@ class FFmpegProcessor {
                 (int)$emojiXOffset,
                 (int)$emojiY,
                 $audioFilter !== null ? '-af "' . $audioFilter . '"' : '',
+                $videoEncodeArgs,
+                $audioEncodeArgs,
                 $outputPathSafe
             );
             file_put_contents($debugLog, "  COLORFUL EMOJI: {$emojiPngInput} at x=w/2+{$emojiXOffset}, y={$emojiY}\n", FILE_APPEND);
         } else {
             // Standard command without emoji
             $command = sprintf(
-                '"%s" -y -ss %s -t %d -i "%s" -vf "%s" %s -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "%s" 2>&1',
+                '"%s" -y -ss %s -t %d -i "%s" -vf "%s" %s %s %s "%s" 2>&1',
                 $this->ffmpegPath,
                 $startTime,
                 $duration,
                 $inputPathSafe,
                 $filterString,
                 $audioFilter !== null ? '-af "' . $audioFilter . '"' : '',
+                $videoEncodeArgs,
+                $audioEncodeArgs,
                 $outputPathSafe
             );
             file_put_contents($debugLog, "  No emoji PNG available\n", FILE_APPEND);
