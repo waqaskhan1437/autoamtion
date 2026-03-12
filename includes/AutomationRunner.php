@@ -11,6 +11,7 @@ require_once __DIR__ . '/WhisperAPI.php';
 require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
+require_once __DIR__ . '/FacebookSafeVideoHelper.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishSocialContent.php';
@@ -1326,38 +1327,68 @@ class AutomationRunner {
                 $options['scheduled_at'] = $scheduledAt;
                 $this->log('postforme_schedule', 'info', "Post scheduled for: {$scheduledAt}", $videoId, 'postforme');
             }
-            
-            // Post video to all selected accounts
-            $result = $postForMe->postVideo($videoPath, $postCaption, $accountIds, $options);
-            
-            // Log detailed result for debugging
-            $safeResult = $this->redactSensitiveData($result);
-            $this->log('postforme_debug', 'info', 'API Response: ' . json_encode($safeResult), $videoId, 'postforme');
-            
-            if ($result['success']) {
-                $postId = $result['post_id'] ?? 'unknown';
-                $scheduleInfo = $scheduledAt ? " (scheduled: {$scheduledAt})" : ' (immediate)';
-                $this->log('postforme_success', 'success', "Posted via Post for Me (ID: {$postId}) to " . count($accountIds) . " accounts" . $scheduleInfo, $videoId, 'postforme');
-                if ($scheduledAt) {
-                    $stats['scheduled']++;
-                    $this->log('posting', 'success', "SCHEDULED! Post ID: {$postId} (scheduled: {$scheduledAt})", $videoId, 'postforme');
+
+            $preparedVideo = [
+                'success' => true,
+                'path' => $videoPath,
+                'cleanup' => false,
+                'transcoded' => false,
+                'platforms' => [],
+            ];
+
+            try {
+                $preparedVideo = FacebookSafeVideoHelper::prepareVideoForAccounts($postForMe, (string)$videoPath, $accountIds, $this->pdo);
+                if (empty($preparedVideo['success'])) {
+                    throw new Exception((string) ($preparedVideo['error'] ?? 'Unable to prepare upload video'));
+                }
+
+                if (!empty($preparedVideo['transcoded'])) {
+                    $platformSummary = FacebookSafeVideoHelper::describePlatforms((array) ($preparedVideo['platforms'] ?? []));
+                    $safePath = (string) ($preparedVideo['path'] ?? $videoPath);
+                    $safeSizeMb = is_file($safePath) ? round(filesize($safePath) / 1024 / 1024, 1) : 0;
+                    $this->log(
+                        'postforme_info',
+                        'info',
+                        'Prepared Facebook-safe upload copy for ' . $platformSummary . ': ' . basename($safePath) . " ({$safeSizeMb}MB)",
+                        $videoId,
+                        'postforme'
+                    );
+                }
+
+                // Post video to all selected accounts
+                $result = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $videoPath), $postCaption, $accountIds, $options);
+
+                // Log detailed result for debugging
+                $safeResult = $this->redactSensitiveData($result);
+                $this->log('postforme_debug', 'info', 'API Response: ' . json_encode($safeResult), $videoId, 'postforme');
+
+                if ($result['success']) {
+                    $postId = $result['post_id'] ?? 'unknown';
+                    $scheduleInfo = $scheduledAt ? " (scheduled: {$scheduledAt})" : ' (immediate)';
+                    $this->log('postforme_success', 'success', "Posted via Post for Me (ID: {$postId}) to " . count($accountIds) . " accounts" . $scheduleInfo, $videoId, 'postforme');
+                    if ($scheduledAt) {
+                        $stats['scheduled']++;
+                        $this->log('posting', 'success', "SCHEDULED! Post ID: {$postId} (scheduled: {$scheduledAt})", $videoId, 'postforme');
+                    } else {
+                        $stats['posted']++;
+                        $this->log('posting', 'success', "POSTED! Post ID: {$postId}", $videoId, 'postforme');
+                    }
+
+                    // Log the post to postforme_posts table
+                    $this->logPostForMePost($postId, $videoId, $postCaption, $accountIds, $scheduledAt);
+
+                    // Get and log individual results per platform (skip polling for scheduled posts)
+                    if (!empty($result['post_id']) && !$scheduledAt) {
+                        $this->pollPostForMeResults($postForMe, $result['post_id'], $videoId);
+                    }
                 } else {
-                    $stats['posted']++;
-                    $this->log('posting', 'success', "POSTED! Post ID: {$postId}", $videoId, 'postforme');
+                    $error = $result['error'] ?? 'Unknown error';
+                    $rawResponse = isset($result['raw']) ? ' | Raw: ' . substr($result['raw'] ?? '', 0, 500) : '';
+                    $httpCode = isset($result['http_code']) ? ' | HTTP: ' . $result['http_code'] : '';
+                    $this->log('postforme_error', 'error', 'Post for Me failed: ' . $error . $httpCode . $rawResponse, $videoId, 'postforme');
                 }
-                
-                // Log the post to postforme_posts table
-                $this->logPostForMePost($postId, $videoId, $postCaption, $accountIds, $scheduledAt);
-                
-                // Get and log individual results per platform (skip polling for scheduled posts)
-                if (!empty($result['post_id']) && !$scheduledAt) {
-                    $this->pollPostForMeResults($postForMe, $result['post_id'], $videoId);
-                }
-            } else {
-                $error = $result['error'] ?? 'Unknown error';
-                $rawResponse = isset($result['raw']) ? ' | Raw: ' . substr($result['raw'] ?? '', 0, 500) : '';
-                $httpCode = isset($result['http_code']) ? ' | HTTP: ' . $result['http_code'] : '';
-                $this->log('postforme_error', 'error', 'Post for Me failed: ' . $error . $httpCode . $rawResponse, $videoId, 'postforme');
+            } finally {
+                FacebookSafeVideoHelper::cleanupPreparedVideo($preparedVideo);
             }
             
         } catch (Exception $e) {

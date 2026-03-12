@@ -238,6 +238,7 @@ try {
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
+    require_once __DIR__ . '/../includes/FacebookSafeVideoHelper.php';
     require_once __DIR__ . '/../includes/PrankWishSocialContent.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
@@ -1130,66 +1131,96 @@ foreach ($videos as $index => $video) {
                     $postOptions['scheduled_at'] = $scheduledAt;
                 }
 
-                $postResult = $postForMe->postVideo($outputPath, $caption, $pfAccounts, $postOptions);
-                if ($postResult['success']) {
-                    $postId = $postResult['post_id'] ?? 'unknown';
-                    $dbScheduledAt = null;
-                    if (!empty($scheduledAt)) {
-                        $ts = strtotime((string)$scheduledAt);
-                        if ($ts !== false) {
-                            $dbScheduledAt = gmdate('Y-m-d H:i:s', $ts);
-                        }
+                $preparedVideo = [
+                    'success' => true,
+                    'path' => $outputPath,
+                    'cleanup' => false,
+                    'transcoded' => false,
+                    'platforms' => [],
+                ];
+
+                try {
+                    $preparedVideo = FacebookSafeVideoHelper::prepareVideoForAccounts($postForMe, $outputPath, $pfAccounts, $pdo);
+                    if (empty($preparedVideo['success'])) {
+                        throw new Exception((string) ($preparedVideo['error'] ?? 'Unable to prepare upload video'));
                     }
 
-                    try {
-                        $existingStmt = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
-                        $existingStmt->execute([$postId]);
-                        $existingPostId = $existingStmt->fetchColumn();
-                        $localStatus = $dbScheduledAt ? 'scheduled' : 'pending';
-                        $accountsJson = json_encode(array_values($pfAccounts));
+                    if (!empty($preparedVideo['transcoded'])) {
+                        $platformSummary = FacebookSafeVideoHelper::describePlatforms((array) ($preparedVideo['platforms'] ?? []));
+                        $safePath = (string) ($preparedVideo['path'] ?? $outputPath);
+                        $safeSizeMb = is_file($safePath) ? round(filesize($safePath) / 1024 / 1024, 1) : 0;
+                        sendProgress(
+                            'posting',
+                            'info',
+                            "Prepared Facebook-safe upload copy for {$platformSummary}: " . basename($safePath) . " ({$safeSizeMb}MB)",
+                            $clipProgressBase + ($progressPerVideo * 0.14),
+                            $stats
+                        );
+                    }
 
-                        if ($existingPostId) {
-                            $upStmt = $pdo->prepare("
-                                UPDATE postforme_posts
-                                SET automation_id = ?,
-                                    video_id = ?,
-                                    caption = ?,
-                                    account_ids = ?,
-                                    status = ?,
-                                    scheduled_at = ?
-                                WHERE id = ?
-                            ");
-                            $upStmt->execute([$automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
+                    $postResult = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $outputPath), $caption, $pfAccounts, $postOptions);
+                    if ($postResult['success']) {
+                        $postId = $postResult['post_id'] ?? 'unknown';
+                        $dbScheduledAt = null;
+                        if (!empty($scheduledAt)) {
+                            $ts = strtotime((string)$scheduledAt);
+                            if ($ts !== false) {
+                                $dbScheduledAt = gmdate('Y-m-d H:i:s', $ts);
+                            }
+                        }
+
+                        try {
+                            $existingStmt = $pdo->prepare("SELECT id FROM postforme_posts WHERE post_id = ? LIMIT 1");
+                            $existingStmt->execute([$postId]);
+                            $existingPostId = $existingStmt->fetchColumn();
+                            $localStatus = $dbScheduledAt ? 'scheduled' : 'pending';
+                            $accountsJson = json_encode(array_values($pfAccounts));
+
+                            if ($existingPostId) {
+                                $upStmt = $pdo->prepare("
+                                    UPDATE postforme_posts
+                                    SET automation_id = ?,
+                                        video_id = ?,
+                                        caption = ?,
+                                        account_ids = ?,
+                                        status = ?,
+                                        scheduled_at = ?
+                                    WHERE id = ?
+                                ");
+                                $upStmt->execute([$automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt, (int)$existingPostId]);
+                            } else {
+                                $insStmt = $pdo->prepare("
+                                    INSERT INTO postforme_posts (post_id, automation_id, video_id, caption, account_ids, status, scheduled_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                                ");
+                                $insStmt->execute([$postId, $automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
+                            }
+                        } catch (Exception $e) {
+                            error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
+                        }
+
+                        if ($scheduledAt) {
+                            $stats['scheduled']++;
+                            sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                         } else {
-                            $insStmt = $pdo->prepare("
-                                INSERT INTO postforme_posts (post_id, automation_id, video_id, caption, account_ids, status, scheduled_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                            ");
-                            $insStmt->execute([$postId, $automationId, $segmentVideoName, $caption, $accountsJson, $localStatus, $dbScheduledAt]);
+                            $stats['posted']++;
+                            sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
                         }
-                    } catch (Exception $e) {
-                        error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
-                    }
 
-                    if ($scheduledAt) {
-                        $stats['scheduled']++;
-                        sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                        try {
+                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                            $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
+                        } catch (Exception $e) {}
                     } else {
-                        $stats['posted']++;
-                        sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                        $errMsg = $postResult['error'] ?? 'Unknown error';
+                        sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                        try {
+                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                            $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
+                        } catch (Exception $e) {}
                     }
-
-                    try {
-                        $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
-                    } catch (Exception $e) {}
-                } else {
-                    $errMsg = $postResult['error'] ?? 'Unknown error';
-                    sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
-                    try {
-                        $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
-                    } catch (Exception $e) {}
+                } finally {
+                    FacebookSafeVideoHelper::cleanupPreparedVideo($preparedVideo);
                 }
             } catch (Exception $e) {
                 sendProgress('posting', 'error', "Posting error for {$clipLabel}: " . $e->getMessage(), $clipProgressBase + ($progressPerVideo * 0.18), $stats);
