@@ -383,12 +383,23 @@ class FacebookScheduledPostQueue
 
     private static function normalizeDateTime(string $value): ?string
     {
-        $ts = strtotime($value);
-        if ($ts === false) {
+        $value = trim($value);
+        if ($value === '') {
             return null;
         }
 
-        return gmdate('Y-m-d H:i:s', $ts);
+        try {
+            if (preg_match('/(?:Z|[+\-]\d{2}:\d{2})$/', $value)) {
+                $dt = new DateTimeImmutable($value);
+            } else {
+                // Runner markers store UTC without an explicit offset.
+                $dt = new DateTimeImmutable($value, new DateTimeZone('UTC'));
+            }
+
+            return $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        } catch (Exception $e) {
+            return null;
+        }
     }
 
     private static function summarizeErrors(array $errors): string
