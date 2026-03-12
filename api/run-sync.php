@@ -203,48 +203,8 @@ function createManualVideoEntries($rawLinks) {
 }
 
 function downloadManualVideoFromUrl($url, $localPath) {
-    if (!function_exists('curl_init')) {
-        throw new Exception('cURL extension is required for manual link downloads.');
-    }
-
-    $directory = dirname($localPath);
-    if (!is_dir($directory) && !@mkdir($directory, 0777, true)) {
-        throw new Exception('Unable to create temp directory for download.');
-    }
-
-    $fp = @fopen($localPath, 'wb');
-    if (!$fp) {
-        throw new Exception('Unable to open local file for writing.');
-    }
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_FILE => $fp,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 8,
-        CURLOPT_CONNECTTIMEOUT => 25,
-        CURLOPT_TIMEOUT => 900,
-        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36',
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_FAILONERROR => false
-    ]);
-
-    $ok = curl_exec($ch);
-    $error = $ok ? '' : curl_error($ch);
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    fclose($fp);
-
-    clearstatcache(true, $localPath);
-    if (!$ok || $httpCode >= 400 || !file_exists($localPath) || filesize($localPath) <= 0) {
-        @unlink($localPath);
-        $statusMessage = $httpCode > 0 ? "HTTP {$httpCode}" : 'connection error';
-        $errorMessage = $error !== '' ? $error : $statusMessage;
-        throw new Exception('Manual download failed: ' . $errorMessage);
-    }
-
-    return true;
+    $downloader = new ManualVideoDownloader();
+    return $downloader->download((string)$url, (string)$localPath);
 }
 
 function getYouTubeChannelUrlSync($automation) {
@@ -280,6 +240,7 @@ try {
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
+    require_once __DIR__ . '/../includes/ManualVideoDownloader.php';
     
     // Set global references for database updates
     $globalPdo = $pdo;
@@ -797,7 +758,10 @@ foreach ($videos as $index => $video) {
         
         $isManualVideo = is_array($video) && !empty($video['manual_url']);
         if ($isManualVideo) {
-            $downloadResult = downloadManualVideoFromUrl($remotePath, $localPath);
+            $localPath = downloadManualVideoFromUrl($remotePath, $localPath);
+            $videoName = basename($localPath);
+            $outputPath = $outputDir . '/short_' . pathinfo($videoName, PATHINFO_FILENAME) . '_' . time() . '.mp4';
+            $downloadResult = file_exists($localPath) && filesize($localPath) > 0;
         } elseif ($isYouTubeSource) {
             if (!$youtubeSourceClient) {
                 $youtubeSourceClient = new YouTubeSource(getYouTubeChannelUrlSync($automation));
