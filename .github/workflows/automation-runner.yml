@@ -133,7 +133,7 @@ jobs:
           VW_FFPROBE_PATH: ffprobe
           VW_YTDLP_COOKIES_FILE: /home/runner/.cache/yt-dlp/youtube/cookies.txt
           RUNNER_CALLBACK_URL: ${{ vars.GH_RUNNER_CALLBACK_URL }}
-          RUNNER_CALLBACK_SECRET: ${{ vars.GH_RUNNER_CALLBACK_SECRET }}
+          RUNNER_CALLBACK_SECRET: ${{ secrets.GH_RUNNER_CALLBACK_SECRET }}
         run: |
           php -v
           php scripts/github-runner-job.php "${{ steps.payload.outputs.automation_id }}"

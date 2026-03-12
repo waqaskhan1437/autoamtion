@@ -2,12 +2,72 @@
 require_once 'config.php';
 require_once 'includes/auth_gate.php';
 
-vwm_require_app_user($pdo, true);
+vwm_require_app_user($pdo);
 require_once 'includes/RuntimeBootstrap.php';
 require_once 'includes/FFmpegProcessor.php';
+require_once 'includes/PublicTunnelManager.php';
 
 $message = '';
 $messageType = 'success';
+
+function normalizeGithubWorkflowInput($rawInput): string
+{
+    $workflow = trim((string)$rawInput);
+    if ($workflow === '' || strcasecmp($workflow, 'automation-runner-self-hosted.yml') === 0) {
+        return 'automation-runner.yml';
+    }
+
+    return $workflow;
+}
+
+function detectProjectCookiesFile(): string
+{
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . 'cookies.txt';
+    return (is_file($candidate) && filesize($candidate) > 0) ? $candidate : '';
+}
+
+function detectCurrentAppBasePath(): string
+{
+    $path = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/')));
+    if ($path === '/' || $path === '.') {
+        return '';
+    }
+
+    return rtrim($path, '/');
+}
+
+function saveGithubRunnerSettings(PDO $pdo, array $post): array
+{
+    $saved = [
+        'github_runner_enabled' => isset($post['github_runner_enabled']) ? '1' : '0',
+        'github_runner_token' => trim((string)($post['github_runner_token'] ?? '')),
+        'github_runner_owner' => trim((string)($post['github_runner_owner'] ?? '')),
+        'github_runner_repo' => trim((string)($post['github_runner_repo'] ?? '')),
+        'github_runner_workflow' => normalizeGithubWorkflowInput($post['github_runner_workflow'] ?? 'automation-runner.yml'),
+        'github_runner_ref' => trim((string)($post['github_runner_ref'] ?? 'main')),
+        'github_runner_inputs_json' => trim((string)($post['github_runner_inputs_json'] ?? '')),
+        'github_runner_callback_secret' => trim((string)($post['github_runner_callback_secret'] ?? '')),
+        'ytdlp_cookies_file' => trim((string)($post['ytdlp_cookies_file'] ?? '')),
+        'ytdlp_cookies_browser' => trim((string)($post['ytdlp_cookies_browser'] ?? '')),
+        'ytdlp_cookies_browser_profile' => trim((string)($post['ytdlp_cookies_browser_profile'] ?? '')),
+        'panel_public_base_url' => trim((string)($post['panel_public_base_url'] ?? '')),
+    ];
+
+    $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+    foreach ($saved as $key => $value) {
+        $stmt->execute([$key, $value]);
+    }
+
+    return $saved;
+}
+
+function githubRunnerConfigured(array $settings): bool
+{
+    return trim((string)($settings['github_runner_enabled'] ?? '0')) === '1'
+        && trim((string)($settings['github_runner_token'] ?? '')) !== ''
+        && trim((string)($settings['github_runner_owner'] ?? '')) !== ''
+        && trim((string)($settings['github_runner_repo'] ?? '')) !== '';
+}
 
 // Load current settings
 $settings = [];
@@ -16,9 +76,16 @@ while ($row = $stmt->fetch()) {
     $settings[$row['setting_key']] = $row['setting_value'];
 }
 
+if (isset($settings['github_runner_workflow'])) {
+    $settings['github_runner_workflow'] = normalizeGithubWorkflowInput($settings['github_runner_workflow']);
+}
+
 $runtimeBootstrap = new RuntimeBootstrap($pdo);
 $runtimeStatus = $runtimeBootstrap->getStatus();
 $ffmpegAvailable = !empty($runtimeStatus['available']);
+$projectCookiesFile = detectProjectCookiesFile();
+$publicTunnelManager = new PublicTunnelManager();
+$publicTunnelStatus = $publicTunnelManager->getStatus();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -166,20 +233,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = 'Post for Me settings saved';
         
     } elseif ($action === 'save_github_runner') {
+        $settings = array_merge($settings, saveGithubRunnerSettings($pdo, $_POST));
+        $publicBaseUrl = trim((string)($settings['panel_public_base_url'] ?? ''));
+        $callbackSecret = trim((string)($settings['github_runner_callback_secret'] ?? ''));
+        if ($publicBaseUrl !== '' && $callbackSecret !== '' && githubRunnerConfigured($settings)) {
+            require_once 'includes/GitHubRunner.php';
+            $runner = new GitHubRunner($pdo);
+            $sync = $runner->syncHostedCallbackConfig($publicBaseUrl, $callbackSecret);
+            if ($sync['success']) {
+                $message = 'GitHub runner settings saved and callback synced';
+            } else {
+                $message = 'GitHub runner settings saved, but callback sync failed: ' . ($sync['error'] ?? 'Unknown error');
+                $messageType = 'error';
+            }
+        } else {
+            $message = 'GitHub runner settings saved';
+        }
+    } elseif ($action === 'start_public_tunnel') {
+        $settings = array_merge($settings, saveGithubRunnerSettings($pdo, $_POST));
+        $result = $publicTunnelManager->startTunnel(80);
+        if ($result['success']) {
+            $publicBaseUrl = $publicTunnelManager->buildPublicBaseUrl(
+                (string)($result['public_origin'] ?? ''),
+                detectCurrentAppBasePath()
+            );
+            $callbackSecret = trim((string)($settings['github_runner_callback_secret'] ?? ''));
+            if ($callbackSecret === '') {
+                $callbackSecret = bin2hex(random_bytes(16));
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+            $stmt->execute(['panel_public_base_url', $publicBaseUrl]);
+            $stmt->execute(['github_runner_callback_secret', $callbackSecret]);
+            $settings['panel_public_base_url'] = $publicBaseUrl;
+            $settings['github_runner_callback_secret'] = $callbackSecret;
+
+            if (githubRunnerConfigured($settings)) {
+                require_once 'includes/GitHubRunner.php';
+                $runner = new GitHubRunner($pdo);
+                $sync = $runner->syncHostedCallbackConfig($publicBaseUrl, $callbackSecret);
+                if ($sync['success']) {
+                    $message = 'Public URL started and GitHub callback synced: ' . $publicBaseUrl;
+                } else {
+                    $message = 'Public URL started, but GitHub callback sync failed: ' . ($sync['error'] ?? 'Unknown error');
+                    $messageType = 'error';
+                }
+            } else {
+                $message = 'Public URL started: ' . $publicBaseUrl;
+            }
+        } else {
+            $message = $result['error'] ?? 'Public URL tunnel start failed';
+            $messageType = 'error';
+        }
+    } elseif ($action === 'stop_public_tunnel') {
+        $result = $publicTunnelManager->stopTunnel();
         $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-        $stmt->execute(['github_runner_enabled', isset($_POST['github_runner_enabled']) ? '1' : '0']);
-        $stmt->execute(['github_runner_token', $_POST['github_runner_token'] ?? '']);
-        $stmt->execute(['github_runner_owner', $_POST['github_runner_owner'] ?? '']);
-        $stmt->execute(['github_runner_repo', $_POST['github_runner_repo'] ?? '']);
-        $stmt->execute(['github_runner_workflow', $_POST['github_runner_workflow'] ?? 'automation-runner.yml']);
-        $stmt->execute(['github_runner_ref', $_POST['github_runner_ref'] ?? 'main']);
-        $stmt->execute(['github_runner_inputs_json', $_POST['github_runner_inputs_json'] ?? '']);
-        $stmt->execute(['github_runner_callback_secret', $_POST['github_runner_callback_secret'] ?? '']);
-        $stmt->execute(['ytdlp_cookies_file', $_POST['ytdlp_cookies_file'] ?? '']);
-        $stmt->execute(['ytdlp_cookies_browser', $_POST['ytdlp_cookies_browser'] ?? '']);
-        $stmt->execute(['ytdlp_cookies_browser_profile', $_POST['ytdlp_cookies_browser_profile'] ?? '']);
-        $stmt->execute(['panel_public_base_url', trim((string)($_POST['panel_public_base_url'] ?? ''))]);
-        $message = 'GitHub runner settings saved';
+        $stmt->execute(['panel_public_base_url', '']);
+        $settings['panel_public_base_url'] = '';
+
+        if (!$result['success']) {
+            $message = $result['error'] ?? 'Public URL tunnel stop failed';
+            $messageType = 'error';
+        } else {
+            if (githubRunnerConfigured($settings)) {
+                require_once 'includes/GitHubRunner.php';
+                $runner = new GitHubRunner($pdo);
+                $sync = $runner->clearHostedCallbackConfig();
+                if (!$sync['success']) {
+                    $message = 'Public URL stopped, but GitHub callback cleanup failed: ' . ($sync['error'] ?? 'Unknown error');
+                    $messageType = 'error';
+                } else {
+                    $message = 'Public URL stopped and GitHub callback cleared';
+                }
+            } else {
+                $message = 'Public URL stopped';
+            }
+        }
+    } elseif ($action === 'sync_github_cookies_secret') {
+        $settings = array_merge($settings, saveGithubRunnerSettings($pdo, $_POST));
+        require_once 'includes/GitHubRunner.php';
+        $runner = new GitHubRunner($pdo);
+        $postedCookiesFile = trim((string)($_POST['ytdlp_cookies_file'] ?? ''));
+        $sourceFile = $postedCookiesFile !== '' ? $postedCookiesFile : ($projectCookiesFile !== '' ? $projectCookiesFile : null);
+        $result = $runner->syncYtdlpCookiesSecret($sourceFile);
+        if ($result['success']) {
+            $message = $result['message'] ?? 'cookies.txt synced to GitHub secret';
+            $deletedSecrets = $result['deleted_secrets'] ?? [];
+            if (is_array($deletedSecrets) && !empty($deletedSecrets)) {
+                $message .= ' Removed old chunk secrets: ' . implode(', ', $deletedSecrets);
+            }
+        } else {
+            $message = $result['error'] ?? 'GitHub cookies secret sync failed';
+            $messageType = 'error';
+        }
         
     } elseif ($action === 'test_github_runner') {
         require_once 'includes/GitHubRunner.php';
@@ -269,6 +415,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $runtimeBootstrap = new RuntimeBootstrap($pdo);
     $runtimeStatus = $runtimeBootstrap->getStatus();
     $ffmpegAvailable = !empty($runtimeStatus['available']);
+    $publicTunnelManager = new PublicTunnelManager();
+    $publicTunnelStatus = $publicTunnelManager->getStatus();
 }
 
 $activeTab = $_GET['tab'] ?? 'bunny';
@@ -833,7 +981,7 @@ include 'includes/header.php';
         <div class="p-4 border-b border-gray-800 flex items-center justify-between">
             <h3 class="font-semibold flex items-center gap-2">
                 <svg class="w-5 h-5 text-sky-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 .5C5.65.5.5 5.66.5 12.02c0 5.09 3.29 9.39 7.86 10.91.58.11.8-.25.8-.56v-2c-3.2.7-3.87-1.54-3.87-1.54-.52-1.34-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.7 1.26 3.36.97.1-.75.4-1.26.72-1.55-2.55-.3-5.23-1.28-5.23-5.71 0-1.26.45-2.28 1.18-3.08-.12-.3-.51-1.52.11-3.16 0 0 .97-.31 3.18 1.17a10.96 10.96 0 0 1 5.79 0c2.21-1.48 3.18-1.17 3.18-1.17.62 1.64.23 2.86.11 3.16.73.8 1.18 1.82 1.18 3.08 0 4.44-2.69 5.41-5.26 5.7.41.35.78 1.04.78 2.1v3.12c0 .31.21.67.81.56 4.56-1.53 7.85-5.83 7.85-10.91C23.5 5.66 18.35.5 12 .5z"/></svg>
-                GitHub Runner Dispatch
+                GitHub Hosted Runner
             </h3>
             <?php if (!empty($settings['github_runner_enabled']) && !empty($settings['github_runner_token']) && !empty($settings['github_runner_owner']) && !empty($settings['github_runner_repo'])): ?>
                 <span class="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">Configured</span>
@@ -861,7 +1009,8 @@ include 'includes/header.php';
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Workflow File *</label>
-                    <input type="text" name="github_runner_workflow" value="<?= htmlspecialchars($settings['github_runner_workflow'] ?? 'automation-runner.yml') ?>" placeholder="automation-runner.yml" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                    <input type="text" name="github_runner_workflow" value="<?= htmlspecialchars(normalizeGithubWorkflowInput($settings['github_runner_workflow'] ?? 'automation-runner.yml')) ?>" placeholder="automation-runner.yml" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                    <p class="text-xs text-gray-500 mt-1">Hosted workflow `automation-runner.yml` use hota hai. Old self-hosted name automatically replace ho jayega.</p>
                 </div>
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Branch / Ref *</label>
@@ -889,20 +1038,40 @@ include 'includes/header.php';
             <div>
                 <label class="block text-sm text-gray-400 mb-1">Public Panel Base URL</label>
                 <input type="text" name="panel_public_base_url" value="<?= htmlspecialchars($settings['panel_public_base_url'] ?? '') ?>" placeholder="https://app.example.com/autoamtion-main" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
-                <p class="text-xs text-gray-500 mt-1">Local agent callbacks aur magic login links isi base URL se generate honge. Blank chhorne par current host use hoga.</p>
+                <p class="text-xs text-gray-500 mt-1">Local agent callbacks, GitHub runner callback, aur magic login links isi base URL se generate honge. Blank chhorne par current host use hoga.</p>
+                <?php if (!empty($publicTunnelStatus['public_origin'])): ?>
+                    <p class="text-xs mt-2 <?= !empty($publicTunnelStatus['running']) ? 'text-emerald-400' : 'text-amber-300' ?>">
+                        Public tunnel <?= !empty($publicTunnelStatus['running']) ? 'active' : 'stopped' ?>:
+                        <code><?= htmlspecialchars($publicTunnelManager->buildPublicBaseUrl((string)$publicTunnelStatus['public_origin'], detectCurrentAppBasePath())) ?></code>
+                    </p>
+                <?php endif; ?>
+                <div class="flex flex-wrap gap-3 mt-3">
+                    <button type="submit" formaction="?tab=github_runner" name="action" value="start_public_tunnel" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm font-medium">
+                        <?= !empty($publicTunnelStatus['running']) ? 'Refresh Public URL' : 'Start Public URL' ?>
+                    </button>
+                    <?php if (!empty($publicTunnelStatus['running'])): ?>
+                        <button type="submit" formaction="?tab=github_runner" name="action" value="stop_public_tunnel" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 rounded-lg text-sm font-medium">
+                            Stop Public URL
+                        </button>
+                    <?php endif; ?>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">App localhost.run tunnel use karti hai. URL temporary hoti hai; start karte hi app DB aur GitHub callback config update ho jati hai.</p>
             </div>
 
             <div>
                 <label class="block text-sm text-gray-400 mb-1">Local yt-dlp Cookies File (optional)</label>
                 <input type="text" name="ytdlp_cookies_file" value="<?= htmlspecialchars($settings['ytdlp_cookies_file'] ?? '') ?>" placeholder="C:\Users\YourName\Downloads\youtube-cookies.txt" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
-                <p class="text-xs text-gray-500 mt-1">Ye sirf local machine par use hota hai. GitHub runner ke liye same cookies file ko repo secret <code>YTDLP_COOKIES_B64</code> ke naam se add karein.</p>
+                <p class="text-xs text-gray-500 mt-1">Ye sirf local machine par direct use hota hai. Blank chhorne par project root ka <code>cookies.txt</code> auto-try hoga. GitHub runner ke liye sync button isi file ko secret <code>YTDLP_COOKIES_B64</code> mein upload karta hai.</p>
+                <?php if ($projectCookiesFile !== ''): ?>
+                    <p class="text-xs text-emerald-400 mt-1">Project fallback detected: <code><?= htmlspecialchars($projectCookiesFile) ?></code></p>
+                <?php endif; ?>
             </div>
 
             <div class="grid md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Local yt-dlp Browser (optional)</label>
                     <input type="text" name="ytdlp_cookies_browser" value="<?= htmlspecialchars($settings['ytdlp_cookies_browser'] ?? '') ?>" placeholder="chrome" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
-                    <p class="text-xs text-gray-500 mt-1">Trusted local ya self-hosted Windows runner par direct browser cookies use karne ke liye. Example: <code>chrome</code>.</p>
+                    <p class="text-xs text-gray-500 mt-1">Ye local machine par direct browser cookies use karne ke liye hai. Example: <code>chrome</code>.</p>
                 </div>
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Browser Profile (optional)</label>
@@ -919,15 +1088,24 @@ include 'includes/header.php';
                 Base64 banane ke liye PowerShell:
                 <code>[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content -Raw 'C:\path\youtube-cookies.txt')))</code>
             </div>
+            <div class="p-3 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-100">
+                <strong>One-click sync:</strong> <code>Sync cookies.txt to GitHub</code> button current local file ko secret <code>YTDLP_COOKIES_B64</code> mein upload karta hai aur purane chunk secrets hata deta hai.
+            </div>
             <div class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded text-xs text-emerald-100">
-                <strong>Local/self-hosted shortcut:</strong> trusted Windows machine par <code>Local yt-dlp Browser</code> mein <code>chrome</code> aur profile mein <code>Default</code> save karein. Is surat mein exported <code>cookies.txt</code> ki zarurat nahi hoti, lekin Chrome login tumhare account se hi hoga.
+                <strong>Local mode shortcut:</strong> apni local machine par <code>Local yt-dlp Browser</code> mein <code>chrome</code> aur profile mein <code>Default</code> save karein. Is surat mein exported <code>cookies.txt</code> ki zarurat nahi hoti, lekin Chrome login tumhare account se hi hoga.
+            </div>
+            <div class="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded text-xs text-indigo-100">
+                <strong>Supported setup:</strong> panel mein sirf do runner modes rakhein: <code>Local Runner</code> aur <code>GitHub Runner</code>. GitHub Runner hosted workflow <code>automation-runner.yml</code> par dispatch karega.
             </div>
         </div>
     </div>
 
-    <div class="flex gap-3">
+    <div class="flex flex-wrap gap-3">
         <button type="submit" class="flex-1 py-3 bg-sky-600 hover:bg-sky-700 rounded-lg font-medium">
             Save GitHub Runner Settings
+        </button>
+        <button type="submit" formaction="?tab=github_runner" name="action" value="sync_github_cookies_secret" class="px-6 py-3 bg-amber-600 hover:bg-amber-700 rounded-lg font-medium">
+            Sync cookies.txt to GitHub
         </button>
         <button type="submit" formaction="?tab=github_runner" name="action" value="test_github_runner" class="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium">
             Test Connection
