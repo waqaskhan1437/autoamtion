@@ -3461,6 +3461,10 @@ function renderPostCard(post, isUpcoming) {
     const status = String(post.status || '').toLowerCase().trim();
     const statusClass = status === 'scheduled' ? 'bg-indigo-900 text-indigo-300' : 'bg-amber-900 text-amber-300';
     const statusBadge = `<span class="text-[11px] px-2 py-1 rounded ${statusClass}">${escapeHtml(status.toUpperCase())}</span>`;
+    const provider = String(post.provider || 'postforme').toLowerCase().trim();
+    const providerBadge = provider === 'facebook_direct'
+        ? `<span class="text-[11px] px-2 py-1 rounded bg-blue-900 text-blue-300">FACEBOOK DIRECT</span>`
+        : '';
     const captionText = escapeHtml(post.caption || 'No caption');
     const scheduledTime = post.scheduled_at ? escapeHtml(post.scheduled_at) : 'N/A';
     const countdownHtml = isUpcoming
@@ -3478,7 +3482,7 @@ function renderPostCard(post, isUpcoming) {
 
     const postLocalId = Number(post.id) || 0;
     const deleteBtn = isUpcoming && postLocalId > 0
-        ? `<button onclick="deleteScheduledPost(${postLocalId})" class="text-gray-400 hover:text-red-500 p-2 transition-colors" title="Delete Scheduled Post"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>`
+        ? `<button onclick="deleteScheduledPost(${postLocalId}, '${escapeHtml(provider)}')" class="text-gray-400 hover:text-red-500 p-2 transition-colors" title="Delete Scheduled Post"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>`
         : '';
 
     return `<div class="border border-gray-800 rounded-lg p-4 hover:bg-gray-800/30 transition-colors ${isUpcoming ? 'border-l-2 border-l-orange-500' : ''}">
@@ -3486,6 +3490,7 @@ function renderPostCard(post, isUpcoming) {
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2 flex-wrap mb-1">
                     ${statusBadge}
+                    ${providerBadge}
                     <span class="text-xs text-gray-600 font-mono">#${escapeHtml(post.post_id || '')}</span>
                 </div>
                 <p class="text-sm text-gray-300 mt-1">${captionText}</p>
@@ -3548,12 +3553,13 @@ function renderModalPosts(posts) {
     }, 1000);
 }
 
-function deleteScheduledPost(id) {
+function deleteScheduledPost(id, provider = 'postforme') {
     if (!id) return;
     if (!confirm('Are you sure? This will delete the schedule from PostForMe as well.')) return;
 
     const formData = new FormData();
     formData.append('id', id);
+    formData.append('provider', provider || 'postforme');
 
     fetch('api/delete-scheduled-post.php', {
         method: 'POST',

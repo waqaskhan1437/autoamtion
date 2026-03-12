@@ -13,6 +13,7 @@ require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
 require_once __DIR__ . '/FacebookSafeVideoHelper.php';
 require_once __DIR__ . '/FacebookReelsPublisher.php';
+require_once __DIR__ . '/FacebookScheduledPostQueue.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishSocialContent.php';
@@ -1331,41 +1332,47 @@ class AutomationRunner {
 
             $facebookAccounts = [];
             $postForMeAccountIds = $accountIds;
-            if (!$scheduledAt) {
-                $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $accountIds);
-                if (!empty($publishTargets['success'])) {
-                    $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
-                        ? $publishTargets['facebook_accounts']
-                        : [];
-                    $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
-                        ? $publishTargets['postforme_account_ids']
-                        : $accountIds;
+            $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $accountIds);
+            if (!empty($publishTargets['success'])) {
+                $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
+                    ? $publishTargets['facebook_accounts']
+                    : [];
+                $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
+                    ? $publishTargets['postforme_account_ids']
+                    : $accountIds;
 
-                    foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
-                        $warning = trim((string)$warning);
-                        if ($warning !== '') {
-                            $this->log('facebook_direct', 'warning', $warning, $videoId, 'facebook');
-                        }
+                foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
+                    $warning = trim((string)$warning);
+                    if ($warning !== '') {
+                        $this->log('facebook_direct', 'warning', $warning, $videoId, 'facebook');
                     }
+                }
 
-                    if (!empty($facebookAccounts)) {
-                        $this->log(
-                            'facebook_direct',
-                            'info',
-                            'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
-                            $videoId,
-                            'facebook'
-                        );
-                    }
-                } else {
+                if (!empty($facebookAccounts) && !$scheduledAt) {
                     $this->log(
                         'facebook_direct',
-                        'warning',
-                        (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
+                        'info',
+                        'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
+                        $videoId,
+                        'facebook'
+                    );
+                } elseif (!empty($facebookAccounts) && $scheduledAt) {
+                    $this->log(
+                        'facebook_direct',
+                        'info',
+                        'Facebook accounts will use local scheduled publishing at the scheduled time.',
                         $videoId,
                         'facebook'
                     );
                 }
+            } else {
+                $this->log(
+                    'facebook_direct',
+                    'warning',
+                    (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
+                    $videoId,
+                    'facebook'
+                );
             }
 
             $preparedVideo = [
@@ -1428,6 +1435,33 @@ class AutomationRunner {
                         $rawResponse = isset($result['raw']) ? ' | Raw: ' . substr($result['raw'] ?? '', 0, 500) : '';
                         $httpCode = isset($result['http_code']) ? ' | HTTP: ' . $result['http_code'] : '';
                         $this->log('postforme_error', 'error', 'Post for Me failed: ' . $error . $httpCode . $rawResponse, $videoId, 'postforme');
+                    }
+                }
+
+                if ($scheduledAt && !empty($facebookAccounts)) {
+                    $facebookPayload = FacebookReelsPublisher::buildFacebookPayload($postCaption, $options);
+                    $queueResult = FacebookScheduledPostQueue::scheduleFromLocalVideo(
+                        $this->pdo,
+                        $postForMe,
+                        (int)$this->automationId,
+                        (string)$videoId,
+                        (string)($preparedVideo['path'] ?? $videoPath),
+                        $facebookAccounts,
+                        $facebookPayload,
+                        (string)$scheduledAt
+                    );
+
+                    if (!empty($queueResult['success'])) {
+                        if (!$countedAsScheduled) {
+                            $stats['scheduled']++;
+                            $countedAsScheduled = true;
+                        }
+
+                        $queueId = (int)($queueResult['id'] ?? 0);
+                        $this->log('facebook_schedule', 'success', "Scheduled Facebook local queue #{$queueId}", $videoId, 'facebook');
+                    } else {
+                        $errorSummary = trim((string)($queueResult['error'] ?? 'Facebook local scheduling failed.'));
+                        $this->log('facebook_schedule', 'error', $errorSummary, $videoId, 'facebook');
                     }
                 }
 

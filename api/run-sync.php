@@ -23,17 +23,27 @@ while (ob_get_level()) ob_end_clean();
 $globalPdo = null;
 $globalAutomationId = null;
 
-function sendProgress($step, $status, $message, $percent = 0, $stats = []) {
+function sendProgress($step, $status, $message, $percent = 0, $stats = [], $extra = []) {
     global $globalPdo, $globalAutomationId;
-    
-    $data = json_encode([
+
+    $payload = [
         'step' => $step,
         'status' => $status,
         'message' => $message,
         'progress' => $percent,
         'stats' => $stats,
         'time' => date('H:i:s')
-    ]);
+    ];
+
+    if (is_array($extra)) {
+        foreach ($extra as $key => $value) {
+            if (!array_key_exists($key, $payload)) {
+                $payload[$key] = $value;
+            }
+        }
+    }
+
+    $data = json_encode($payload);
     echo "data: {$data}\n\n";
     @ob_flush();
     @flush();
@@ -240,6 +250,7 @@ try {
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
     require_once __DIR__ . '/../includes/FacebookSafeVideoHelper.php';
     require_once __DIR__ . '/../includes/FacebookReelsPublisher.php';
+    require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
     require_once __DIR__ . '/../includes/PrankWishSocialContent.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
@@ -1134,47 +1145,53 @@ foreach ($videos as $index => $video) {
 
                 $facebookAccounts = [];
                 $postForMeAccountIds = $pfAccounts;
-                if (!$scheduledAt) {
-                    $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $pfAccounts);
-                    if (!empty($publishTargets['success'])) {
-                        $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
-                            ? $publishTargets['facebook_accounts']
-                            : [];
-                        $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
-                            ? $publishTargets['postforme_account_ids']
-                            : $pfAccounts;
+                $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $pfAccounts);
+                if (!empty($publishTargets['success'])) {
+                    $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
+                        ? $publishTargets['facebook_accounts']
+                        : [];
+                    $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
+                        ? $publishTargets['postforme_account_ids']
+                        : $pfAccounts;
 
-                        foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
-                            $warning = trim((string)$warning);
-                            if ($warning !== '') {
-                                sendProgress(
-                                    'posting',
-                                    'warning',
-                                    $warning,
-                                    $clipProgressBase + ($progressPerVideo * 0.135),
-                                    $stats
-                                );
-                            }
-                        }
-
-                        if (!empty($facebookAccounts)) {
+                    foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
+                        $warning = trim((string)$warning);
+                        if ($warning !== '') {
                             sendProgress(
                                 'posting',
-                                'info',
-                                'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
-                                $clipProgressBase + ($progressPerVideo * 0.138),
+                                'warning',
+                                $warning,
+                                $clipProgressBase + ($progressPerVideo * 0.135),
                                 $stats
                             );
                         }
-                    } else {
+                    }
+
+                    if (!empty($facebookAccounts) && !$scheduledAt) {
                         sendProgress(
                             'posting',
-                            'warning',
-                            (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
-                            $clipProgressBase + ($progressPerVideo * 0.135),
+                            'info',
+                            'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
+                            $clipProgressBase + ($progressPerVideo * 0.138),
+                            $stats
+                        );
+                    } elseif (!empty($facebookAccounts) && $scheduledAt) {
+                        sendProgress(
+                            'posting',
+                            'info',
+                            'Facebook accounts will use local scheduled publishing at the scheduled time.',
+                            $clipProgressBase + ($progressPerVideo * 0.138),
                             $stats
                         );
                     }
+                } else {
+                    sendProgress(
+                        'posting',
+                        'warning',
+                        (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
+                        $clipProgressBase + ($progressPerVideo * 0.135),
+                        $stats
+                    );
                 }
 
                 $preparedVideo = [
@@ -1269,6 +1286,62 @@ foreach ($videos as $index => $video) {
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
                                 $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
+                            } catch (Exception $e) {}
+                        }
+                    }
+
+                    if ($scheduledAt && !empty($facebookAccounts)) {
+                        $facebookPayload = FacebookReelsPublisher::buildFacebookPayload($caption, $postOptions);
+                        $queueResult = FacebookScheduledPostQueue::scheduleFromLocalVideo(
+                            $pdo,
+                            $postForMe,
+                            (int)$automationId,
+                            (string)$segmentVideoName,
+                            (string)($preparedVideo['path'] ?? $outputPath),
+                            $facebookAccounts,
+                            $facebookPayload,
+                            (string)$scheduledAt
+                        );
+
+                        if (!empty($queueResult['success'])) {
+                            if (!$countedAsScheduled) {
+                                $stats['scheduled']++;
+                                $countedAsScheduled = true;
+                            }
+
+                            $queueId = (int)($queueResult['id'] ?? 0);
+                            $message = "Scheduled {$clipLabel}: Facebook local queue #{$queueId}";
+                            $extra = [
+                                'facebook_scheduled_jobs' => [[
+                                    'job_key' => (string)($queueResult['job_key'] ?? ''),
+                                    'video_id' => (string)$segmentVideoName,
+                                    'media_url' => (string)($queueResult['media_url'] ?? ''),
+                                    'scheduled_at' => (string)($queueResult['scheduled_at'] ?? ''),
+                                    'account_ids' => array_values((array)($queueResult['account_ids'] ?? [])),
+                                    'caption' => (string)($queueResult['payload']['caption'] ?? ''),
+                                    'title' => (string)($queueResult['payload']['title'] ?? ''),
+                                    'description' => (string)($queueResult['payload']['description'] ?? ''),
+                                ]]
+                            ];
+                            sendProgress(
+                                'posting',
+                                'success',
+                                $message,
+                                $clipProgressBase + ($progressPerVideo * 0.182),
+                                $stats,
+                                $extra
+                            );
+
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'facebook_schedule_success', 'success', $message, $segmentVideoName, 'facebook']);
+                            } catch (Exception $e) {}
+                        } else {
+                            $errorSummary = trim((string)($queueResult['error'] ?? 'Facebook local scheduling failed.'));
+                            sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errorSummary}", $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+                            try {
+                                $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                                $stmt->execute([$automationId, 'facebook_schedule_error', 'error', $errorSummary, $segmentVideoName, 'facebook']);
                             } catch (Exception $e) {}
                         }
                     }

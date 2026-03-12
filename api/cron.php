@@ -10,6 +10,7 @@ ini_set('memory_limit', '512M');
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/AutomationRunner.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
+require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 require_once __DIR__ . '/../includes/GitHubRunner.php';
 require_once __DIR__ . '/../includes/LocalAgentManager.php';
 
@@ -177,6 +178,29 @@ try {
     }
 } catch (Exception $e) {
     cronLog("Sync Error: " . $e->getMessage());
+}
+
+try {
+    cronLog("Checking due Facebook scheduled posts...");
+    $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'postforme_api_key'");
+    $apiKey = (string)($stmt->fetchColumn() ?: '');
+
+    if ($apiKey !== '') {
+        $pfApi = new PostForMeAPI($apiKey);
+        $facebookScheduled = FacebookScheduledPostQueue::publishDue(
+            $pdo,
+            $pfApi,
+            static function (string $message): void {
+                cronLog($message);
+            },
+            20
+        );
+        cronLog(
+            "Facebook scheduled posts: processed {$facebookScheduled['processed']}, posted {$facebookScheduled['posted']}, failed {$facebookScheduled['failed']}"
+        );
+    }
+} catch (Exception $e) {
+    cronLog("Facebook Schedule Error: " . $e->getMessage());
 }
 
 $processedCount = 0;

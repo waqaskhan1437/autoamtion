@@ -423,6 +423,29 @@ try {
         ");
 
         $pdo->exec("
+            CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                job_key VARCHAR(64) NOT NULL UNIQUE,
+                automation_id INT NULL,
+                video_id VARCHAR(255) NULL,
+                media_url TEXT NOT NULL,
+                caption TEXT NULL,
+                title VARCHAR(255) NULL,
+                description TEXT NULL,
+                account_ids TEXT NOT NULL,
+                status VARCHAR(50) DEFAULT 'scheduled',
+                scheduled_at DATETIME NOT NULL,
+                published_at DATETIME NULL,
+                error_message TEXT NULL,
+                result_json JSON NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_fb_sched_due (status, scheduled_at),
+                INDEX idx_fb_sched_automation (automation_id)
+            )
+        ");
+
+        $pdo->exec("
             CREATE TABLE IF NOT EXISTS prankwish_universal_taglines (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 cycle_number INT NOT NULL UNIQUE,
@@ -805,6 +828,25 @@ try {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS facebook_scheduled_posts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                job_key VARCHAR(64) NOT NULL UNIQUE,
+                automation_id INT NULL,
+                video_id VARCHAR(255) NULL,
+                media_url TEXT NOT NULL,
+                caption TEXT NULL,
+                title VARCHAR(255) NULL,
+                description TEXT NULL,
+                account_ids TEXT NOT NULL,
+                status VARCHAR(50) DEFAULT 'scheduled',
+                scheduled_at DATETIME NOT NULL,
+                published_at DATETIME NULL,
+                error_message TEXT NULL,
+                result_json JSON NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             );
             
             CREATE TABLE IF NOT EXISTS processed_videos (

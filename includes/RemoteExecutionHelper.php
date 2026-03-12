@@ -50,6 +50,11 @@ function remoteExecutionVisualStatus(string $status, string $eventStatus = ''): 
 
 function remoteExecutionApplyProgress(PDO $pdo, int $automationId, array $payload, string $action = 'remote_callback'): array
 {
+    if (!empty($payload['facebook_scheduled_jobs']) && is_array($payload['facebook_scheduled_jobs'])) {
+        require_once __DIR__ . '/FacebookScheduledPostQueue.php';
+        FacebookScheduledPostQueue::persistCallbackJobs($pdo, $automationId, $payload['facebook_scheduled_jobs']);
+    }
+
     $status = remoteExecutionNormalizeStatus((string)($payload['status'] ?? 'running'));
     $progress = max(0, min(100, (int)($payload['progress'] ?? 0)));
     $message = trim((string)($payload['message'] ?? 'Remote execution update received.'));

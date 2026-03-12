@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
+require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 
 header('Content-Type: application/json');
 vwm_require_app_user($pdo, true);
@@ -63,8 +64,19 @@ try {
     }
 
     $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+    $provider = strtolower(trim((string)($_POST['provider'] ?? 'postforme')));
     if ($id <= 0) {
         echo json_encode(['ok' => false, 'error' => 'Missing id']);
+        exit;
+    }
+
+    if ($provider === 'facebook_direct') {
+        $result = FacebookScheduledPostQueue::cancelById($pdo, $id);
+        if (!empty($result['success'])) {
+            echo json_encode(['ok' => true, 'message' => $result['message'] ?? 'Cancelled']);
+        } else {
+            echo json_encode(['ok' => false, 'error' => $result['error'] ?? 'Failed']);
+        }
         exit;
     }
 

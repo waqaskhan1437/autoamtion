@@ -64,7 +64,8 @@ function sendRunnerCallback(
     array $stats = [],
     array $outputs = [],
     string $eventStatus = 'info',
-    int $sequence = 0
+    int $sequence = 0,
+    array $extra = []
 ): void {
     if ($callbackUrl === '' || !function_exists('curl_init')) {
         return;
@@ -83,6 +84,12 @@ function sendRunnerCallback(
         'sequence' => $sequence,
         'secret' => $callbackSecret
     ];
+
+    foreach ($extra as $key => $value) {
+        if (!array_key_exists($key, $payload)) {
+            $payload[$key] = $value;
+        }
+    }
 
     $ch = curl_init($callbackUrl);
     curl_setopt_array($ch, [
@@ -146,7 +153,8 @@ function publishEvent(
     string $runUrl,
     array $stats,
     array $outputs,
-    int &$sequence
+    int &$sequence,
+    array $extra = []
 ): void {
     $sequence++;
     $progress = max(0, min(100, $progress));
@@ -165,6 +173,12 @@ function publishEvent(
         'time_unix' => time()
     ];
 
+    foreach ($extra as $key => $value) {
+        if (!array_key_exists($key, $marker)) {
+            $marker[$key] = $value;
+        }
+    }
+
     emitProgressMarker($marker);
     sendRunnerCallback(
         $callbackUrl,
@@ -178,7 +192,8 @@ function publishEvent(
         $stats,
         $outputs,
         $eventStatus,
-        $sequence
+        $sequence,
+        $extra
     );
 }
 
@@ -293,6 +308,10 @@ while (!feof($handle)) {
     }
 
     $knownOutputs = appendOutput($knownOutputs, extractOutputName($message));
+    $extra = [];
+    if (!empty($event['facebook_scheduled_jobs']) && is_array($event['facebook_scheduled_jobs'])) {
+        $extra['facebook_scheduled_jobs'] = $event['facebook_scheduled_jobs'];
+    }
 
     if (!empty($event['done'])) {
         $ok = !empty($event['success']);
@@ -309,7 +328,8 @@ while (!feof($handle)) {
             $runUrl,
             $lastStats,
             $knownOutputs,
-            $sequence
+            $sequence,
+            $extra
         );
         $terminalSent = true;
         continue;
@@ -327,7 +347,8 @@ while (!feof($handle)) {
         $runUrl,
         $lastStats,
         $knownOutputs,
-        $sequence
+        $sequence,
+        $extra
     );
 }
 

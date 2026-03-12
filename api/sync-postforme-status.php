@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
+require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 
 header('Content-Type: application/json');
 vwm_require_app_user($pdo);
@@ -203,6 +204,7 @@ try {
     ");
     $stmtCounts->execute([$automationId]);
     $counts = $stmtCounts->fetch(PDO::FETCH_ASSOC) ?: ['scheduled' => 0, 'posted' => 0, 'failed' => 0, 'tracked_total' => 0];
+    $facebookCounts = FacebookScheduledPostQueue::fetchCounts($pdo, $automationId);
 
     $remoteScheduled = null;
     if (!empty($trackedPostIds)) {
@@ -242,8 +244,13 @@ try {
 
     // Scheduled count should be authoritative from PostForMe live API.
     // If API is unavailable, return source as unavailable and let UI keep current value.
-    $finalScheduled = ($remoteScheduled !== null) ? (int)$remoteScheduled : 0;
-    $scheduledSource = ($remoteScheduled !== null) ? 'remote' : 'unavailable';
+    $postForMeScheduled = ($remoteScheduled !== null)
+        ? (int)$remoteScheduled
+        : (int)($counts['scheduled'] ?? 0);
+    $finalScheduled = $postForMeScheduled + (int)($facebookCounts['scheduled'] ?? 0);
+    $scheduledSource = ($remoteScheduled !== null)
+        ? ((int)($facebookCounts['scheduled'] ?? 0) > 0 ? 'mixed' : 'remote')
+        : ((int)($facebookCounts['scheduled'] ?? 0) > 0 ? 'db+local' : 'db');
 
     $response = [
         'ok' => true,
@@ -252,11 +259,12 @@ try {
             'scheduled' => $finalScheduled,
             'scheduled_db' => (int)($counts['scheduled'] ?? 0),
             'scheduled_remote' => $remoteScheduled,
+            'scheduled_facebook_local' => (int)($facebookCounts['scheduled'] ?? 0),
             'scheduled_source' => $scheduledSource,
-            'api_ok' => ($remoteScheduled !== null),
-            'posted' => (int)($counts['posted'] ?? 0),
-            'failed' => (int)($counts['failed'] ?? 0),
-            'tracked_total' => (int)($counts['tracked_total'] ?? 0),
+            'api_ok' => true,
+            'posted' => (int)($counts['posted'] ?? 0) + (int)($facebookCounts['posted'] ?? 0),
+            'failed' => (int)($counts['failed'] ?? 0) + (int)($facebookCounts['failed'] ?? 0),
+            'tracked_total' => (int)($counts['tracked_total'] ?? 0) + (int)($facebookCounts['tracked_total'] ?? 0),
         ],
     ];
 

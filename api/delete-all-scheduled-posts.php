@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
+require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 
 header('Content-Type: application/json');
 vwm_require_app_user($pdo, true);
@@ -64,13 +65,7 @@ try {
 
     $automationId = isset($_POST['automation_id']) ? (int)$_POST['automation_id'] : 0;
 
-    $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'postforme_api_key' LIMIT 1");
-    $stmt->execute();
-    $apiKey = (string)($stmt->fetchColumn() ?: '');
-    if ($apiKey === '') {
-        echo json_encode(['ok' => false, 'error' => 'PostForMe API key not configured']);
-        exit;
-    }
+    $facebookCancelled = FacebookScheduledPostQueue::cancelAll($pdo, $automationId > 0 ? $automationId : null);
 
     $sql = "
         SELECT id, post_id, status
@@ -89,13 +84,22 @@ try {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($rows)) {
+        $fbDeleted = (int)($facebookCancelled['cancelled'] ?? 0);
         echo json_encode([
             'ok' => true,
-            'message' => 'No scheduled posts found',
-            'total' => 0,
-            'deleted' => 0,
+            'message' => $fbDeleted > 0 ? "Processed {$fbDeleted} scheduled post(s)" : 'No scheduled posts found',
+            'total' => $fbDeleted,
+            'deleted' => $fbDeleted,
             'failed' => 0
         ]);
+        exit;
+    }
+
+    $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'postforme_api_key' LIMIT 1");
+    $stmt->execute();
+    $apiKey = (string)($stmt->fetchColumn() ?: '');
+    if ($apiKey === '') {
+        echo json_encode(['ok' => false, 'error' => 'PostForMe API key not configured']);
         exit;
     }
 
@@ -137,10 +141,11 @@ try {
 
     echo json_encode([
         'ok' => true,
-        'message' => "Processed {$deleted}/" . count($rows) . " scheduled post(s)",
-        'total' => count($rows),
-        'deleted' => $deleted,
+        'message' => "Processed " . ($deleted + (int)($facebookCancelled['cancelled'] ?? 0)) . "/" . (count($rows) + (int)($facebookCancelled['cancelled'] ?? 0)) . " scheduled post(s)",
+        'total' => count($rows) + (int)($facebookCancelled['cancelled'] ?? 0),
+        'deleted' => $deleted + (int)($facebookCancelled['cancelled'] ?? 0),
         'failed' => $failed,
+        'facebook_cancelled' => (int)($facebookCancelled['cancelled'] ?? 0),
         'fallback_cleared' => $fallbackCleared,
         'errors' => $errors
     ]);

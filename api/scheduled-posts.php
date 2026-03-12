@@ -215,6 +215,50 @@ try {
     $stmt->execute($params);
     $posts = $stmt->fetchAll();
 
+    $fbSql = "
+        SELECT
+            fsp.id,
+            CONCAT('fb_sched_', fsp.id) AS post_id,
+            fsp.automation_id,
+            fsp.media_url AS video_path,
+            fsp.caption,
+            fsp.account_ids,
+            fsp.status,
+            fsp.scheduled_at,
+            fsp.published_at,
+            fsp.error_message,
+            fsp.created_at,
+            a.name AS automation_name,
+            'facebook_direct' AS provider
+        FROM facebook_scheduled_posts fsp
+        LEFT JOIN automation_settings a ON fsp.automation_id = a.id
+        WHERE fsp.status IN ('scheduled', 'queued', 'processing', 'partial')
+    ";
+    if ($automationId > 0) {
+        $fbSql .= " AND fsp.automation_id = ? ";
+    }
+    $fbSql .= "
+        ORDER BY
+            CASE
+                WHEN fsp.status IN ('scheduled', 'queued', 'processing', 'partial') AND fsp.scheduled_at > UTC_TIMESTAMP() THEN 0
+                ELSE 1
+            END,
+            COALESCE(fsp.scheduled_at, fsp.created_at) ASC
+        LIMIT 100
+    ";
+
+    $fbStmt = $pdo->prepare($fbSql);
+    $fbStmt->execute($params);
+    $fbPosts = $fbStmt->fetchAll();
+
+    foreach ($posts as &$post) {
+        $post['provider'] = 'postforme';
+    }
+    unset($post);
+    if (!empty($fbPosts)) {
+        $posts = array_merge($posts, $fbPosts);
+    }
+
     $accountIds = [];
     foreach ($posts as $post) {
         if (!empty($post['account_ids'])) {
@@ -252,12 +296,19 @@ try {
             }
         }
         $post['platforms'] = $platforms;
+        $post['provider'] = (string)($post['provider'] ?? 'postforme');
         
         if (!empty($post['scheduled_at']) && strpos($post['scheduled_at'], 'T') === false && strpos($post['scheduled_at'], 'Z') === false) {
             $post['scheduled_at_utc'] = $post['scheduled_at'];
         }
         $result[] = $post;
     }
+
+    usort($result, static function (array $a, array $b): int {
+        $aTs = strtotime((string)($a['scheduled_at'] ?? $a['created_at'] ?? '')) ?: 0;
+        $bTs = strtotime((string)($b['scheduled_at'] ?? $b['created_at'] ?? '')) ?: 0;
+        return $aTs <=> $bTs;
+    });
 
     echo json_encode([
         'success' => true, 
