@@ -534,12 +534,18 @@ if (!vwm_can_access_automation($automation)) {
 
 $progressPercent = cpClampPercent($automation['progress_percent'] ?? 0);
 $progressData = cpDecodeProgressData((string)($automation['progress_data'] ?? ''));
+$githubRunId = cpExtractRunId($progressData);
+$isGithubTrackedRun = $githubRunId > 0 && (
+    ($automation['run_mode'] ?? 'local') === 'github_runner'
+    || !empty($progressData['run_url'])
+    || !empty($progressData['workflow_url'])
+);
 $statusChanged = false;
 $dataChanged = false;
 
-if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automation['status'], ['running', 'processing', 'completed'], true)) {
+if ($isGithubTrackedRun && in_array($automation['status'], ['running', 'processing', 'completed'], true)) {
     $gh = cpGithubSettings($pdo);
-    $runId = cpExtractRunId($progressData);
+    $runId = $githubRunId;
 
     if (!empty($gh['ready']) && $runId > 0) {
         $nowTs = time();

@@ -411,6 +411,11 @@ class GitHubRunner
             return $variableSync;
         }
 
+        $legacyVariableSync = $this->upsertActionsVariable($config, 'GH_RUNNER_CALLBACK_SECRET', $callbackSecret);
+        if (!$legacyVariableSync['success']) {
+            return $legacyVariableSync;
+        }
+
         $secretSync = $this->syncActionsSecretValue($config, 'GH_RUNNER_CALLBACK_SECRET', $callbackSecret);
         if (!$secretSync['success']) {
             return $secretSync;
@@ -433,6 +438,11 @@ class GitHubRunner
         $urlDelete = $this->deleteActionsVariable($config, 'GH_RUNNER_CALLBACK_URL');
         if (!$urlDelete['success']) {
             return $urlDelete;
+        }
+
+        $legacySecretDelete = $this->deleteActionsVariable($config, 'GH_RUNNER_CALLBACK_SECRET');
+        if (!$legacySecretDelete['success']) {
+            return $legacySecretDelete;
         }
 
         $secretDelete = $this->deleteActionsSecret($config, 'GH_RUNNER_CALLBACK_SECRET');
