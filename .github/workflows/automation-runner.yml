@@ -139,16 +139,51 @@ jobs:
           import os
           from pathlib import Path
 
+          def decode_candidate(label: str, value: str):
+              value = (value or "").strip()
+              if not value:
+                  return None
+              try:
+                  raw_bytes = base64.b64decode(value, validate=True)
+              except Exception:
+                  return None
+
+              text = raw_bytes.decode("utf-8", errors="ignore")
+              score = 0
+              if "# Netscape HTTP Cookie File" in text:
+                  score += 10
+              if "youtube.com" in text:
+                  score += 5
+              if "\t" in text:
+                  score += 1
+              return {"label": label, "raw": raw_bytes, "score": score}
+
           chunks = []
           for idx in range(1, 11):
               value = os.environ.get(f"YTDLP_COOKIES_B64_{idx}", "").strip()
               if value:
                   chunks.append(value)
 
-          raw = ''.join(chunks) if chunks else os.environ.get("YTDLP_COOKIES_B64", "").strip()
+          candidates = []
+          single_secret = os.environ.get("YTDLP_COOKIES_B64", "").strip()
+          if single_secret:
+              decoded = decode_candidate("single", single_secret)
+              if decoded:
+                  candidates.append(decoded)
+
+          if chunks:
+              decoded = decode_candidate("chunked", "".join(chunks))
+              if decoded:
+                  candidates.append(decoded)
+
+          if not candidates:
+              raise SystemExit("Configured cookie secret could not be base64-decoded")
+
+          candidates.sort(key=lambda item: item["score"], reverse=True)
+          chosen = candidates[0]
           target = Path(os.environ["RUNNER_TEMP"]) / "youtube-cookies.txt"
-          target.write_bytes(base64.b64decode(raw))
-          print(f"Wrote cookies file to {target}")
+          target.write_bytes(chosen["raw"])
+          print(f"Wrote cookies file to {target} using {chosen['label']} secret")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
               fh.write(f"VW_YTDLP_COOKIES_FILE={target}\n")
           PY

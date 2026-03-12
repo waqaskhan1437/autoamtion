@@ -600,7 +600,7 @@ if (($automation['run_mode'] ?? 'local') === 'github_runner' && in_array($automa
                             $progressData['message'] = 'GitHub workflow completed successfully.';
                             $progressData['time'] = date('H:i:s');
                         }
-                    } else {
+                    } elseif (!$markerApplied || empty($progressData['message'])) {
                         $progressData['step'] = 'github_runner';
                         $progressData['status'] = 'error';
                         $progressData['message'] = 'GitHub workflow failed: ' . ($ghConclusion !== '' ? $ghConclusion : 'unknown');
