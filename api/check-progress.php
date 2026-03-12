@@ -435,6 +435,12 @@ function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &
         return false;
     }
 
+    foreach ($markers as $marker) {
+        if (!empty($marker['facebook_scheduled_jobs']) && is_array($marker['facebook_scheduled_jobs'])) {
+            FacebookScheduledPostQueue::persistCallbackJobs($pdo, $automationId, $marker['facebook_scheduled_jobs']);
+        }
+    }
+
     $changed = false;
     $lastSeq = (int)($progressData['sequence'] ?? 0);
     $currentVideo = trim((string)($progressData['current_video'] ?? ''));
@@ -489,10 +495,6 @@ function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &
 
         if (stripos($message, 'Post ID:') !== false) {
             cpUpsertPostForMeFromMarker($pdo, $automationId, $message, $currentVideo !== '' ? $currentVideo : null);
-        }
-
-        if (!empty($marker['facebook_scheduled_jobs']) && is_array($marker['facebook_scheduled_jobs'])) {
-            FacebookScheduledPostQueue::persistCallbackJobs($pdo, $automationId, $marker['facebook_scheduled_jobs']);
         }
 
         $progressData['sequence'] = $seq;
