@@ -53,10 +53,46 @@ jobs:
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
 
-      - name: Setup yt-dlp YouTube cookies
-        uses: AnimMouse/setup-yt-dlp/cookies@v3
-        with:
-          cookies: ${{ secrets.YTDLP_COOKIES_B64 }}
+      - name: Restore yt-dlp YouTube cookies
+        env:
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+          YTDLP_COOKIES_B64_1: ${{ secrets.YTDLP_COOKIES_B64_1 }}
+          YTDLP_COOKIES_B64_2: ${{ secrets.YTDLP_COOKIES_B64_2 }}
+          YTDLP_COOKIES_B64_3: ${{ secrets.YTDLP_COOKIES_B64_3 }}
+          YTDLP_COOKIES_B64_4: ${{ secrets.YTDLP_COOKIES_B64_4 }}
+          YTDLP_COOKIES_B64_5: ${{ secrets.YTDLP_COOKIES_B64_5 }}
+          YTDLP_COOKIES_B64_6: ${{ secrets.YTDLP_COOKIES_B64_6 }}
+          YTDLP_COOKIES_B64_7: ${{ secrets.YTDLP_COOKIES_B64_7 }}
+          YTDLP_COOKIES_B64_8: ${{ secrets.YTDLP_COOKIES_B64_8 }}
+          YTDLP_COOKIES_B64_9: ${{ secrets.YTDLP_COOKIES_B64_9 }}
+          YTDLP_COOKIES_B64_10: ${{ secrets.YTDLP_COOKIES_B64_10 }}
+        run: |
+          python3 - <<'PY'
+          import os, base64, pathlib
+
+          combined = (os.getenv("YTDLP_COOKIES_B64", "") or "").strip()
+          mode = "single"
+
+          if not combined:
+              parts = []
+              for idx in range(1, 11):
+                  value = (os.getenv(f"YTDLP_COOKIES_B64_{idx}", "") or "").strip()
+                  if value:
+                      parts.append(value)
+              combined = "".join(parts).strip()
+              mode = "chunked"
+
+          if not combined:
+              print("No yt-dlp cookies secret found; continuing without cookies.txt")
+              raise SystemExit(0)
+
+          decoded = base64.b64decode(combined)
+          target = pathlib.Path.home() / ".cache" / "yt-dlp" / "youtube" / "cookies.txt"
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_bytes(decoded)
+          target.chmod(0o600)
+          print(f"Restored yt-dlp cookies using {mode} secret(s): {target}")
+          PY
 
       - name: Decode automation payload
         id: payload

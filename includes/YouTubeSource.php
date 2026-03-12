@@ -43,9 +43,17 @@ class YouTubeSource
 
         $metadataErrors = [];
 
-        foreach ($candidates as $candidate) {
-            $url = trim((string)($candidate['url'] ?? ''));
-            if ($url === '') {
+        $metadataChunkSize = min(10, max(5, $resultLimit * 3));
+        foreach (array_chunk($candidates, $metadataChunkSize) as $candidateChunk) {
+            $urls = [];
+            foreach ($candidateChunk as $candidate) {
+                $url = trim((string)($candidate['url'] ?? ''));
+                if ($url !== '') {
+                    $urls[] = $url;
+                }
+            }
+
+            if (empty($urls)) {
                 continue;
             }
 
@@ -64,24 +72,20 @@ class YouTubeSource
                 $this->getCookiesArgs(),
                 $this->getYouTubeExtractorArgs(),
                 $this->getJsRuntimeArgs(),
-                [$url]
+                $urls
             );
 
             $result = $this->runCommandWithCookiesFallback($command);
-            
-            // Log unavailable videos from stderr but don't fail
+
             if (!empty($result['stderr'])) {
                 $stderrLines = preg_split("/\r\n|\n|\r/", $result['stderr']) ?: [];
                 foreach ($stderrLines as $line) {
-                    if ($this->isVideoUnavailableError($line)) {
-                        // Extract video ID if possible
-                        if (preg_match('/\[youtube\]\s+([a-zA-Z0-9_-]+)/', $line, $matches)) {
-                            error_log("[YouTubeSource] Skipped unavailable video: {$matches[1]}");
-                        }
+                    if ($this->isVideoUnavailableError($line) && preg_match('/\[youtube\]\s+([a-zA-Z0-9_-]+)/', $line, $matches)) {
+                        error_log("[YouTubeSource] Skipped unavailable video: {$matches[1]}");
                     }
                 }
             }
-            
+
             if ($result['exit_code'] !== 0 && trim((string)$result['stdout']) === '') {
                 $metadataErrors[] = $this->summarizeError($result['stderr']);
                 continue;
@@ -113,10 +117,6 @@ class YouTubeSource
                 if (count($videos) >= $resultLimit) {
                     return $videos;
                 }
-            }
-
-            if (!empty($videos) && count($videos) >= $resultLimit) {
-                break;
             }
 
             if ($stopAfterRange) {
@@ -369,6 +369,8 @@ class YouTubeSource
                 '--playlist-end',
                 (string)$playlistEnd,
             ],
+            $this->getCookiesArgs(),
+            $this->getYouTubeExtractorArgs(),
             $this->getJsRuntimeArgs(),
             [$this->channelUrl]
         );
@@ -579,13 +581,26 @@ class YouTubeSource
 
     private function getCookiesArgs(): array
     {
+        foreach ($this->getCookieArgSets() as $argSet) {
+            if ($argSet !== []) {
+                return $argSet;
+            }
+        }
+
+        return [];
+    }
+
+    private function getCookieArgSets(): array
+    {
+        $sets = [];
+
         $cookiesFile = trim((string)(getenv('VW_YTDLP_COOKIES_FILE') ?: ''));
         if ($cookiesFile === '' && defined('YTDLP_COOKIES_FILE')) {
             $cookiesFile = trim((string)YTDLP_COOKIES_FILE);
         }
 
         if ($this->isUsableCookiesFile($cookiesFile)) {
-            return ['--cookies', $cookiesFile];
+            $sets[] = ['--cookies', $cookiesFile];
         }
 
         $browser = trim((string)(getenv('VW_YTDLP_COOKIES_BROWSER') ?: ''));
@@ -603,15 +618,46 @@ class YouTubeSource
             if ($profile !== '' && strpos($browserSpec, ':') === false) {
                 $browserSpec .= ':' . $profile;
             }
-            return ['--cookies-from-browser', $browserSpec];
+            $sets[] = ['--cookies-from-browser', $browserSpec];
         }
 
         $projectCookiesFile = $this->resolveProjectCookiesFile();
         if ($projectCookiesFile !== '') {
-            return ['--cookies', $projectCookiesFile];
+            $sets[] = ['--cookies', $projectCookiesFile];
         }
 
-        return [];
+        foreach ($this->getAutomaticBrowserCookieArgSets() as $argSet) {
+            $sets[] = $argSet;
+        }
+
+        $sets[] = [];
+
+        $unique = [];
+        $seen = [];
+        foreach ($sets as $argSet) {
+            $signature = $this->buildCookieArgSetSignature($argSet);
+            if (isset($seen[$signature])) {
+                continue;
+            }
+            $seen[$signature] = true;
+            $unique[] = $argSet;
+        }
+
+        return $unique;
+    }
+
+    private function getAutomaticBrowserCookieArgSets(): array
+    {
+        if (!$this->isWindows()) {
+            return [];
+        }
+
+        return [
+            ['--cookies-from-browser', 'chrome:Default'],
+            ['--cookies-from-browser', 'chrome'],
+            ['--cookies-from-browser', 'edge:Default'],
+            ['--cookies-from-browser', 'edge'],
+        ];
     }
 
     private function resolveProjectCookiesFile(): string
@@ -638,19 +684,31 @@ class YouTubeSource
 
     private function runCommandWithCookiesFallback(array $command, ?string $workingDirectory = null): array
     {
-        $result = $this->runCommand($command, $workingDirectory);
+        $result = $this->runCommand($command, $workingDirectory, true);
         if (!$this->shouldRetryWithoutCookies($result)) {
             return $result;
         }
 
-        $fallbackCommand = $this->stripCookiesArgs($command);
-        if ($fallbackCommand === $command) {
-            return $result;
-        }
+        $tried = [];
+        $currentCookiesArgs = $this->getCommandCookiesArgs($command);
+        $tried[$this->buildCookieArgSetSignature($currentCookiesArgs)] = true;
 
-        $retry = $this->runCommand($fallbackCommand, $workingDirectory);
-        if ($this->isUsableYtDlpResult($retry)) {
-            return $retry;
+        foreach ($this->getCookieArgSets() as $cookieArgs) {
+            $signature = $this->buildCookieArgSetSignature($cookieArgs);
+            if (isset($tried[$signature])) {
+                continue;
+            }
+            $tried[$signature] = true;
+
+            $retryCommand = $this->replaceCookiesArgs($command, $cookieArgs);
+            if ($retryCommand === $command) {
+                continue;
+            }
+
+            $retry = $this->runCommand($retryCommand, $workingDirectory, true);
+            if ($this->isUsableYtDlpResult($retry)) {
+                return $retry;
+            }
         }
 
         return $result;
@@ -658,7 +716,7 @@ class YouTubeSource
 
     private function shouldRetryWithoutCookies(array $result): bool
     {
-        if ($this->getCookiesArgs() === []) {
+        if (count($this->getCookieArgSets()) < 2) {
             return false;
         }
 
@@ -700,6 +758,50 @@ class YouTubeSource
         }
 
         return $clean;
+    }
+
+    private function getCommandCookiesArgs(array $command): array
+    {
+        $count = count($command);
+        for ($i = 0; $i < $count - 1; $i++) {
+            $part = (string)$command[$i];
+            if ($part !== '--cookies' && $part !== '--cookies-from-browser') {
+                continue;
+            }
+
+            return [$part, (string)$command[$i + 1]];
+        }
+
+        return [];
+    }
+
+    private function replaceCookiesArgs(array $command, array $cookieArgs): array
+    {
+        $clean = $this->stripCookiesArgs($command);
+        if ($cookieArgs === []) {
+            return $clean;
+        }
+
+        $insertAt = count($clean);
+        foreach ($clean as $index => $part) {
+            if ($this->isLikelyUrlArgument((string)$part)) {
+                $insertAt = $index;
+                break;
+            }
+        }
+
+        array_splice($clean, $insertAt, 0, $cookieArgs);
+        return $clean;
+    }
+
+    private function isLikelyUrlArgument(string $value): bool
+    {
+        return preg_match('#^https?://#i', $value) === 1;
+    }
+
+    private function buildCookieArgSetSignature(array $cookieArgs): string
+    {
+        return implode("\x1F", $cookieArgs);
     }
 
     private function isUsableYtDlpResult(array $result): bool
