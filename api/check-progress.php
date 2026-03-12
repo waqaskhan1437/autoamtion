@@ -12,6 +12,7 @@ header('Content-Type: application/json');
 try {
     require_once __DIR__ . '/../config.php';
     require_once __DIR__ . '/../includes/auth_gate.php';
+    require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error']);
     exit;
@@ -488,6 +489,10 @@ function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &
 
         if (stripos($message, 'Post ID:') !== false) {
             cpUpsertPostForMeFromMarker($pdo, $automationId, $message, $currentVideo !== '' ? $currentVideo : null);
+        }
+
+        if (!empty($marker['facebook_scheduled_jobs']) && is_array($marker['facebook_scheduled_jobs'])) {
+            FacebookScheduledPostQueue::persistCallbackJobs($pdo, $automationId, $marker['facebook_scheduled_jobs']);
         }
 
         $progressData['sequence'] = $seq;
