@@ -232,7 +232,14 @@ if (!in_array($ext, ['mp4', 'mov', 'mkv', 'webm', 'avi'], true)) {
 $stmt = $pdo->prepare("SELECT owner_user_id, run_mode, progress_data FROM automation_settings WHERE id = ? LIMIT 1");
 $stmt->execute([$automationId]);
 $automation = $stmt->fetch(PDO::FETCH_ASSOC);
-if (!$automation || (string)($automation['run_mode'] ?? '') !== 'github_runner') {
+$progressData = $automation ? json_decode((string)($automation['progress_data'] ?? ''), true) : null;
+$isGithubTracked = is_array($progressData) && (
+    !empty($progressData['run_id'])
+    || (!empty($progressData['run_url']) && stripos((string)$progressData['run_url'], 'github.com/') !== false)
+    || (string)($automation['run_mode'] ?? '') === 'github_runner'
+);
+
+if (!$automation || !$isGithubTracked) {
     http_response_code(404);
     echo 'Automation not found for GitHub stream';
     exit;
@@ -244,7 +251,6 @@ if (!vwm_can_access_automation($automation)) {
     exit;
 }
 
-$progressData = json_decode((string)($automation['progress_data'] ?? ''), true);
 if (!is_array($progressData)) {
     http_response_code(404);
     echo 'No GitHub output metadata';

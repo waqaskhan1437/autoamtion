@@ -292,6 +292,50 @@ function cpNormalizeStats($stats): array
     return $base;
 }
 
+function cpExtractOutputNameFromMessage(string $message): ?string
+{
+    $patterns = [
+        '/Created(?:\s+[^:\r\n]+)?:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i',
+        '/Output:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (!preg_match($pattern, $message, $matches)) {
+            continue;
+        }
+        $name = basename(trim((string)$matches[1]));
+        if ($name !== '') {
+            return $name;
+        }
+    }
+
+    return null;
+}
+
+function cpCollectOutputsFromMarkers(array $markers): array
+{
+    $outputs = [];
+
+    foreach ($markers as $marker) {
+        if (!empty($marker['outputs']) && is_array($marker['outputs'])) {
+            foreach ($marker['outputs'] as $outputName) {
+                $name = basename(trim((string)$outputName));
+                if ($name !== '' && !in_array($name, $outputs, true)) {
+                    $outputs[] = $name;
+                }
+            }
+        }
+
+        $message = trim((string)($marker['message'] ?? ''));
+        $detected = cpExtractOutputNameFromMessage($message);
+        if ($detected !== null && !in_array($detected, $outputs, true)) {
+            $outputs[] = $detected;
+        }
+    }
+
+    return $outputs;
+}
+
 function cpNormalizeScheduledAt(?string $value): ?string
 {
     if ($value === null) {
@@ -437,11 +481,9 @@ function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &
                 }
             }
         }
-        if (preg_match('/(?:Created|Output):\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i', $message, $om)) {
-            $ov = basename(trim((string)$om[1]));
-            if ($ov !== '' && !in_array($ov, $outputs, true)) {
-                $outputs[] = $ov;
-            }
+        $detectedOutput = cpExtractOutputNameFromMessage($message);
+        if ($detectedOutput !== null && !in_array($detectedOutput, $outputs, true)) {
+            $outputs[] = $detectedOutput;
         }
 
         if (stripos($message, 'Post ID:') !== false) {
@@ -561,6 +603,31 @@ if ($isGithubTrackedRun && in_array($automation['status'], ['running', 'processi
             }
             $progressData['github_log_synced_at'] = $nowTs;
             if (!empty($markers)) {
+                $markerOutputs = cpCollectOutputsFromMarkers($markers);
+                if (!empty($markerOutputs)) {
+                    $existingOutputs = [];
+                    if (!empty($progressData['outputs']) && is_array($progressData['outputs'])) {
+                        foreach ($progressData['outputs'] as $existingOutput) {
+                            $name = basename(trim((string)$existingOutput));
+                            if ($name !== '' && !in_array($name, $existingOutputs, true)) {
+                                $existingOutputs[] = $name;
+                            }
+                        }
+                    }
+
+                    $beforeCount = count($existingOutputs);
+                    foreach ($markerOutputs as $markerOutput) {
+                        if (!in_array($markerOutput, $existingOutputs, true)) {
+                            $existingOutputs[] = $markerOutput;
+                        }
+                    }
+
+                    if (count($existingOutputs) !== $beforeCount) {
+                        $progressData['outputs'] = $existingOutputs;
+                        $dataChanged = true;
+                    }
+                }
+
                 $markerApplied = cpApplyMarkers($pdo, $automationId, $progressData, $progressPercent, $markers);
                 if ($markerApplied) {
                     $dataChanged = true;

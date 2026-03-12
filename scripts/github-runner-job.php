@@ -98,12 +98,18 @@ function sendRunnerCallback(
 
 function extractOutputName(string $message): ?string
 {
-    if (preg_match('/Created:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i', $message, $m)) {
+    $patterns = [
+        '/Created(?:\s+[^:\r\n]+)?:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i',
+        '/Output:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (!preg_match($pattern, $message, $m)) {
+            continue;
+        }
         return basename(trim((string)$m[1]));
     }
-    if (preg_match('/Output:\s*([^\r\n]+?\.(mp4|mov|mkv|webm|avi))/i', $message, $m)) {
-        return basename(trim((string)$m[1]));
-    }
+
     return null;
 }
 

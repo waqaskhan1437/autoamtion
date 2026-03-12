@@ -60,8 +60,7 @@ try {
         $stmt = $pdo->query("
             SELECT id, name, last_run_at, progress_data
             FROM automation_settings
-            WHERE run_mode = 'github_runner'
-              AND progress_data IS NOT NULL
+            WHERE progress_data IS NOT NULL
         ");
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } else {
@@ -69,7 +68,6 @@ try {
             SELECT id, name, last_run_at, progress_data
             FROM automation_settings
             WHERE owner_user_id = ?
-              AND run_mode = 'github_runner'
               AND progress_data IS NOT NULL
         ");
         $stmt->execute([vwm_current_user_id()]);
@@ -82,7 +80,11 @@ try {
         if ($automationId <= 0) continue;
 
         $pd = json_decode((string)($row['progress_data'] ?? ''), true);
-        if (!is_array($pd) || empty($pd['outputs']) || !is_array($pd['outputs'])) {
+        $isGithubTracked = is_array($pd) && (
+            !empty($pd['run_id'])
+            || (!empty($pd['run_url']) && stripos((string)$pd['run_url'], 'github.com/') !== false)
+        );
+        if (!$isGithubTracked || empty($pd['outputs']) || !is_array($pd['outputs'])) {
             continue;
         }
 
