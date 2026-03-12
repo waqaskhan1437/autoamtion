@@ -3887,12 +3887,12 @@ class LocalTaglineGenerator {
     
     // Bottom branding
     private $bottomTemplates = [
-        'Order: wishesmadeeasy.com',
-        'Get: wishesmadeeasy.com',
-        'Visit: wishesmadeeasy.com',
-        'Book: wishesmadeeasy.com',
-        'Try: wishesmadeeasy.com',
-        'Shop: wishesmadeeasy.com'
+        'Order: prankwish.com',
+        'Get: prankwish.com',
+        'Visit: prankwish.com',
+        'Book: prankwish.com',
+        'Try: prankwish.com',
+        'Shop: prankwish.com'
     ];
     
     private $allTaglines = [];
@@ -3995,7 +3995,7 @@ class LocalTaglineGenerator {
             'emoji' => $fallbackEmoji,
             'emojiPng' => $fallbackPng,
             'emojiCode' => $fallbackCode,
-            'bottom' => 'wishesmadeeasy.com',
+            'bottom' => 'prankwish.com',
             'source' => 'local'
         ];
     }
