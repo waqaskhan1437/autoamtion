@@ -55,13 +55,13 @@ class FFmpegProcessor {
         } else {
             // Linux font paths
             $linuxFonts = [
-                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                 '/usr/share/fonts/TTF/DejaVuSans.ttf',
                 '/usr/share/fonts/liberation/LiberationSans-Regular.ttf'
             ];
             
-            $this->fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+            $this->fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
             foreach ($linuxFonts as $font) {
                 if (file_exists($font)) {
                     $this->fontPath = $font;
@@ -261,6 +261,13 @@ class FFmpegProcessor {
         // Emoji will be overlaid as PNG for colorful display
         $emojiPng = $options['emojiPng'] ?? null;
         $hasEmoji = !empty($emojiPng) && file_exists($emojiPng);
+        $topFontSize = 58;
+        $bottomFontSize = 50;
+        $topBoxBorder = 22;
+        $bottomBoxBorder = 16;
+        $topLine1Y = 125;
+        $topLine2Y = 215;
+        $bottomSafeMargin = 220;
         
         if ($topText !== '') {
             // Split text into two lines for separate drawtext filters (avoids Windows newline issues)
@@ -273,10 +280,10 @@ class FFmpegProcessor {
             $emojiSpaces = '    ';  // 4 spaces for emoji area
             
             // Calculate emoji position based on text width (before adding spaces)
-            // Font size 48, average char width ~24px (more accurate)
+            // Estimate width using the larger configured font size.
             $emojiLine = ($line2 !== '') ? $line2 : $line1;
-            $emojiLineY = ($line2 !== '') ? 140 : 70;
-            $textWidth = strlen($emojiLine) * 24; // Approximate text width
+            $emojiLineY = ($line2 !== '') ? $topLine2Y : $topLine1Y;
+            $textWidth = strlen($emojiLine) * 29; // Approximate text width
             // Emoji x = center of video + half of original text width - small offset to stay inside box
             $emojiXOffset = ($textWidth / 2) - 5;
             
@@ -298,7 +305,7 @@ class FFmpegProcessor {
                 }
                 
                 // First line - white box, black text, centered
-                $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize=48:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw=18:x=(w-text_w)/2:y=70";
+                $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine1Y}";
             }
             
             // Line 2
@@ -316,7 +323,7 @@ class FFmpegProcessor {
                 }
                 
                 // Second line - white box, black text, centered
-                $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize=48:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw=18:x=(w-text_w)/2:y=140";
+                $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine2Y}";
             }
             
             // Store emoji position for PNG overlay
@@ -340,7 +347,7 @@ class FFmpegProcessor {
             }
             
             // Style: White box background, black bold text, centered (same as top)
-            $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize=40:fontcolor=black:box=1:boxcolor=white@0.9:boxborderw=12:x=(w-text_w)/2:y=h-120";
+            $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=black:box=1:boxcolor=white@0.92:boxborderw={$bottomBoxBorder}:x=(w-text_w)/2:y=h-text_h-{$bottomSafeMargin}";
             file_put_contents($debugLog, "  Added bottom text filter with file: {$bottomTextFilePath}\n", FILE_APPEND);
         }
 

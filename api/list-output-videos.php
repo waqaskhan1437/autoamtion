@@ -53,7 +53,7 @@ if (is_dir($outputDir)) {
         if (!is_file($filePath) || !in_array($ext, ['mp4', 'webm', 'mov', 'avi'], true)) {
             continue;
         }
-        if (!vwm_is_admin() && !isset($accessibleOutputs[strtolower($file)])) {
+        if (!$canBrowseAllOutputs && !isset($accessibleOutputs[strtolower($file)])) {
             continue;
         }
 

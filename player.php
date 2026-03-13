@@ -39,7 +39,7 @@ if (is_dir($outputDir)) {
     $files = glob($outputDir . '*.mp4');
     foreach ($files as $file) {
         $baseName = basename($file);
-        if (!vwm_is_admin() && !isset($accessibleOutputs[strtolower($baseName)])) {
+        if (!$canBrowseAllOutputs && !isset($accessibleOutputs[strtolower($baseName)])) {
             continue;
         }
         $videos[] = [
