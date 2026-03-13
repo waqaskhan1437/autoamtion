@@ -914,6 +914,13 @@ class PrankWishCreativeGenerator
 
         $top = '';
         $bottom = '';
+        if (preg_match('/(?:^|\s)top(?:\s+tagline)?\s*:\s*(.+?)(?=(?:\s+bottom(?:\s+tagline)?\s*:)|$)/is', $text, $matches)) {
+            $top = trim((string)$matches[1]);
+        }
+        if (preg_match('/(?:^|\s)bottom(?:\s+tagline)?\s*:\s*(.+)$/is', $text, $matches)) {
+            $bottom = trim((string)$matches[1]);
+        }
+
         foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
             $line = trim((string)$line);
             if ($line === '') {
@@ -933,7 +940,7 @@ class PrankWishCreativeGenerator
 
         if ($top === '' || $bottom === '') {
             $lines = array_values(array_filter(array_map(
-                static fn($line) => trim((string)$line, " \t\n\r\0\x0B-*:"),
+                fn($line) => $this->cleanParsedTaglineLine((string)$line),
                 preg_split('/\r\n|\r|\n/', $text) ?: []
             )));
             if ($top === '' && !empty($lines[0])) {
@@ -945,6 +952,20 @@ class PrankWishCreativeGenerator
         }
 
         return ['top' => $top, 'bottom' => $bottom];
+    }
+
+    private function cleanParsedTaglineLine(string $line): string
+    {
+        $line = trim($line, " \t\n\r\0\x0B-*:");
+        if ($line === '') {
+            return '';
+        }
+
+        if (preg_match('/^(sure|here|output|response|taglines?\b|overlay taglines?\b)/i', $line)) {
+            return '';
+        }
+
+        return $line;
     }
 
     private function normalizePlatformContent(string $platform, array $generated, array $base): array
