@@ -1,0 +1,141 @@
+{
+    "library_key": "change-this-key-when-you-refill",
+    "library_name": "PrankWish Custom Refill",
+    "generated_at": "2026-03-13T09:09:53+00:00",
+    "packs": [
+        {
+            "id": "your-pack-001",
+            "theme_key": "custom_theme",
+            "theme_name": "Custom Theme Name",
+            "search_intents": [
+                "custom video gift",
+                "personalized video",
+                "digital gift"
+            ],
+            "keywords": [
+                "custom video gift",
+                "personalized custom video",
+                "digital gift"
+            ],
+            "platforms": {
+                "youtube": {
+                    "title": "Get a personalized custom video from PrankWish.com",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished video digitally on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#CustomVideoGift",
+                        "#GiftIdea"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "personalized video",
+                        "digital gift"
+                    ]
+                },
+                "tiktok": {
+                    "title": "Get a custom video that feels real | PrankWish",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and get digital delivery on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#UniqueGift",
+                        "#CustomGift"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "personalized video"
+                    ]
+                },
+                "instagram": {
+                    "title": "Order a custom video from the PrankWish crew | PrankWish",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished file on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#PersonalizedGift",
+                        "#GiftIdea"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "gift idea"
+                    ]
+                },
+                "facebook": {
+                    "title": "Get a personalized custom video from the PrankWish crew",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished video digitally on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#CustomVideoGift",
+                        "#GiftIdea"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "personalized video"
+                    ]
+                },
+                "twitter": {
+                    "title": "Get a custom video | PrankWish",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your script, and get digital delivery on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#CustomGift",
+                        "#GiftIdea"
+                    ],
+                    "tags": [
+                        "custom video gift"
+                    ]
+                },
+                "threads": {
+                    "title": "Get a personalized video gift | PrankWish",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished video digitally on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#CustomGift",
+                        "#PersonalizedGift"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "personalized video"
+                    ]
+                },
+                "linkedin": {
+                    "title": "Personalized custom video service by PrankWish.com",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished video digitally on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#DigitalGift",
+                        "#CustomGift"
+                    ],
+                    "tags": [
+                        "custom video service",
+                        "digital gift"
+                    ]
+                },
+                "pinterest": {
+                    "title": "Personalized custom video gift idea by PrankWish.com",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your custom script, and receive the finished video digitally on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#GiftIdea",
+                        "#CustomGift"
+                    ],
+                    "tags": [
+                        "custom video gift",
+                        "gift idea",
+                        "personalized video"
+                    ]
+                },
+                "bluesky": {
+                    "title": "Get a custom video | PrankWish",
+                    "description": "Get personalized custom video at PrankWish.com. Choose a style, send your script, and get digital delivery on email or WhatsApp.",
+                    "hashtags": [
+                        "#PrankWish",
+                        "#CustomGift",
+                        "#GiftIdea"
+                    ],
+                    "tags": [
+                        "custom video gift"
+                    ]
+                }
+            }
+        }
+    ]
+}

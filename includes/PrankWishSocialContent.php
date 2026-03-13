@@ -2,8 +2,8 @@
 /**
  * PrankWish social content generator.
  *
- * Generates 24 occasion packs x 5 human-style variants = 120 rotating
- * title/description/keyword/hashtag bundles for PostForMe social posting.
+ * Uses a refillable file-backed social library when available, and falls back
+ * to generated occasion packs otherwise.
  */
 
 class PrankWishSocialContent
@@ -14,16 +14,24 @@ class PrankWishSocialContent
     private int $variantsPerOccasion = 5;
     private array $platformConfigs = [];
     private array $occasionCatalog = [];
+    private string $libraryPath = '';
+    private array $libraryData = [];
 
     public function __construct(?PDO $pdo = null)
     {
         $this->pdo = $pdo;
         $this->platformConfigs = $this->buildPlatformConfigs();
         $this->occasionCatalog = $this->buildOccasionCatalog();
+        $this->libraryPath = dirname(__DIR__) . '/content/prankwish-social/library.json';
+        $this->libraryData = $this->loadLibraryData();
     }
 
     public function getTotalCycles(): int
     {
+        if ($this->hasLibraryPacks()) {
+            return count($this->libraryData['packs']);
+        }
+
         return count($this->occasionCatalog) * $this->variantsPerOccasion;
     }
 
@@ -68,6 +76,10 @@ class PrankWishSocialContent
         string $videoTitle = '',
         ?string $forcedOccasion = null
     ): array {
+        if ($this->hasLibraryPacks()) {
+            return $this->getLibraryBundleByCycle($cycle);
+        }
+
         if (empty($this->occasionCatalog)) {
             return ['success' => false, 'error' => 'PrankWish occasion catalog is empty.'];
         }
@@ -208,6 +220,17 @@ class PrankWishSocialContent
             (string) ($bundle['primary_keyword'] ?? '')
         );
 
+        if (($bundle['source'] ?? '') === 'prankwish_library') {
+            $message = sprintf(
+                'Cycle %d | Library=%s | Pack=%s | Theme=%s | Keyword=%s',
+                (int) ($bundle['cycle'] ?? 1),
+                (string) ($bundle['library_key'] ?? 'default-library'),
+                (string) ($bundle['pack_id'] ?? 'unknown-pack'),
+                (string) ($bundle['occasion_key'] ?? 'library_theme'),
+                (string) ($bundle['primary_keyword'] ?? '')
+            );
+        }
+
         try {
             $stmt = $this->pdo->prepare("
                 INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform)
@@ -339,6 +362,18 @@ class PrankWishSocialContent
 
             if ($message !== '' && preg_match('/Cycle\s+(\d+)/i', $message, $matches)) {
                 $next = ((int) $matches[1]) + 1;
+                if ($this->hasLibraryPacks()) {
+                    if ($this->currentLibraryKey() === '') {
+                        return 1;
+                    }
+
+                    if (preg_match('/Library=([A-Za-z0-9._-]+)/', $message, $libraryMatch)) {
+                        return $libraryMatch[1] === $this->currentLibraryKey() ? $next : 1;
+                    }
+
+                    return 1;
+                }
+
                 $total = $this->getTotalCycles();
                 return $next > $total ? 1 : $next;
             }
@@ -347,6 +382,191 @@ class PrankWishSocialContent
         }
 
         return 1;
+    }
+
+    private function hasLibraryPacks(): bool
+    {
+        return !empty($this->libraryData['packs']) && is_array($this->libraryData['packs']);
+    }
+
+    private function currentLibraryKey(): string
+    {
+        return trim((string) ($this->libraryData['library_key'] ?? ''));
+    }
+
+    private function loadLibraryData(): array
+    {
+        if (!is_file($this->libraryPath)) {
+            return [];
+        }
+
+        $json = @file_get_contents($this->libraryPath);
+        if ($json === false || trim($json) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($json, true);
+        if (!is_array($decoded) || !is_array($decoded['packs'] ?? null)) {
+            error_log('PrankWishSocialContent library decode failed for ' . $this->libraryPath);
+            return [];
+        }
+
+        $packs = [];
+        foreach ($decoded['packs'] as $pack) {
+            $normalizedPack = $this->normalizeLibraryPack(is_array($pack) ? $pack : []);
+            if ($normalizedPack !== null) {
+                $packs[] = $normalizedPack;
+            }
+        }
+
+        if (empty($packs)) {
+            return [];
+        }
+
+        return [
+            'library_key' => trim((string) ($decoded['library_key'] ?? 'prankwish-social-library')),
+            'library_name' => trim((string) ($decoded['library_name'] ?? 'PrankWish Social Library')),
+            'generated_at' => trim((string) ($decoded['generated_at'] ?? '')),
+            'packs' => $packs,
+        ];
+    }
+
+    private function normalizeLibraryPack(array $pack): ?array
+    {
+        $packId = trim((string) ($pack['id'] ?? ''));
+        if ($packId === '') {
+            return null;
+        }
+
+        $themeKey = trim((string) ($pack['theme_key'] ?? $packId));
+        $themeName = trim((string) ($pack['theme_name'] ?? $themeKey));
+        $keywords = $this->cleanStringList((array) ($pack['keywords'] ?? []));
+        $searchIntents = $this->cleanStringList((array) ($pack['search_intents'] ?? []));
+        $platforms = [];
+
+        foreach (array_keys($this->platformConfigs) as $platform) {
+            $entry = $pack['platforms'][$platform] ?? null;
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $platformContent = $this->normalizeLibraryPlatformContent($platform, $entry, $keywords, $searchIntents);
+            if ($platformContent !== null) {
+                $platforms[$platform] = $platformContent;
+            }
+        }
+
+        if (empty($platforms)) {
+            return null;
+        }
+
+        return [
+            'id' => $packId,
+            'theme_key' => $themeKey !== '' ? $themeKey : $packId,
+            'theme_name' => $themeName !== '' ? $themeName : $packId,
+            'keywords' => $keywords,
+            'search_intents' => $searchIntents,
+            'platforms' => $platforms,
+        ];
+    }
+
+    private function normalizeLibraryPlatformContent(
+        string $platform,
+        array $entry,
+        array $keywords,
+        array $searchIntents
+    ): ?array {
+        $config = $this->platformConfigs[$platform] ?? $this->platformConfigs['instagram'];
+        $title = trim((string) ($entry['title'] ?? ''));
+        $description = trim((string) ($entry['description'] ?? ''));
+        if ($title === '' && $description === '') {
+            return null;
+        }
+
+        $hashtags = [];
+        foreach ((array) ($entry['hashtags'] ?? []) as $hashtag) {
+            $hashtag = trim((string) $hashtag);
+            if ($hashtag === '') {
+                continue;
+            }
+            if ($hashtag[0] !== '#') {
+                $hashtag = '#' . ltrim($hashtag, '#');
+            }
+            $hashtags[] = $hashtag;
+        }
+        $hashtags = $this->uniqueStrings($hashtags);
+
+        $platformKeywords = $this->cleanStringList(array_merge(
+            (array) ($entry['keywords'] ?? []),
+            $keywords,
+            $searchIntents
+        ));
+        $tags = $this->cleanStringList((array) ($entry['tags'] ?? $platformKeywords));
+        $captionBase = trim((string) ($entry['caption'] ?? $description));
+        $caption = $captionBase;
+        if ($caption !== '' && !empty($hashtags)) {
+            $caption .= "\n\n" . implode(' ', $hashtags);
+        }
+
+        return [
+            'platform' => $platform,
+            'title' => $this->smartTrim($title, (int) ($config['title_limit'] ?? 100)),
+            'description' => $this->smartTrim($description !== '' ? $description : $captionBase, (int) ($config['description_limit'] ?? 1200)),
+            'caption' => $this->smartTrim($caption !== '' ? $caption : $description, (int) ($config['caption_limit'] ?? 2200)),
+            'call_to_action' => trim((string) ($entry['call_to_action'] ?? $this->buildCallToAction($platform))),
+            'keywords' => $platformKeywords,
+            'hashtags' => $hashtags,
+            'tags' => array_slice($tags, 0, (int) ($config['tag_limit'] ?? 12)),
+            'primary_keyword' => $platformKeywords[0] ?? ($searchIntents[0] ?? $this->brandName),
+        ];
+    }
+
+    private function getLibraryBundleByCycle(int $cycle): array
+    {
+        $packs = $this->libraryData['packs'] ?? [];
+        $total = count($packs);
+        if ($total === 0) {
+            return ['success' => false, 'error' => 'PrankWish social library is empty.'];
+        }
+
+        if ($cycle < 1) {
+            $cycle = 1;
+        }
+
+        if ($cycle > $total) {
+            return [
+                'success' => false,
+                'error' => 'PrankWish social library exhausted. Add new packs to ' . $this->libraryPath . ' and change library_key to start a fresh queue.',
+            ];
+        }
+
+        $pack = $packs[$cycle - 1];
+
+        return [
+            'success' => true,
+            'cycle' => $cycle,
+            'variant' => 1,
+            'occasion_key' => (string) ($pack['theme_key'] ?? $pack['id'] ?? 'library_theme'),
+            'occasion_name' => (string) ($pack['theme_name'] ?? $pack['id'] ?? 'Library Theme'),
+            'primary_keyword' => (string) ($pack['search_intents'][0] ?? $pack['keywords'][0] ?? $this->brandName),
+            'platforms' => (array) ($pack['platforms'] ?? []),
+            'pack_id' => (string) ($pack['id'] ?? 'unknown-pack'),
+            'library_key' => $this->currentLibraryKey(),
+            'source' => 'prankwish_library',
+        ];
+    }
+
+    private function cleanStringList(array $items): array
+    {
+        $result = [];
+        foreach ($items as $item) {
+            $item = trim((string) $item);
+            if ($item !== '') {
+                $result[] = $item;
+            }
+        }
+
+        return $this->uniqueStrings($result);
     }
 
     private function buildPlatformContent(
