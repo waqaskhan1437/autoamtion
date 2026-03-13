@@ -300,7 +300,7 @@ class PrankWishCreativeGenerator
             if ($provider === 'openai') {
                 $raw = $this->callOpenAiJson($prompt);
             } elseif ($provider === 'ollama') {
-                $raw = $this->callOllamaJson($prompt);
+                $raw = $this->callOllamaJson($videoTitle, $videoFilename, $basePackage, $history);
             } else {
                 $raw = $this->callGeminiJson($prompt);
             }
@@ -477,34 +477,179 @@ class PrankWishCreativeGenerator
         ];
     }
 
-    private function callOllamaJson(string $prompt): array
+    private function callOllamaJson(string $videoTitle, string $videoFilename, array $basePackage, array $history): array
     {
         if (!$this->isProviderAvailable('ollama')) {
             return ['success' => false, 'error' => 'Ollama is not configured.', 'provider' => 'ollama', 'source' => 'prankwish_ollama'];
         }
 
-        $response = $this->ollamaClient->generateJson(
-            "Return valid JSON only.\n" . $prompt,
-            ['temperature' => 0.4, 'top_p' => 0.9, 'max_tokens' => 1800],
-            240
+        $taglineResponse = $this->ollamaClient->generateJson(
+            $this->buildOllamaTaglinePrompt($videoTitle, $videoFilename, $basePackage, $history),
+            ['temperature' => 0.4, 'top_p' => 0.9, 'max_tokens' => 220],
+            120
         );
 
-        if (empty($response['success'])) {
+        if (empty($taglineResponse['success'])) {
             return [
                 'success' => false,
                 'provider' => 'ollama',
                 'source' => 'prankwish_ollama',
-                'error' => (string)($response['error'] ?? 'Ollama API failed'),
+                'error' => 'Ollama tagline generation failed: ' . (string)($taglineResponse['error'] ?? 'Ollama API failed'),
             ];
         }
+
+        $taglinePayload = $this->resolveGeneratedPayload((array)($taglineResponse['data'] ?? []));
+        $topCandidate = $this->extractTextCandidate($taglinePayload, [
+            'top_tagline',
+            'topTagline',
+            'top',
+            'headline',
+            'overlay_top',
+            'overlayTop',
+        ]);
+        if ($topCandidate === '') {
+            $topCandidate = $this->deriveTopFromPayload($taglinePayload);
+        }
+
+        $bottomCandidate = $this->extractTextCandidate($taglinePayload, [
+            'bottom_tagline',
+            'bottomTagline',
+            'bottom',
+            'subheadline',
+            'overlay_bottom',
+            'overlayBottom',
+        ]);
+
+        $top = $this->normalizeOverlayText($topCandidate, 48);
+        $bottom = $this->normalizeBottomTagline($bottomCandidate);
+        if ($top === '') {
+            return [
+                'success' => false,
+                'provider' => 'ollama',
+                'source' => 'prankwish_ollama',
+                'error' => 'Ollama tagline response was incomplete.',
+            ];
+        }
+
+        $copyResponse = $this->ollamaClient->generateJson(
+            $this->buildOllamaPlatformPrompt($videoTitle, $videoFilename, $basePackage, $history),
+            ['temperature' => 0.35, 'top_p' => 0.9, 'max_tokens' => 1200],
+            180
+        );
+
+        if (empty($copyResponse['success'])) {
+            return [
+                'success' => false,
+                'provider' => 'ollama',
+                'source' => 'prankwish_ollama',
+                'error' => 'Ollama platform copy generation failed: ' . (string)($copyResponse['error'] ?? 'Ollama API failed'),
+            ];
+        }
+
+        $copyPayload = $this->resolveGeneratedPayload((array)($copyResponse['data'] ?? []));
 
         return [
             'success' => true,
             'source' => 'prankwish_ollama',
             'provider' => 'ollama',
-            'model' => (string)($response['model'] ?? $this->ollamaClient->getModel()),
-            'data' => (array)($response['data'] ?? []),
+            'model' => (string)($copyResponse['model'] ?? $taglineResponse['model'] ?? $this->ollamaClient->getModel()),
+            'data' => [
+                'top_tagline' => $top,
+                'bottom_tagline' => $bottom,
+                'platforms' => $this->extractPlatformsPayload($copyPayload),
+            ],
         ];
+    }
+
+    private function buildOllamaTaglinePrompt(string $videoTitle, string $videoFilename, array $basePackage, array $history): string
+    {
+        $payload = [
+            'task' => 'Create overlay taglines for a PrankWish.com custom video.',
+            'brand' => [
+                'name' => $this->brandName,
+                'website' => $this->websiteUrl,
+                'core_offer' => 'Get personalized custom video from real people or real teams.',
+            ],
+            'video_context' => [
+                'video_title' => $videoTitle,
+                'video_filename' => $videoFilename,
+                'occasion_key' => (string)($basePackage['occasion_key'] ?? ''),
+                'occasion_name' => (string)($basePackage['occasion_name'] ?? ''),
+                'primary_keyword' => (string)($basePackage['primary_keyword'] ?? ''),
+            ],
+            'rules' => [
+                'Top tagline must be 4 to 8 words, punchy, human, no hashtags, no emojis.',
+                'Bottom tagline must be 3 to 6 words and must contain prankwish.com.',
+                'Do not use quotes around output text.',
+            ],
+            'avoid_recent_taglines' => array_slice(array_values(array_unique(array_filter($history['taglines'] ?? []))), 0, 12),
+            'output_format' => [
+                'top' => 'string',
+                'bottom' => 'string',
+            ],
+        ];
+
+        return "Return valid JSON only.\n" . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    private function buildOllamaPlatformPrompt(string $videoTitle, string $videoFilename, array $basePackage, array $history): string
+    {
+        $seedPlatforms = [];
+        foreach ((array)($basePackage['platforms'] ?? []) as $platform => $content) {
+            if (!is_array($content)) {
+                continue;
+            }
+
+            $seedPlatforms[(string)$platform] = [
+                'title' => (string)($content['title'] ?? ''),
+                'description' => (string)($content['description'] ?? ''),
+                'hashtags' => array_values(array_slice((array)($content['hashtags'] ?? []), 0, 5)),
+            ];
+        }
+
+        $outputPlatforms = [];
+        foreach (array_keys($seedPlatforms) as $platform) {
+            $outputPlatforms[(string)$platform] = ['title' => 'string', 'description' => 'string'];
+        }
+        if (empty($outputPlatforms)) {
+            $outputPlatforms['instagram'] = ['title' => 'string', 'description' => 'string'];
+        }
+
+        $payload = [
+            'task' => 'Rewrite platform titles and descriptions for a PrankWish.com custom video social post.',
+            'brand' => [
+                'name' => $this->brandName,
+                'website' => $this->websiteUrl,
+                'order_flow' => [
+                    'Choose a style on PrankWish.com.',
+                    'Send your custom script, name, brief, or photos.',
+                    'Receive the finished video digitally on email or WhatsApp.',
+                ],
+            ],
+            'video_context' => [
+                'video_title' => $videoTitle,
+                'video_filename' => $videoFilename,
+                'occasion_key' => (string)($basePackage['occasion_key'] ?? ''),
+                'occasion_name' => (string)($basePackage['occasion_name'] ?? ''),
+                'primary_keyword' => (string)($basePackage['primary_keyword'] ?? ''),
+            ],
+            'rules' => [
+                'Titles must stay service-led and brand-led, not occasion-led.',
+                'Never start a title with Happy Birthday, Merry Christmas, Happy New Year, Mothers Day, Fathers Day, Valentine, Wedding, Graduation, Congratulations, Brother, Sister, Mom, Dad, Boyfriend, or Girlfriend.',
+                'Descriptions must mention PrankWish.com and naturally explain the 3-step order flow.',
+                'Keep every description to 1 or 2 short sentences, around 18 to 35 words when possible.',
+                'Only return platform keys that appear in seed_platforms.',
+                'Do not use quotes around output text.',
+            ],
+            'seed_platforms' => $seedPlatforms,
+            'avoid_recent_titles' => array_slice(array_values(array_unique(array_filter($history['titles'] ?? []))), 0, 12),
+            'avoid_recent_descriptions' => array_slice(array_values(array_unique(array_filter($history['descriptions'] ?? []))), 0, 8),
+            'output_format' => [
+                'platforms' => $outputPlatforms,
+            ],
+        ];
+
+        return "Return valid JSON only.\n" . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     private function sendGeminiRequest(string $url, array $body): array
