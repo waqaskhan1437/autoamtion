@@ -33,6 +33,7 @@ $videos = [];
 $localCount = 0;
 $githubCount = 0;
 $canBrowseAllOutputs = vwm_can_access_all_outputs();
+$canManageLocalOutputs = $canBrowseAllOutputs;
 $accessibleOutputs = $canBrowseAllOutputs ? [] : vwm_collect_accessible_output_names($pdo);
 
 if (is_dir($outputDir)) {
@@ -120,7 +121,7 @@ usort($videos, function($a, $b) {
 });
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!vwm_is_admin()) {
+    if (!$canManageLocalOutputs) {
         http_response_code(403);
         $message = 'Only admin can delete output files from the shared server.';
     } elseif (isset($_POST['delete_all'])) {
@@ -169,7 +170,7 @@ include 'includes/header.php';
         <a href="automation.php" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">
             Back to Automations
         </a>
-        <?php if (vwm_is_admin()): ?>
+        <?php if ($canManageLocalOutputs): ?>
         <form method="POST" onsubmit="return confirm('Delete all videos from output folder?')">
             <input type="hidden" name="delete_all" value="1">
             <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg">
@@ -255,7 +256,7 @@ include 'includes/header.php';
                         <a href="<?= $video['url'] ?>&download=1" class="flex-1 text-center py-1 bg-indigo-600 hover:bg-indigo-700 rounded text-xs">
                             Download
                         </a>
-                        <?php if (($video['source'] ?? 'local') === 'local' && vwm_is_admin()): ?>
+                        <?php if (($video['source'] ?? 'local') === 'local' && $canManageLocalOutputs): ?>
                             <form method="POST" class="flex-1" onsubmit="return confirm('Delete this video?')">
                                 <input type="hidden" name="delete" value="<?= htmlspecialchars($video['name']) ?>">
                                 <button type="submit" class="w-full py-1 bg-red-600 hover:bg-red-700 rounded text-xs">
