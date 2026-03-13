@@ -760,7 +760,12 @@ class AutomationRunner {
                 $creativeGenerator->logAppliedPackage($this->automationId, (string)$videoId, $creativePackage);
                 $cycleNumber = (int)($creativePackage['cycle'] ?? 1);
                 $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
-                $this->log('prankwish_tagline', 'success', "Cycle {$cycleNumber} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'");
+                $fallbackDetail = '';
+                if ($creativeSource === 'prankwish_fallback_library' && !empty($creativePackage['fallback_error'])) {
+                    $fallbackDetail = ' | AI fallback reason: ' . substr((string)$creativePackage['fallback_error'], 0, 220);
+                }
+
+                $this->log('prankwish_tagline', 'success', "Cycle {$cycleNumber} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'{$fallbackDetail}");
             } else {
                 $errorDetail = isset($creativePackage['error']) ? $creativePackage['error'] : 'Unknown error';
                 $this->log('prankwish_tagline', 'error', "PrankWish creative failed: {$errorDetail}");

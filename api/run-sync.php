@@ -836,7 +836,12 @@ foreach ($videos as $index => $video) {
 
                 $creativeCycle = (int)($creativePackage['cycle'] ?? 1);
                 $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
-                sendProgress('ai', 'success', "PrankWish creative {$creativeCycle} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'", $currentProgress + ($progressPerVideo * 0.45), $stats);
+                $fallbackDetail = '';
+                if ($creativeSource === 'prankwish_fallback_library' && !empty($creativePackage['fallback_error'])) {
+                    $fallbackDetail = ' | AI fallback reason: ' . substr((string)$creativePackage['fallback_error'], 0, 220);
+                }
+
+                sendProgress('ai', 'success', "PrankWish creative {$creativeCycle} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'{$fallbackDetail}", $currentProgress + ($progressPerVideo * 0.45), $stats);
             } else {
                 sendProgress('ai', 'warning', 'PrankWish creative package failed, trying other options...', $currentProgress + ($progressPerVideo * 0.42), $stats);
                 $taglineGenerated = false;

@@ -128,7 +128,13 @@ class PrankWishCreativeGenerator
             );
         }
 
-        return $this->buildFallbackPackage($basePackage, $videoTitle);
+        $fallback = $this->buildFallbackPackage($basePackage, $videoTitle);
+        if (!empty($generated['error'])) {
+            $fallback['fallback_error'] = (string)$generated['error'];
+            $fallback['fallback_provider'] = (string)($generated['provider'] ?? $this->provider);
+        }
+
+        return $fallback;
     }
 
     public function logAppliedPackage(int $automationId, string $videoId, array $package): void
@@ -640,8 +646,30 @@ class PrankWishCreativeGenerator
 
     private function normalizeGeneratedPackage(array $basePackage, array $data, string $videoTitle, array $meta): array
     {
-        $top = $this->normalizeOverlayText((string)($data['top_tagline'] ?? ''), 48);
-        $bottom = $this->normalizeBottomTagline((string)($data['bottom_tagline'] ?? ''));
+        $payload = $this->resolveGeneratedPayload($data);
+        $topCandidate = $this->extractTextCandidate($payload, [
+            'top_tagline',
+            'topTagline',
+            'top',
+            'headline',
+            'overlay_top',
+            'overlayTop',
+        ]);
+        if ($topCandidate === '') {
+            $topCandidate = $this->deriveTopFromPayload($payload);
+        }
+
+        $bottomCandidate = $this->extractTextCandidate($payload, [
+            'bottom_tagline',
+            'bottomTagline',
+            'bottom',
+            'subheadline',
+            'overlay_bottom',
+            'overlayBottom',
+        ]);
+
+        $top = $this->normalizeOverlayText($topCandidate, 48);
+        $bottom = $this->normalizeBottomTagline($bottomCandidate);
 
         if ($top === '' || $bottom === '') {
             return $this->buildFallbackPackage($basePackage, $videoTitle);
@@ -653,7 +681,8 @@ class PrankWishCreativeGenerator
                 continue;
             }
 
-            $generated = is_array($data['platforms'][$platform] ?? null) ? $data['platforms'][$platform] : [];
+            $generatedPlatforms = $this->extractPlatformsPayload($payload);
+            $generated = is_array($generatedPlatforms[$platform] ?? null) ? $generatedPlatforms[$platform] : [];
             $platforms[$platform] = $this->normalizePlatformContent($platform, $generated, $baseContent);
         }
 
@@ -677,6 +706,70 @@ class PrankWishCreativeGenerator
             'platform_overrides' => $this->buildPlatformOverrides($platforms),
             'caption' => $this->buildDefaultCaption($platforms),
         ];
+    }
+
+    private function resolveGeneratedPayload(array $data): array
+    {
+        foreach (['result', 'output', 'data', 'response', 'creative'] as $key) {
+            if (!is_array($data[$key] ?? null)) {
+                continue;
+            }
+
+            $candidate = (array)$data[$key];
+            if (
+                $this->extractTextCandidate($candidate, ['top_tagline', 'top', 'title', 'headline']) !== ''
+                || !empty($candidate['platforms'])
+                || !empty($candidate['social_copy'])
+            ) {
+                return $candidate;
+            }
+        }
+
+        return $data;
+    }
+
+    private function extractPlatformsPayload(array $payload): array
+    {
+        foreach (['platforms', 'social_copy', 'socialCopy', 'copies'] as $key) {
+            if (is_array($payload[$key] ?? null)) {
+                return (array)$payload[$key];
+            }
+        }
+
+        return [];
+    }
+
+    private function extractTextCandidate(array $payload, array $keys): string
+    {
+        foreach ($keys as $key) {
+            $value = trim((string)($payload[$key] ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function deriveTopFromPayload(array $payload): string
+    {
+        $title = $this->extractTextCandidate($payload, ['title', 'video_title', 'hook']);
+        if ($title === '') {
+            foreach ($this->extractPlatformsPayload($payload) as $platformContent) {
+                if (!is_array($platformContent)) {
+                    continue;
+                }
+
+                $title = trim((string)($platformContent['title'] ?? $platformContent['headline'] ?? ''));
+                if ($title !== '') {
+                    break;
+                }
+            }
+        }
+
+        $title = preg_replace('/\|\s*prankwish\.com/i', '', $title) ?? $title;
+        $title = preg_replace('/\bprankwish(?:\.com)?\b/i', '', $title) ?? $title;
+        return trim((string)$title);
     }
 
     private function normalizePlatformContent(string $platform, array $generated, array $base): array
