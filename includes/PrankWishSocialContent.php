@@ -2,7 +2,7 @@
 /**
  * PrankWish social content generator.
  *
- * Generates 20 occasion packs x 5 human-style variants = 100 rotating
+ * Generates 24 occasion packs x 5 human-style variants = 120 rotating
  * title/description/keyword/hashtag bundles for PostForMe social posting.
  */
 
@@ -83,6 +83,7 @@ class PrankWishSocialContent
             $forced = $this->findOccasion($forcedOccasion);
             if ($forced !== null) {
                 $occasion = $forced;
+                $variant = (($cycle - 1) % $this->variantsPerOccasion) + 1;
             }
         }
 
@@ -357,9 +358,9 @@ class PrankWishSocialContent
     ): array {
         $platform = $this->normalizePlatform($platform);
         $config = $this->platformConfigs[$platform] ?? $this->platformConfigs['instagram'];
-        $keywords = $this->buildKeywords($occasion, $platform, $variant);
-        $hashtags = $this->buildHashtags($occasion, $platform, $variant, (int) ($config['hashtag_limit'] ?? 6));
-        $tags = $this->buildTags($occasion, $keywords, (int) ($config['tag_limit'] ?? 10));
+        $keywords = $this->buildKeywords($occasion, $platform, $variant, $cycle, $videoTitle);
+        $hashtags = $this->buildHashtags($occasion, $platform, $variant, $cycle, (int) ($config['hashtag_limit'] ?? 6), $videoTitle);
+        $tags = $this->buildTags($occasion, $keywords, (int) ($config['tag_limit'] ?? 10), $cycle);
         $title = $this->buildTitle($platform, $occasion, $variant, $cycle, $videoTitle);
         $description = $this->buildDescription($platform, $occasion, $variant, $cycle, $videoTitle);
         $hashtagString = implode(' ', $hashtags);
@@ -394,38 +395,54 @@ class PrankWishSocialContent
         string $videoTitle
     ): string {
         $config = $this->platformConfigs[$platform] ?? $this->platformConfigs['youtube'];
+        $signals = $this->getOccasionSignals($occasion);
         $primaryPhrase = $occasion['search_phrases'][$variant - 1] ?? ($occasion['keywords'][0] ?? $occasion['name']);
+        $secondaryPool = array_merge(
+            (array) ($occasion['secondary_phrases'] ?? []),
+            (array) ($signals['extra_queries'] ?? [])
+        );
+        $supportPhrases = $this->pickSeededDistinct(
+            $secondaryPool,
+            2,
+            $platform . '|title-support|' . $occasion['key'] . '|' . $variant . '|' . $cycle
+        );
+        $supportOne = $supportPhrases[0] ?? $primaryPhrase;
+        $supportTwo = $supportPhrases[1] ?? ($signals['relation_title'] ?? $occasion['name']);
         $primaryTitle = $this->titleCase($primaryPhrase);
+        $supportTitle = $this->titleCase($supportOne);
+        $relationTitle = $this->titleCase((string) ($signals['relation_title'] ?? $occasion['name']));
+        $eventTitle = $this->titleCase((string) ($signals['event_title'] ?? $occasion['name']));
+        $videoHook = $this->extractVideoHook($videoTitle, 52);
         $brand = $this->brandName;
         $seoTemplates = [
-            $primaryTitle . ' | ' . $brand,
-            'Need a ' . $primaryPhrase . '? ' . $brand . ' made this',
-            $primaryTitle . ' idea that feels personal | ' . $brand,
-            'Funny ' . $primaryPhrase . ' video by ' . $brand,
-            $primaryTitle . ' surprise from ' . $brand,
+            $primaryTitle . ' | Custom Video Gift by ' . $brand,
+            $primaryTitle . ' | Personalized ' . $eventTitle . ' by ' . $brand,
+            $supportTitle . ' | ' . $primaryTitle . ' | ' . $brand,
+            $primaryTitle . ' | ' . $relationTitle . ' Video Idea | ' . $brand,
+            $primaryTitle . ' | ' . $this->titleCase($supportTwo) . ' | ' . $brand,
         ];
 
         $casualTemplates = [
-            'A funny ' . $primaryPhrase . ' from ' . $brand,
-            'Not a boring card: ' . $primaryTitle . ' | ' . $brand,
-            $primaryTitle . ', but a bit messier and funnier | ' . $brand,
-            'If you need a ' . $primaryPhrase . ', try this | ' . $brand,
-            $primaryTitle . ' with a pranky twist | ' . $brand,
+            'A rough human-style ' . $primaryPhrase . ' | ' . $brand,
+            'Not a boring template: ' . $primaryTitle . ' | ' . $brand,
+            $primaryTitle . ' that feels personal | ' . $brand,
+            $supportTitle . ' | ' . $brand,
+            $primaryTitle . ' with a pranky edge | ' . $brand,
         ];
 
         $shortTemplates = [
             $primaryTitle . ' | ' . $brand,
-            'Funny ' . $primaryPhrase . ' | ' . $brand,
-            'Quick ' . $primaryPhrase . ' idea | ' . $brand,
-            $primaryTitle . ' video | ' . $brand,
-            $brand . ': ' . $primaryTitle,
+            $supportTitle . ' | ' . $brand,
+            $relationTitle . ' gift idea | ' . $brand,
+            $primaryTitle . ' video gift | ' . $brand,
+            $brand . ' | ' . $primaryTitle,
         ];
 
         $professionalTemplates = [
             $primaryTitle . ' campaign idea | ' . $brand,
-            'Custom ' . $primaryPhrase . ' from ' . $brand,
-            $brand . ' video idea for ' . $primaryPhrase,
-            'Personalized ' . $primaryPhrase . ' concept | ' . $brand,
+            'Custom ' . $primaryPhrase . ' by ' . $brand,
+            $brand . ' example for ' . $supportOne,
+            'Personalized ' . $eventTitle . ' concept | ' . $brand,
             $primaryTitle . ' creative example | ' . $brand,
         ];
 
@@ -437,6 +454,11 @@ class PrankWishSocialContent
             $templates = $casualTemplates;
         } else {
             $templates = $seoTemplates;
+        }
+
+        if ($videoHook !== '' && ($platform === 'tiktok' || $platform === 'instagram' || $platform === 'threads' || $platform === 'twitter' || $platform === 'bluesky')) {
+            $templates[] = $this->smartTrim($videoHook, 44) . ' | ' . $primaryTitle . ' | ' . $brand;
+            $templates[] = $this->smartTrim($videoHook, 52) . ' | ' . $brand;
         }
 
         $templateIndex = $this->seedIndex($platform . '|title|' . $occasion['key'] . '|' . $variant . '|' . $cycle, count($templates));
@@ -453,79 +475,63 @@ class PrankWishSocialContent
         string $videoTitle
     ): string {
         $config = $this->platformConfigs[$platform] ?? $this->platformConfigs['instagram'];
+        $signals = $this->getOccasionSignals($occasion);
         $primaryPhrase = $occasion['search_phrases'][$variant - 1] ?? ($occasion['keywords'][0] ?? $occasion['name']);
-        $secondary = $occasion['secondary_phrases'] ?? [];
-        $supportOne = $secondary[$this->seedIndex($platform . '|support1|' . $occasion['key'] . '|' . $variant, count($secondary))] ?? $primaryPhrase;
-        $supportTwo = $secondary[$this->seedIndex($platform . '|support2|' . $occasion['key'] . '|' . ($variant + 2), count($secondary))] ?? $occasion['name'];
-        $descriptor = (string) ($occasion['descriptor'] ?? 'real people and real inside jokes');
-        $longOpeners = [
-            'If you are searching for a ' . $primaryPhrase . ', this is the kind of custom video people actually send.',
-            'This one sits right in the lane of ' . $primaryPhrase . ', but it feels more personal than a plain text wish.',
-            'Somebody out there is looking for a ' . $primaryPhrase . ', and this is exactly the sort of rough, human video that works.',
-            'When a card feels too flat, a ' . $primaryPhrase . ' like this lands better.',
-            'This is for people who want a ' . $primaryPhrase . ' that sounds like a real person made it.',
-        ];
+        $videoHook = $this->extractVideoHook($videoTitle, 70);
 
-        $shortOpeners = [
-            'A rough little ' . $primaryPhrase . ' idea from ' . $this->brandName . '.',
-            'Funny, slightly chaotic, and still personal: ' . $primaryPhrase . '.',
-            'This is what a ' . $primaryPhrase . ' looks like when it is not polished to death.',
-            'If you need a ' . $primaryPhrase . ', this is a solid start.',
-            'A human-feeling ' . $primaryPhrase . ' from ' . $this->brandName . '.',
-        ];
+        if ($platform === 'twitter' || $platform === 'bluesky') {
+            $shortPool = [
+                'Looking for ' . $primaryPhrase . '? ' . $this->brandName . ' makes custom video gifts. ' . $this->websiteUrl,
+                'Custom ' . $primaryPhrase . ' by ' . $this->brandName . '. Order at ' . $this->websiteUrl,
+                $this->titleCase($primaryPhrase) . ' from ' . $this->brandName . '. ' . $this->websiteUrl,
+                'Made-to-order ' . $primaryPhrase . ' from ' . $this->brandName . '. ' . $this->websiteUrl,
+            ];
 
-        $middleLines = [
-            $this->brandName . ' turns photos, names, and inside jokes into custom videos for ' . $descriptor . '.',
-            'We make pranky, heartfelt, and slightly mischievous video gifts for ' . $descriptor . '.',
-            'PrankWish keeps it personal, funny, and a bit imperfect in the best way for ' . $descriptor . '.',
-            'This is the kind of custom video gift people use when they want family and friends to actually react.',
-            'It works well when you want a message that feels closer to a real conversation than a template.',
-        ];
+            if ($videoHook !== '') {
+                $shortPool[] = $this->smartTrim($videoHook, 42) . ' | ' . $this->titleCase($primaryPhrase) . ' | ' . $this->websiteUrl;
+            }
 
-        $discoveryLines = [
-            'People usually find us while searching for ' . $primaryPhrase . ', ' . $supportOne . ', or ' . $supportTwo . '.',
-            'Common searches around this one include ' . $primaryPhrase . ', ' . $supportOne . ', and ' . $supportTwo . '.',
-            'Search intent here is simple: ' . $primaryPhrase . ', ' . $supportOne . ', and ' . $supportTwo . '.',
-            'This also fits people looking up ' . $supportOne . ' or ' . $supportTwo . '.',
-            'The same kind of audience often searches ' . $primaryPhrase . ' and ' . $supportOne . ' before landing here.',
-        ];
+            $shortText = $shortPool[$this->seedIndex($platform . '|short-social|' . $occasion['key'] . '|' . $variant . '|' . $cycle, count($shortPool))];
+            return $this->smartTrim($shortText, (int) ($config['description_limit'] ?? 240));
+        }
 
-        $relationLines = [
-            'People order these for mother, father, brother, sister, friend, girlfriend, boyfriend, family, and the occasional roast friend too.',
-            'Good for family and friends searches as well, especially brother, sister, mom, dad, girlfriend, boyfriend, and best friend gift ideas.',
-            'It is also in the same orbit as birthday gift for brother, unique birthday gift for sister, funny birthday gift for friend, and surprise videos for family.',
-            'The wider use case is still the same: family, friends, partners, and anyone who needs a funny occasion video that feels personal.',
-            'That is why it works across family, friends, couples, birthdays, Christmas, New Year, Valentine\'s Day, and other celebrations.',
-        ];
-
-        $shortRelationLines = [
-            'Works for family, friends, brothers, sisters, girlfriends, and boyfriends too.',
-            'Also good when someone is searching gifts for mom, dad, brother, sister, or friend.',
-            'Fits family and friends occasions without sounding too corporate.',
-            'Same vibe for birthdays, roasts, Christmas, New Year, and Valentine\'s Day.',
-            'Useful for brother, sister, friend, girlfriend, boyfriend, and family gift ideas.',
-        ];
-
-        $openerSet = ($platform === 'youtube' || $platform === 'facebook' || $platform === 'linkedin' || $platform === 'pinterest')
-            ? $longOpeners
-            : $shortOpeners;
-        $relationSet = ($platform === 'twitter' || $platform === 'bluesky' || $platform === 'threads')
-            ? $shortRelationLines
-            : $relationLines;
-
-        $opener = $openerSet[$this->seedIndex($platform . '|opener|' . $occasion['key'] . '|' . $variant, count($openerSet))];
-        $middle = $middleLines[$this->seedIndex($platform . '|middle|' . $occasion['key'] . '|' . $cycle, count($middleLines))];
-        $discovery = $discoveryLines[$this->seedIndex($platform . '|discover|' . $occasion['key'] . '|' . ($variant + 7), count($discoveryLines))];
-        $relation = $relationSet[$this->seedIndex($platform . '|relation|' . $occasion['key'] . '|' . ($cycle + 11), count($relationSet))];
+        $queryCount = ($platform === 'youtube' || $platform === 'facebook' || $platform === 'pinterest' || $platform === 'linkedin') ? 5 : 3;
+        $priorityQueries = array_merge(
+            [$primaryPhrase],
+            $this->pickSeededDistinct(
+                array_merge((array) ($occasion['secondary_phrases'] ?? []), (array) ($signals['extra_queries'] ?? [])),
+                max(1, $queryCount - 2),
+                $platform . '|priority-queries|' . $occasion['key'] . '|' . $variant . '|' . $cycle
+            )
+        );
+        $coverageQueries = $this->pickSeededDistinct(
+            (array) ($signals['coverage_queries'] ?? []),
+            2,
+            $platform . '|coverage-queries|' . $occasion['key'] . '|' . $variant . '|' . $cycle
+        );
+        $searchQueries = array_slice(
+            $this->uniqueStrings(array_merge($priorityQueries, $coverageQueries)),
+            0,
+            $queryCount
+        );
+        $opener = $this->buildPrimaryHook($platform, $primaryPhrase, $signals, $variant, $cycle, $videoHook);
+        $brandLine = $this->buildBrandAwarenessSentence($platform, $signals, $cycle);
+        $discovery = $this->buildSearchDiscoverySentence($platform, $searchQueries, $primaryPhrase, $signals, $variant, $cycle);
+        $coverage = $this->buildCoverageSentence($platform, $signals, $cycle);
+        $orderLine = $this->buildOrderingSentence($platform, $cycle);
         $cta = $this->buildCallToAction($platform);
 
-        $sentences = [$opener, $middle];
+        $sentences = [$opener, $brandLine];
 
         if ($platform === 'youtube' || $platform === 'facebook' || $platform === 'pinterest' || $platform === 'linkedin') {
             $sentences[] = $discovery;
-            $sentences[] = $relation;
+            $sentences[] = $coverage;
+            $sentences[] = $orderLine;
         } elseif ($platform === 'instagram' || $platform === 'tiktok') {
-            $sentences[] = $relation;
+            $sentences[] = $discovery;
+            $sentences[] = $coverage;
+        } else {
+            $sentences[] = $discovery;
         }
 
         $sentences[] = $cta;
@@ -551,27 +557,425 @@ class PrankWishSocialContent
         return $calls[$platform] ?? ('Create yours at ' . $this->websiteUrl . '.');
     }
 
-    private function buildKeywords(array $occasion, string $platform, int $variant): array
+    private function getOccasionSignals(array $occasion): array
     {
-        $primaryPhrase = $occasion['search_phrases'][$variant - 1] ?? ($occasion['keywords'][0] ?? $occasion['name']);
-        $platformExtras = [
-            'youtube' => ['youtube shorts', 'funny shorts', 'short video', 'video gift ideas'],
-            'tiktok' => ['tiktok video idea', 'funny video idea', 'viral birthday idea'],
-            'instagram' => ['instagram reel idea', 'funny reel caption', 'gift reel idea'],
-            'facebook' => ['facebook reels idea', 'shareable birthday video', 'family video gift'],
-            'twitter' => ['short post idea', 'funny birthday post', 'shareable video clip'],
-            'threads' => ['threads video post', 'shareable custom video'],
-            'linkedin' => ['brand content idea', 'campaign example', 'creative social post'],
-            'pinterest' => ['gift idea', 'birthday gift ideas', 'personalized gift idea'],
-            'bluesky' => ['shareable video idea', 'custom birthday post'],
+        $key = (string) ($occasion['key'] ?? '');
+        $birthdayCoverage = [
+            'birthday gift for brother',
+            'unique birthday gift for sister',
+            'funny birthday gift for friend',
+            'gift for mom from family',
+            'gift for dad from family',
+            'birthday surprise for girlfriend',
+            'birthday wish for boyfriend',
+            'birthday gift for wife',
+            'birthday gift for husband',
+            'birthday surprise for son',
+            'birthday surprise for daughter',
+            'custom birthday message video',
+        ];
+        $seasonalCoverage = [
+            'merry christmas video gift',
+            'happy new year video message',
+            'valentines day gift for girlfriend',
+            'valentines day gift for boyfriend',
+            'eid mubarak video',
+            'anniversary gift for wife',
+            'anniversary gift for husband',
+            'wedding video gift',
+            'graduation surprise video',
+            'thank you video message',
+        ];
+        $familyCoverage = [
+            'custom video gift for family',
+            'personalized video gift',
+            'funny gift for friends',
+            'family celebration video',
+            'custom greeting video',
+            'video gift delivered on email',
+            'video gift delivered on whatsapp',
         ];
 
+        $birthdayRelationMap = [
+            'birthday_mother' => ['mother', 'mom', 'mama', 'ammi', 'family'],
+            'birthday_father' => ['father', 'dad', 'abbu', 'baba', 'family'],
+            'birthday_brother' => ['brother', 'bhai', 'sibling', 'family'],
+            'birthday_sister' => ['sister', 'behen', 'sibling', 'family'],
+            'birthday_friend' => ['friend', 'friends', 'buddy'],
+            'birthday_best_friend' => ['best friend', 'bestie', 'bff', 'friend'],
+            'birthday_girlfriend' => ['girlfriend', 'partner', 'couple'],
+            'birthday_boyfriend' => ['boyfriend', 'partner', 'couple'],
+            'birthday_wife' => ['wife', 'spouse', 'partner', 'couple'],
+            'birthday_husband' => ['husband', 'spouse', 'partner', 'couple'],
+            'birthday_son' => ['son', 'boy', 'family'],
+            'birthday_daughter' => ['daughter', 'girl', 'family'],
+            'birthday_family' => ['mother', 'father', 'brother', 'sister', 'friend', 'girlfriend', 'boyfriend', 'family'],
+        ];
+
+        $default = [
+            'event_title' => $occasion['name'] ?? 'Custom Video Gift',
+            'relation_title' => $occasion['name'] ?? 'occasion gift',
+            'relation_terms' => ['family', 'friends', 'custom video gift'],
+            'relation_hashtags' => ['family gift', 'friends gift', 'custom video gift', 'personalized gift'],
+            'extra_queries' => [],
+            'coverage_queries' => array_merge($birthdayCoverage, $seasonalCoverage, $familyCoverage),
+            'coverage_hashtags' => [
+                'birthday gift for brother',
+                'unique birthday gift for sister',
+                'funny birthday gift for friend',
+                'gift for mom',
+                'gift for dad',
+                'merry christmas',
+                'happy new year',
+                'valentines day gift',
+            ],
+            'coverage_line' => 'mother, father, brother, sister, friend, girlfriend, boyfriend, wife, husband, son, daughter, and family',
+            'descriptor' => (string) ($occasion['descriptor'] ?? 'real people and inside jokes'),
+        ];
+
+        if (isset($birthdayRelationMap[$key])) {
+            $terms = $birthdayRelationMap[$key];
+            $relationTitle = $terms[0];
+            return array_merge($default, [
+                'event_title' => 'Birthday Video Gift',
+                'relation_title' => $relationTitle,
+                'relation_terms' => array_merge($terms, ['birthday gift', 'birthday surprise', 'custom birthday message']),
+                'relation_hashtags' => array_merge($terms, ['birthday gift', 'birthday surprise', 'custom birthday video', 'family birthday']),
+                'extra_queries' => [
+                    'happy birthday ' . $relationTitle,
+                    'birthday gift for ' . $relationTitle,
+                    'custom birthday message for ' . $relationTitle,
+                    'personalized birthday video for ' . $relationTitle,
+                ],
+                'coverage_queries' => array_merge($birthdayCoverage, $seasonalCoverage, $familyCoverage),
+                'coverage_hashtags' => array_merge(
+                    ['happy birthday ' . $relationTitle, 'birthday gift for ' . $relationTitle],
+                    ['birthday gift for brother', 'unique birthday gift for sister', 'funny birthday gift for friend', 'gift for mom', 'gift for dad', 'valentines day gift', 'merry christmas', 'happy new year']
+                ),
+                'coverage_line' => 'mother, father, brother, sister, friend, girlfriend, boyfriend, wife, husband, son, daughter, and family gift searches',
+            ]);
+        }
+
+        switch ($key) {
+            case 'funny_roast_friend':
+                return array_merge($default, [
+                    'event_title' => 'Funny Roast Video',
+                    'relation_title' => 'roast friend',
+                    'relation_terms' => ['friend', 'best friend', 'roast friend', 'savage friend', 'prank gift'],
+                    'relation_hashtags' => ['roast friend', 'birthday roast', 'funny friend gift', 'prank video', 'best friend roast'],
+                    'extra_queries' => ['roast friend birthday video', 'funny roast for friend', 'birthday roast for best friend', 'savage birthday video', 'funny prank video'],
+                    'coverage_queries' => array_merge($birthdayCoverage, ['funny gift for best friend', 'roast gift for friend'], $seasonalCoverage),
+                    'coverage_hashtags' => ['roast friend', 'funny roast', 'birthday roast', 'best friend roast', 'prank gift', 'funny birthday gift for friend'],
+                    'coverage_line' => 'friends, best friends, group chats, birthdays, and roast-style gift searches',
+                ]);
+
+            case 'mothers_day':
+                return array_merge($default, [
+                    'event_title' => 'Mother\'s Day Video Gift',
+                    'relation_title' => 'mother',
+                    'relation_terms' => ['mother', 'mom', 'mama', 'ammi', 'family', 'mother\'s day gift'],
+                    'relation_hashtags' => ['mothers day', 'gift for mom', 'mother day surprise', 'mom tribute', 'family gift'],
+                    'extra_queries' => ['mother\'s day gift for mom', 'happy mother\'s day video', 'mother\'s day message for mom', 'custom video for mom'],
+                    'coverage_queries' => array_merge(['gift for mom from family', 'happy birthday mother'], $seasonalCoverage, $familyCoverage),
+                    'coverage_hashtags' => ['mothers day', 'happy mothers day', 'gift for mom', 'mom tribute', 'family gift'],
+                    'coverage_line' => 'mom, mother, family, birthday, Christmas, and thank-you style gift searches',
+                ]);
+
+            case 'fathers_day':
+                return array_merge($default, [
+                    'event_title' => 'Father\'s Day Video Gift',
+                    'relation_title' => 'father',
+                    'relation_terms' => ['father', 'dad', 'abbu', 'baba', 'family', 'father\'s day gift'],
+                    'relation_hashtags' => ['fathers day', 'gift for dad', 'dad tribute', 'family gift', 'father day surprise'],
+                    'extra_queries' => ['father\'s day gift for dad', 'happy father\'s day video', 'father\'s day message for dad', 'custom video for dad'],
+                    'coverage_queries' => array_merge(['gift for dad from family', 'happy birthday father'], $seasonalCoverage, $familyCoverage),
+                    'coverage_hashtags' => ['fathers day', 'happy fathers day', 'gift for dad', 'dad tribute', 'family gift'],
+                    'coverage_line' => 'dad, father, family, birthday, Christmas, and thank-you gift searches',
+                ]);
+
+            case 'valentines_day':
+            case 'anniversary':
+            case 'wedding':
+                return array_merge($default, [
+                    'event_title' => $key === 'wedding' ? 'Wedding Video Gift' : ($key === 'anniversary' ? 'Anniversary Video Gift' : 'Valentine\'s Video Gift'),
+                    'relation_title' => $key === 'wedding' ? 'couple' : 'partner',
+                    'relation_terms' => ['girlfriend', 'boyfriend', 'wife', 'husband', 'partner', 'couple', 'romantic gift'],
+                    'relation_hashtags' => ['gift for girlfriend', 'gift for boyfriend', 'gift for wife', 'gift for husband', 'couple surprise', 'romantic gift'],
+                    'extra_queries' => array_merge((array) ($occasion['search_phrases'] ?? []), ['romantic prank video', 'cute couple video gift', 'personalized couple video']),
+                    'coverage_queries' => array_merge(['birthday surprise for girlfriend', 'birthday wish for boyfriend'], $seasonalCoverage, $familyCoverage),
+                    'coverage_hashtags' => ['valentines day', 'anniversary gift', 'wedding gift', 'gift for girlfriend', 'gift for boyfriend', 'gift for wife', 'gift for husband'],
+                    'coverage_line' => 'girlfriend, boyfriend, wife, husband, anniversaries, weddings, Valentine\'s Day, and birthday surprise searches',
+                ]);
+
+            case 'christmas':
+            case 'new_year':
+            case 'eid':
+                return array_merge($default, [
+                    'event_title' => $key === 'christmas' ? 'Christmas Video Gift' : ($key === 'new_year' ? 'New Year Video Greeting' : 'Eid Video Greeting'),
+                    'relation_title' => $key === 'christmas' ? 'Christmas gift' : ($key === 'new_year' ? 'New Year message' : 'Eid greeting'),
+                    'relation_terms' => ['family', 'friends', 'brother', 'sister', 'mother', 'father', 'girlfriend', 'boyfriend', 'holiday gift'],
+                    'relation_hashtags' => ['merry christmas', 'happy new year', 'eid mubarak', 'holiday gift', 'family greeting', 'friends gift'],
+                    'extra_queries' => array_merge((array) ($occasion['search_phrases'] ?? []), ['holiday greeting video', 'gift for family', 'gift for friends']),
+                    'coverage_queries' => array_merge($seasonalCoverage, $birthdayCoverage, $familyCoverage),
+                    'coverage_hashtags' => ['merry christmas', 'happy new year', 'eid mubarak', 'gift for family', 'gift for friends', 'holiday video'],
+                    'coverage_line' => 'family, friends, brothers, sisters, mothers, fathers, girlfriends, and boyfriends during holiday season searches',
+                ]);
+
+            case 'graduation':
+            case 'thank_you':
+                return array_merge($default, [
+                    'event_title' => $key === 'graduation' ? 'Graduation Video Gift' : 'Thank You Video Gift',
+                    'relation_title' => $key === 'graduation' ? 'graduate' : 'thank you message',
+                    'relation_terms' => ['friend', 'family', 'brother', 'sister', 'mother', 'father', 'graduate', 'appreciation gift'],
+                    'relation_hashtags' => ['graduation gift', 'thank you video', 'family gift', 'friend gift', 'custom video gift'],
+                    'extra_queries' => array_merge((array) ($occasion['search_phrases'] ?? []), ['custom appreciation video', 'graduation surprise for friend', 'thank you gift for mother']),
+                    'coverage_queries' => array_merge($familyCoverage, $birthdayCoverage, $seasonalCoverage),
+                    'coverage_hashtags' => ['graduation gift', 'thank you video', 'appreciation gift', 'friend gift', 'family gift'],
+                    'coverage_line' => 'family, friend, graduation, thank-you, birthday, and holiday gift searches',
+                ]);
+        }
+
+        return $default;
+    }
+
+    private function buildPrimaryHook(
+        string $platform,
+        string $primaryPhrase,
+        array $signals,
+        int $variant,
+        int $cycle,
+        string $videoHook = ''
+    ): string {
+        $longHooks = [
+            'If you are searching for ' . $primaryPhrase . ', this is the kind of custom video people actually send when they want a real reaction.',
+            'This sample sits right in the lane of ' . $primaryPhrase . ', but it sounds more like a person than a stock template.',
+            'People looking for ' . $primaryPhrase . ' usually want something more human than a plain text wish, and that is where this style works.',
+            'When someone needs ' . $primaryPhrase . ', a custom video like this usually lands better than a generic card.',
+            'This one is built for people searching ' . $primaryPhrase . ' and wanting a message that feels personal, funny, and slightly rough in a good way.',
+        ];
+        $shortHooks = [
+            'If you need ' . $primaryPhrase . ', this is the sort of human-looking custom video that gets shared.',
+            'A rough, personal take on ' . $primaryPhrase . ' from ' . $this->brandName . '.',
+            'This is what ' . $primaryPhrase . ' looks like when it does not feel over-polished.',
+            'A custom ' . $primaryPhrase . ' idea that sounds closer to a real conversation than a template.',
+            'Searching ' . $primaryPhrase . '? This is the type of sample people actually send.',
+        ];
+
+        $hooks = ($platform === 'youtube' || $platform === 'facebook' || $platform === 'pinterest' || $platform === 'linkedin')
+            ? $longHooks
+            : $shortHooks;
+        $hook = $hooks[$this->seedIndex($platform . '|hook|' . $primaryPhrase . '|' . $variant . '|' . $cycle, count($hooks))];
+
+        if ($videoHook !== '' && ($platform === 'youtube' || $platform === 'facebook')) {
+            $hook .= ' The line "' . $videoHook . '" is just one example of the tone people ask for.';
+        }
+
+        return $hook;
+    }
+
+    private function buildBrandAwarenessSentence(string $platform, array $signals, int $cycle): string
+    {
+        $descriptor = (string) ($signals['descriptor'] ?? 'real people and inside jokes');
+        $longLines = [
+            $this->brandName . ' makes personalized video gifts for birthdays, roasts, Christmas, New Year, Valentine\'s Day, Eid, and family surprises.',
+            $this->brandName . ' turns names, scripts, photos, and inside jokes into made-to-order video gifts for ' . $descriptor . '.',
+            'People use ' . $this->brandName . ' when they want a custom video that feels more personal than a normal greeting card or copied caption.',
+            $this->brandName . ' is basically a made-to-order video gift brand for family, friends, couples, birthdays, and seasonal celebrations.',
+        ];
+        $shortLines = [
+            $this->brandName . ' makes made-to-order video gifts for birthdays, families, couples, and holidays.',
+            $this->brandName . ' turns names, scripts, and photos into custom video gifts.',
+            $this->brandName . ' is built for rough, funny, human-feeling video greetings.',
+        ];
+
+        $pool = ($platform === 'twitter' || $platform === 'bluesky' || $platform === 'threads')
+            ? $shortLines
+            : $longLines;
+
+        return $pool[$this->seedIndex($platform . '|brand|' . $cycle, count($pool))];
+    }
+
+    private function buildSearchDiscoverySentence(
+        string $platform,
+        array $queries,
+        string $primaryPhrase,
+        array $signals,
+        int $variant,
+        int $cycle
+    ): string {
+        $queries = $this->uniqueStrings(array_values(array_filter(array_map('trim', $queries))));
+        if (empty($queries)) {
+            $queries = [$primaryPhrase];
+        }
+
+        $queryText = $this->humanJoin($queries, 'and');
+        $longTemplates = [
+            'People usually find this style while searching ' . $queryText . '.',
+            'The search intent around this post is usually ' . $queryText . '.',
+            'Typical discovery terms here include ' . $queryText . '.',
+            'This same audience often shows up from searches like ' . $queryText . '.',
+        ];
+        $shortTemplates = [
+            'Searches around this one: ' . $queryText . '.',
+            'People find it through ' . $queryText . '.',
+            'Keywords here are ' . $queryText . '.',
+        ];
+
+        $pool = ($platform === 'youtube' || $platform === 'facebook' || $platform === 'pinterest' || $platform === 'linkedin')
+            ? $longTemplates
+            : $shortTemplates;
+
+        return $pool[$this->seedIndex($platform . '|discover|' . $primaryPhrase . '|' . $variant . '|' . $cycle, count($pool))];
+    }
+
+    private function buildCoverageSentence(string $platform, array $signals, int $cycle): string
+    {
+        $coverageLine = (string) ($signals['coverage_line'] ?? 'family and friends');
+        $longTemplates = [
+            'It also works across searches for ' . $coverageLine . ', plus birthdays, Christmas, New Year, Valentine\'s Day, Eid, and other celebration videos.',
+            'That is why the same format keeps showing up in family, friends, couples, holiday, roast, and gift-intent searches around ' . $coverageLine . '.',
+            'The wider use case is simple: people want something funny, personal, and searchable for ' . $coverageLine . '.',
+            'This format keeps covering family, friends, partners, birthdays, holidays, and relationship gift searches without feeling too robotic.',
+        ];
+        $shortTemplates = [
+            'Works for ' . $coverageLine . ' too.',
+            'Same format works for birthdays, holidays, couples, and family gifts.',
+            'Also fits family, friends, and relationship gift searches.',
+        ];
+
+        $pool = ($platform === 'twitter' || $platform === 'bluesky')
+            ? $shortTemplates
+            : $longTemplates;
+
+        return $pool[$this->seedIndex($platform . '|coverage|' . $cycle, count($pool))];
+    }
+
+    private function buildOrderingSentence(string $platform, int $cycle): string
+    {
+        $longLines = [
+            'Pick the style, send the name, message, script, or photos, and the team records a custom video for that person.',
+            'The order flow is simple: choose a PrankWish style, add the occasion details, and get the finished video delivered on email or WhatsApp.',
+            'Most PrankWish orders are personalized around your script, photos, and occasion details before the final video is delivered.',
+            'Many PrankWish.com listings show 60-minute delivery, while some selected video styles offer 24-hour express turnaround.',
+        ];
+        $shortLines = [
+            'Choose the style, send the details, and get the video on email or WhatsApp.',
+            'Pick a style, add the script or photos, and the team records the order.',
+            'Many styles on PrankWish.com show fast delivery options too.',
+        ];
+
+        $pool = ($platform === 'youtube' || $platform === 'facebook' || $platform === 'pinterest' || $platform === 'linkedin')
+            ? $longLines
+            : $shortLines;
+
+        return $pool[$this->seedIndex($platform . '|order|' . $cycle, count($pool))];
+    }
+
+    private function extractVideoHook(string $videoTitle, int $limit = 60): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $videoTitle));
+        if ($text === '') {
+            return '';
+        }
+
+        $text = preg_replace('/https?:\/\/\S+/i', '', $text);
+        $text = preg_replace('/[#@]/', '', $text);
+        $text = trim((string) $text, " \t\n\r\0\x0B-_|");
+
+        if ($text === '' || strlen($text) < 8) {
+            return '';
+        }
+
+        if (preg_match('/^(short_|manual_|clip\s*\d+|part\s*\d+)/i', $text)) {
+            return '';
+        }
+
+        if (preg_match('/^(sample|test)\s+video$/i', $text)) {
+            return '';
+        }
+
+        return $this->smartTrim($text, $limit);
+    }
+
+    private function pickSeededDistinct(array $items, int $count, string $seed): array
+    {
+        $items = $this->uniqueStrings($items);
+        if ($count <= 0 || empty($items)) {
+            return [];
+        }
+
+        if (count($items) <= $count) {
+            return array_values($items);
+        }
+
+        $start = $this->seedIndex($seed, count($items));
+        $picked = [];
+        for ($offset = 0; $offset < count($items) && count($picked) < $count; $offset++) {
+            $picked[] = $items[($start + $offset) % count($items)];
+        }
+
+        return $picked;
+    }
+
+    private function humanJoin(array $items, string $lastJoiner = 'and'): string
+    {
+        $items = array_values(array_filter(array_map(static function ($item) {
+            return trim((string) $item);
+        }, $items)));
+
+        if (empty($items)) {
+            return '';
+        }
+        if (count($items) === 1) {
+            return $items[0];
+        }
+        if (count($items) === 2) {
+            return $items[0] . ' ' . $lastJoiner . ' ' . $items[1];
+        }
+
+        $last = array_pop($items);
+        return implode(', ', $items) . ', ' . $lastJoiner . ' ' . $last;
+    }
+
+    private function buildKeywords(array $occasion, string $platform, int $variant, int $cycle, string $videoTitle = ''): array
+    {
+        $signals = $this->getOccasionSignals($occasion);
+        $primaryPhrase = $occasion['search_phrases'][$variant - 1] ?? ($occasion['keywords'][0] ?? $occasion['name']);
+        $platformExtras = [
+            'youtube' => ['youtube shorts', 'searchable video title', 'custom video gift ideas', 'relationship gift ideas'],
+            'tiktok' => ['tiktok gift idea', 'funny video idea', 'gift ideas', 'viral custom video'],
+            'instagram' => ['instagram reel idea', 'reel caption idea', 'personalized gift idea', 'video gift idea'],
+            'facebook' => ['facebook reels idea', 'shareable family video', 'custom celebration video', 'gift idea post'],
+            'twitter' => ['short post idea', 'shareable video clip', 'gift idea keyword'],
+            'threads' => ['threads video post', 'gift idea thread', 'celebration post idea'],
+            'linkedin' => ['brand storytelling example', 'campaign idea', 'creative social post', 'video gifting brand'],
+            'pinterest' => ['gift idea', 'personalized gift idea', 'occasion gift idea', 'search friendly pin'],
+            'bluesky' => ['shareable video idea', 'custom gift post', 'occasion gift keyword'],
+        ];
+
+        $videoHook = $this->extractVideoHook($videoTitle, 48);
         $keywords = array_merge(
             [$primaryPhrase],
             $occasion['keywords'] ?? [],
             $occasion['secondary_phrases'] ?? [],
-            ['prankwish', 'prankwish.com', 'custom video gift', 'personalized video gift'],
+            $signals['extra_queries'] ?? [],
+            $signals['coverage_queries'] ?? [],
+            $signals['relation_terms'] ?? [],
+            ['prankwish', 'prankwish.com', 'custom video gift', 'personalized video gift', 'made to order video gift', 'video message gift'],
             $platformExtras[$platform] ?? []
+        );
+
+        if ($videoHook !== '') {
+            $keywords[] = strtolower($videoHook);
+        }
+
+        $keywords = array_merge(
+            $keywords,
+            $this->pickSeededDistinct(
+                (array) ($signals['coverage_queries'] ?? []),
+                4,
+                $platform . '|keyword-coverage|' . $occasion['key'] . '|' . $variant . '|' . $cycle
+            )
         );
 
         $keywords = $this->uniqueStrings($keywords);
@@ -587,27 +991,44 @@ class PrankWishSocialContent
         return $cleaned;
     }
 
-    private function buildHashtags(array $occasion, string $platform, int $variant, int $limit): array
+    private function buildHashtags(array $occasion, string $platform, int $variant, int $cycle, int $limit, string $videoTitle = ''): array
     {
+        $signals = $this->getOccasionSignals($occasion);
         $primaryPhrase = $occasion['search_phrases'][$variant - 1] ?? ($occasion['keywords'][0] ?? $occasion['name']);
         $platformExtras = [
-            'youtube' => ['youtube shorts', 'short video'],
-            'tiktok' => ['fyp', 'funny video', 'gift ideas'],
-            'instagram' => ['reels', 'reelitfeelit', 'gift ideas'],
-            'facebook' => ['facebook reels', 'share this'],
-            'twitter' => ['shorts', 'gift ideas'],
-            'threads' => ['reels', 'gift ideas'],
-            'linkedin' => ['social video', 'brand storytelling'],
-            'pinterest' => ['gift ideas', 'birthday ideas', 'occasion ideas'],
-            'bluesky' => ['video ideas', 'gift ideas'],
+            'youtube' => ['youtube shorts', 'short video', 'gift ideas'],
+            'tiktok' => ['fyp', 'gift ideas', 'birthday gift', 'gift tok'],
+            'instagram' => ['reels', 'gift ideas', 'custom gift', 'celebration ideas'],
+            'facebook' => ['facebook reels', 'gift ideas', 'family gifts'],
+            'twitter' => ['gift ideas'],
+            'threads' => ['gift ideas', 'custom gift', 'celebration ideas'],
+            'linkedin' => ['brand storytelling', 'personalized gifting'],
+            'pinterest' => ['gift ideas', 'occasion ideas', 'personalized gifts'],
+            'bluesky' => ['gift ideas'],
         ];
 
-        $rawTags = array_merge(
-            ['PrankWish', 'PrankWishCom', $primaryPhrase],
-            $occasion['hashtags'] ?? [],
-            array_slice($occasion['secondary_phrases'] ?? [], 0, 3),
-            $platformExtras[$platform] ?? []
-        );
+        $videoHook = $this->extractVideoHook($videoTitle, 32);
+        if ($platform === 'twitter' || $platform === 'bluesky') {
+            $rawTags = array_merge(
+                [$primaryPhrase, 'PrankWish'],
+                array_slice((array) ($occasion['hashtags'] ?? []), 0, 2),
+                array_slice((array) ($signals['relation_hashtags'] ?? []), 0, 1),
+                $platformExtras[$platform] ?? []
+            );
+        } else {
+            $rawTags = array_merge(
+                ['PrankWish', 'PrankWishCom', $primaryPhrase],
+                $occasion['hashtags'] ?? [],
+                array_slice($occasion['secondary_phrases'] ?? [], 0, 4),
+                $signals['relation_hashtags'] ?? [],
+                $signals['coverage_hashtags'] ?? [],
+                $platformExtras[$platform] ?? []
+            );
+        }
+
+        if ($videoHook !== '') {
+            $rawTags[] = $videoHook;
+        }
 
         $hashtags = [];
         foreach ($rawTags as $rawTag) {
@@ -618,15 +1039,26 @@ class PrankWishSocialContent
         }
 
         $hashtags = $this->uniqueStrings($hashtags);
-        return array_slice($hashtags, 0, max(1, $limit));
+        $priority = array_slice($hashtags, 0, min(4, count($hashtags)));
+        $remaining = array_slice($hashtags, count($priority));
+        $remaining = $this->pickSeededDistinct(
+            $remaining,
+            max(0, $limit - count($priority)),
+            $platform . '|hashtags|' . $occasion['key'] . '|' . $variant . '|' . $cycle
+        );
+
+        return array_slice(array_merge($priority, $remaining), 0, max(1, $limit));
     }
 
-    private function buildTags(array $occasion, array $keywords, int $limit): array
+    private function buildTags(array $occasion, array $keywords, int $limit, int $cycle): array
     {
+        $signals = $this->getOccasionSignals($occasion);
         $tags = array_merge(
             [$occasion['name']],
             $keywords,
-            ['PrankWish', 'PrankWish.com', 'custom video gift', 'personalized occasion video']
+            $signals['relation_terms'] ?? [],
+            $signals['coverage_queries'] ?? [],
+            ['PrankWish', 'PrankWish.com', 'custom video gift', 'personalized occasion video', 'made to order video gift']
         );
 
         $tags = $this->uniqueStrings($tags);
@@ -639,7 +1071,7 @@ class PrankWishSocialContent
             $cleaned[] = $this->smartTrim($tag, 60);
         }
 
-        return array_slice($cleaned, 0, max(1, $limit));
+        return $this->pickSeededDistinct($cleaned, max(1, $limit), 'tags|' . $occasion['key'] . '|' . $cycle);
     }
 
     private function normalizeHashtag(string $tag): string
@@ -682,63 +1114,63 @@ class PrankWishSocialContent
                 'title_limit' => 100,
                 'description_limit' => 4200,
                 'caption_limit' => 4200,
-                'hashtag_limit' => 5,
-                'tag_limit' => 15,
+                'hashtag_limit' => 8,
+                'tag_limit' => 18,
             ],
             'tiktok' => [
                 'title_limit' => 100,
                 'description_limit' => 900,
                 'caption_limit' => 2200,
-                'hashtag_limit' => 8,
-                'tag_limit' => 10,
+                'hashtag_limit' => 10,
+                'tag_limit' => 14,
             ],
             'instagram' => [
                 'title_limit' => 100,
                 'description_limit' => 900,
                 'caption_limit' => 2200,
                 'hashtag_limit' => 10,
-                'tag_limit' => 10,
+                'tag_limit' => 14,
             ],
             'facebook' => [
                 'title_limit' => 100,
                 'description_limit' => 1600,
                 'caption_limit' => 1600,
-                'hashtag_limit' => 6,
-                'tag_limit' => 10,
+                'hashtag_limit' => 9,
+                'tag_limit' => 14,
             ],
             'twitter' => [
                 'title_limit' => 80,
-                'description_limit' => 220,
+                'description_limit' => 180,
                 'caption_limit' => 280,
-                'hashtag_limit' => 4,
+                'hashtag_limit' => 3,
                 'tag_limit' => 8,
             ],
             'threads' => [
                 'title_limit' => 90,
                 'description_limit' => 350,
                 'caption_limit' => 500,
-                'hashtag_limit' => 6,
-                'tag_limit' => 8,
+                'hashtag_limit' => 8,
+                'tag_limit' => 10,
             ],
             'linkedin' => [
                 'title_limit' => 120,
                 'description_limit' => 1400,
                 'caption_limit' => 1400,
-                'hashtag_limit' => 5,
-                'tag_limit' => 10,
+                'hashtag_limit' => 4,
+                'tag_limit' => 12,
             ],
             'pinterest' => [
                 'title_limit' => 100,
                 'description_limit' => 900,
                 'caption_limit' => 900,
-                'hashtag_limit' => 6,
-                'tag_limit' => 10,
+                'hashtag_limit' => 8,
+                'tag_limit' => 14,
             ],
             'bluesky' => [
                 'title_limit' => 90,
-                'description_limit' => 240,
+                'description_limit' => 200,
                 'caption_limit' => 300,
-                'hashtag_limit' => 4,
+                'hashtag_limit' => 3,
                 'tag_limit' => 8,
             ],
         ];
@@ -843,6 +1275,42 @@ class PrankWishSocialContent
                 ['cute birthday message for boyfriend', 'boyfriend birthday surprise', 'personalized video for boyfriend', 'funny couple gift for boyfriend'],
                 ['happy birthday boyfriend', 'birthday gift for boyfriend', 'boyfriend birthday', 'gift for boyfriend', 'romantic birthday', 'funny couple gift'],
                 ['birthday boyfriend', 'happy birthday boyfriend', 'boyfriend birthday', 'gift for boyfriend', 'birthday for boyfriend']
+            ),
+            $make(
+                'birthday_wife',
+                'Birthday For Wife',
+                'wives and partners who deserve a birthday gift that feels personal instead of copy-paste',
+                ['happy birthday wife', 'birthday gift for wife', 'funny birthday video for wife', 'unique birthday gift for wife', 'birthday surprise for wife'],
+                ['cute birthday message for wife', 'wife birthday surprise', 'personalized video for wife', 'romantic funny gift for wife'],
+                ['happy birthday wife', 'birthday gift for wife', 'wife birthday', 'gift for wife', 'romantic birthday', 'personalized gift'],
+                ['birthday wife', 'happy birthday wife', 'wife birthday', 'gift for wife', 'birthday for wife']
+            ),
+            $make(
+                'birthday_husband',
+                'Birthday For Husband',
+                'husbands and partners who like a birthday surprise with character',
+                ['happy birthday husband', 'birthday gift for husband', 'funny birthday video for husband', 'unique birthday gift for husband', 'birthday surprise for husband'],
+                ['cute birthday message for husband', 'husband birthday surprise', 'personalized video for husband', 'funny gift for husband'],
+                ['happy birthday husband', 'birthday gift for husband', 'husband birthday', 'gift for husband', 'romantic birthday', 'personalized gift'],
+                ['birthday husband', 'happy birthday husband', 'husband birthday', 'gift for husband', 'birthday for husband']
+            ),
+            $make(
+                'birthday_son',
+                'Birthday For Son',
+                'sons, boys, and family moments where a custom video feels bigger than a normal wish',
+                ['happy birthday son', 'birthday gift for son', 'funny birthday video for son', 'unique birthday gift for son', 'birthday surprise for son'],
+                ['birthday message for son', 'gift for son from family', 'personalized birthday video for son', 'family surprise for son'],
+                ['happy birthday son', 'birthday gift for son', 'son birthday', 'gift for son', 'family birthday', 'birthday surprise'],
+                ['birthday son', 'happy birthday son', 'son birthday', 'gift for son', 'birthday for son']
+            ),
+            $make(
+                'birthday_daughter',
+                'Birthday For Daughter',
+                'daughters, girls, and family surprises that need something warmer and more fun than a template',
+                ['happy birthday daughter', 'birthday gift for daughter', 'funny birthday video for daughter', 'unique birthday gift for daughter', 'birthday surprise for daughter'],
+                ['birthday message for daughter', 'gift for daughter from family', 'personalized birthday video for daughter', 'family surprise for daughter'],
+                ['happy birthday daughter', 'birthday gift for daughter', 'daughter birthday', 'gift for daughter', 'family birthday', 'birthday surprise'],
+                ['birthday daughter', 'happy birthday daughter', 'daughter birthday', 'gift for daughter', 'birthday for daughter']
             ),
             $make(
                 'funny_roast_friend',
@@ -1027,6 +1495,18 @@ class PrankWishSocialContent
             if ($contains('boyfriend')) {
                 return $this->findOccasion('birthday_boyfriend');
             }
+            if ($contains('wife')) {
+                return $this->findOccasion('birthday_wife');
+            }
+            if ($contains('husband')) {
+                return $this->findOccasion('birthday_husband');
+            }
+            if ($contains('son')) {
+                return $this->findOccasion('birthday_son');
+            }
+            if ($contains('daughter')) {
+                return $this->findOccasion('birthday_daughter');
+            }
             if ($contains('friend')) {
                 return $this->findOccasion('birthday_friend');
             }
@@ -1078,6 +1558,14 @@ class PrankWishSocialContent
             'bestie' => 'birthday_best_friend',
             'girlfriend' => 'birthday_girlfriend',
             'boyfriend' => 'birthday_boyfriend',
+            'wife' => 'birthday_wife',
+            'birthday_wife' => 'birthday_wife',
+            'husband' => 'birthday_husband',
+            'birthday_husband' => 'birthday_husband',
+            'son' => 'birthday_son',
+            'birthday_son' => 'birthday_son',
+            'daughter' => 'birthday_daughter',
+            'birthday_daughter' => 'birthday_daughter',
             'roast_friend' => 'funny_roast_friend',
             'roast' => 'funny_roast_friend',
             'mothers_day' => 'mothers_day',
