@@ -483,10 +483,10 @@ class PrankWishCreativeGenerator
             return ['success' => false, 'error' => 'Ollama is not configured.', 'provider' => 'ollama', 'source' => 'prankwish_ollama'];
         }
 
-        $taglineResponse = $this->ollamaClient->generateJson(
+        $taglineResponse = $this->ollamaClient->generateText(
             $this->buildOllamaTaglinePrompt($videoTitle, $videoFilename, $basePackage, $history),
-            ['temperature' => 0.4, 'top_p' => 0.9, 'max_tokens' => 220],
-            120
+            ['temperature' => 0.35, 'top_p' => 0.9, 'max_tokens' => 120],
+            90
         );
 
         if (empty($taglineResponse['success'])) {
@@ -498,27 +498,9 @@ class PrankWishCreativeGenerator
             ];
         }
 
-        $taglinePayload = $this->resolveGeneratedPayload((array)($taglineResponse['data'] ?? []));
-        $topCandidate = $this->extractTextCandidate($taglinePayload, [
-            'top_tagline',
-            'topTagline',
-            'top',
-            'headline',
-            'overlay_top',
-            'overlayTop',
-        ]);
-        if ($topCandidate === '') {
-            $topCandidate = $this->deriveTopFromPayload($taglinePayload);
-        }
-
-        $bottomCandidate = $this->extractTextCandidate($taglinePayload, [
-            'bottom_tagline',
-            'bottomTagline',
-            'bottom',
-            'subheadline',
-            'overlay_bottom',
-            'overlayBottom',
-        ]);
+        $parsedTaglines = $this->parseOllamaTaglineText((string)($taglineResponse['text'] ?? ''));
+        $topCandidate = (string)($parsedTaglines['top'] ?? '');
+        $bottomCandidate = (string)($parsedTaglines['bottom'] ?? '');
 
         $top = $this->normalizeOverlayText($topCandidate, 48);
         $bottom = $this->normalizeBottomTagline($bottomCandidate);
@@ -527,7 +509,7 @@ class PrankWishCreativeGenerator
                 'success' => false,
                 'provider' => 'ollama',
                 'source' => 'prankwish_ollama',
-                'error' => 'Ollama tagline response was incomplete.',
+                'error' => 'Ollama tagline response was incomplete: ' . substr((string)($taglineResponse['text'] ?? ''), 0, 180),
             ];
         }
 
@@ -580,16 +562,14 @@ class PrankWishCreativeGenerator
             'rules' => [
                 'Top tagline must be 4 to 8 words, punchy, human, no hashtags, no emojis.',
                 'Bottom tagline must be 3 to 6 words and must contain prankwish.com.',
-                'Do not use quotes around output text.',
+                'Return exactly 2 lines and nothing else.',
+                'Line 1 format: TOP: your top tagline',
+                'Line 2 format: BOTTOM: your bottom tagline',
             ],
             'avoid_recent_taglines' => array_slice(array_values(array_unique(array_filter($history['taglines'] ?? []))), 0, 12),
-            'output_format' => [
-                'top' => 'string',
-                'bottom' => 'string',
-            ],
         ];
 
-        return "Return valid JSON only.\n" . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        return json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     private function buildOllamaPlatformPrompt(string $videoTitle, string $videoFilename, array $basePackage, array $history): string
@@ -915,6 +895,56 @@ class PrankWishCreativeGenerator
         $title = preg_replace('/\|\s*prankwish\.com/i', '', $title) ?? $title;
         $title = preg_replace('/\bprankwish(?:\.com)?\b/i', '', $title) ?? $title;
         return trim((string)$title);
+    }
+
+    private function parseOllamaTaglineText(string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return ['top' => '', 'bottom' => ''];
+        }
+
+        $decoded = $this->decodeJsonPayload($text);
+        if (is_array($decoded)) {
+            return [
+                'top' => $this->extractTextCandidate($decoded, ['top', 'top_tagline', 'headline', 'overlay_top']),
+                'bottom' => $this->extractTextCandidate($decoded, ['bottom', 'bottom_tagline', 'subheadline', 'overlay_bottom']),
+            ];
+        }
+
+        $top = '';
+        $bottom = '';
+        foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
+            $line = trim((string)$line);
+            if ($line === '') {
+                continue;
+            }
+
+            if ($top === '' && preg_match('/^top\s*:\s*(.+)$/i', $line, $matches)) {
+                $top = trim((string)$matches[1]);
+                continue;
+            }
+
+            if ($bottom === '' && preg_match('/^bottom\s*:\s*(.+)$/i', $line, $matches)) {
+                $bottom = trim((string)$matches[1]);
+                continue;
+            }
+        }
+
+        if ($top === '' || $bottom === '') {
+            $lines = array_values(array_filter(array_map(
+                static fn($line) => trim((string)$line, " \t\n\r\0\x0B-*:"),
+                preg_split('/\r\n|\r|\n/', $text) ?: []
+            )));
+            if ($top === '' && !empty($lines[0])) {
+                $top = $lines[0];
+            }
+            if ($bottom === '' && !empty($lines[1])) {
+                $bottom = $lines[1];
+            }
+        }
+
+        return ['top' => $top, 'bottom' => $bottom];
     }
 
     private function normalizePlatformContent(string $platform, array $generated, array $base): array
