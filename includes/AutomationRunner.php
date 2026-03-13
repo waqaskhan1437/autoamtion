@@ -16,6 +16,7 @@ require_once __DIR__ . '/FacebookSafeVideoHelper.php';
 require_once __DIR__ . '/FacebookReelsPublisher.php';
 require_once __DIR__ . '/FacebookScheduledPostQueue.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
+require_once __DIR__ . '/PrankWishCreativeGenerator.php';
 require_once __DIR__ . '/PrankWishTaglineGenerator.php';
 require_once __DIR__ . '/PrankWishSocialContent.php';
 require_once __DIR__ . '/ShortSegmentPlanner.php';
@@ -727,6 +728,8 @@ class AutomationRunner {
         $bottomText = '';
         $emoji = '';
         $emojiPng = null;
+        $creativePackage = null;
+        $socialContent = [];
         
         // Debug logging
         $pwEnabled = $this->automation['prankwish_enabled'] ?? 'NOT_SET';
@@ -734,49 +737,43 @@ class AutomationRunner {
         $pwEnabledType = gettype($this->automation['prankwish_enabled'] ?? null);
         $this->log('tagline_debug', 'info', "Settings: prankwish_enabled={$pwEnabled} (type:{$pwEnabledType}), ai_taglines_enabled={$aiEnabled}");
         
-        // Check if PrankWish branded taglines are enabled
-        $pwValue = $this->automation['prankwish_enabled'] ?? 0;
-        $this->log('tagline_debug', 'info', "PrankWish check: value='{$pwValue}', empty()=" . (empty($pwValue) ? 'TRUE' : 'FALSE'));
-        
+        // Priority: PrankWish > AI Taglines > Manual Fallback
+
+        // First priority: PrankWish creative package (brand-specific flow)
         if (!empty($this->automation['prankwish_enabled'])) {
-            // Use PrankWish Universal Taglines
-            $this->log('prankwish_tagline', 'info', 'Using PrankWish branded taglines');
-            
-            $pwGenerator = new PrankWishTaglineGenerator($this->pdo);
-            $forceCycle = $this->automation['prankwish_cycle_override'] ?? null;
-            $taglines = $pwGenerator->getNextTagline($this->automationId, $forceCycle);
-            
-            if (isset($taglines['success']) && $taglines['success']) {
-                $topText = $taglines['top'];
-                $bottomText = $taglines['bottom']; // Always "prankwish.com"
-                $cycleNumber = $taglines['cycle'];
-                
-                // Log usage
-                $pwGenerator->logUsage(
-                    $this->automationId,
-                    $cycleNumber,
-                    $topText,
-                    $video['title'] ?? null,
-                    $this->automation['prankwish_occasion'] ?? null
-                );
-                
-                $this->log('prankwish_tagline', 'success', "Cycle {$cycleNumber}: Top='{$topText}' Bottom='{$bottomText}'");
+            $this->log('prankwish_tagline', 'info', 'Generating PrankWish creative package (highest priority)');
+
+            $pwValue = $this->automation['prankwish_enabled'] ?? 0;
+            $this->log('tagline_debug', 'info', "PrankWish check: value='{$pwValue}', empty()=" . (empty($pwValue) ? 'TRUE' : 'FALSE'));
+
+            $creativeGenerator = new PrankWishCreativeGenerator($this->pdo);
+            $creativePackage = $creativeGenerator->buildNextCreativePackage(
+                (int)$this->automationId,
+                (string)$videoTitle,
+                $this->automation['prankwish_occasion'] ?? null,
+                (string)($video['title'] ?? $videoId)
+            );
+
+            if (isset($creativePackage['success']) && $creativePackage['success']) {
+                $topText = (string)($creativePackage['top'] ?? '');
+                $bottomText = (string)($creativePackage['bottom'] ?? '');
+                $creativeGenerator->logAppliedPackage($this->automationId, (string)$videoId, $creativePackage);
+                $cycleNumber = (int)($creativePackage['cycle'] ?? 1);
+                $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
+                $this->log('prankwish_tagline', 'success', "Cycle {$cycleNumber} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'");
             } else {
-                $errorDetail = isset($taglines['error']) ? $taglines['error'] : 'Unknown error';
-                $this->log('prankwish_tagline', 'error', "PrankWish failed: {$errorDetail}");
-                // Fall through to default logic
+                $errorDetail = isset($creativePackage['error']) ? $creativePackage['error'] : 'Unknown error';
+                $this->log('prankwish_tagline', 'error', "PrankWish creative failed: {$errorDetail}");
+                // Fall through to next fallback
                 $topText = '';
                 $bottomText = '';
             }
-        } else {
-            $this->log('tagline_debug', 'info', 'PrankWish NOT enabled, checking other options');
         }
-        
-        // If PrankWish not enabled or failed, use existing logic
+
+        // Second priority: AI Taglines (Gemini/OpenAI) when enabled and PrankWish did not provide text
         if (empty($topText) && !empty($this->automation['ai_taglines_enabled'])) {
-            // Use AI to generate unique taglines
-            $this->log('ai_tagline', 'info', 'Generating AI taglines for video');
-            
+            $this->log('ai_tagline', 'info', 'Generating AI taglines for video (fallback after PrankWish)');
+
             $aiGenerator = new AITaglineGenerator($this->pdo);
             $prompt = $this->automation['ai_tagline_prompt'] ?? 'Generate catchy viral taglines';
             $taglines = $aiGenerator->generateTaglines(
@@ -784,50 +781,59 @@ class AutomationRunner {
                 $videoTitle,
                 $this->getUsedTaglines()
             );
-            
+
             if (isset($taglines['success']) && $taglines['success']) {
                 $topText = $taglines['top'];
                 $bottomText = $taglines['bottom'];
                 $this->saveUsedTagline($topText, $bottomText);
-                $this->log('ai_tagline', 'success', "AI Generated: Top='{$topText}' Bottom='{$bottomText}'");
+                $providerLabel = trim((string)($taglines['provider'] ?? 'ai'));
+                $this->log('ai_tagline', 'success', "AI Generated via {$providerLabel}: Top='{$topText}' Bottom='{$bottomText}'");
             } else {
                 $this->log('ai_tagline', 'error', 'AI tagline failed: ' . ($taglines['error'] ?? 'Unknown error'));
-                // Fallback 1: local tagline generator (no external API needed)
-                try {
-                    $localGen = new LocalTaglineGenerator();
-                    $local = $localGen->generate();
-                    $topText = $local['top'] ?? '';
-                    $bottomText = $local['bottom'] ?? '';
-                    $emoji = $local['emoji'] ?? '';
-                    $emojiPng = $local['emojiPng'] ?? null;
-
-                    if ($topText !== '' || $bottomText !== '') {
-                        $this->saveUsedTagline($topText, $bottomText);
-                        $emojiStatus = $emojiPng ? "Emoji: {$emoji}" : "No emoji PNG";
-                        $this->log('local_tagline', 'success', "Top: {$topText} | Bottom: {$bottomText} | {$emojiStatus}");
-                    } else {
-                        throw new Exception('Local generator returned empty result');
-                    }
-                } catch (Exception $localError) {
-                    $this->log('local_tagline', 'error', 'Local tagline failed: ' . $localError->getMessage());
-                    // Fallback 2: static manual branding text
-                    $topText = $this->automation['branding_text_top'] ?? '';
-                    $bottomText = $this->automation['branding_text_bottom'] ?? '';
-                }
             }
-        } elseif (empty($topText)) {
-            // Manual branding with random words
-            $randomWords = json_decode($this->automation['random_words'] ?? '[]', true) ?: [];
-            $randomWord = !empty($randomWords) ? $randomWords[array_rand($randomWords)] : '';
-            $topText = $this->automation['branding_text_top'] ?? '';
-            if ($topText && $randomWord) {
-                $topText .= ' ' . $randomWord;
-            }
-            $bottomText = $this->automation['branding_text_bottom'] ?? '';
         }
+
+        // Third priority: Local tagline generator (if both PrankWish and AI failed or not enabled)
+        if (empty($topText)) {
+            $this->log('local_tagline', 'info', 'Using local tagline generator (final fallback)');
+            try {
+                $localGen = new LocalTaglineGenerator();
+                $local = $localGen->generate();
+                $topText = $local['top'] ?? '';
+                $bottomText = $local['bottom'] ?? '';
+                $emoji = $local['emoji'] ?? '';
+                $emojiPng = $local['emojiPng'] ?? null;
+
+                if ($topText !== '' || $bottomText !== '') {
+                    $this->saveUsedTagline($topText, $bottomText);
+                    $emojiStatus = $emojiPng ? "Emoji: {$emoji}" : "No emoji PNG";
+                    $this->log('local_tagline', 'success', "Generated: Top='{$topText}' Bottom='{$bottomText}' | {$emojiStatus}");
+                } else {
+                    throw new Exception('Local generator returned empty result');
+                }
+            } catch (Exception $localError) {
+                $this->log('local_tagline', 'error', 'Local tagline failed: ' . $localError->getMessage());
+                // Final fallback: static manual branding text
+                $randomWords = json_decode($this->automation['random_words'] ?? '[]', true) ?: [];
+                $randomWord = !empty($randomWords) ? $randomWords[array_rand($randomWords)] : '';
+                $topText = $this->automation['branding_text_top'] ?? '';
+                if ($topText && $randomWord) {
+                    $topText .= ' ' . $randomWord;
+                }
+                $bottomText = $this->automation['branding_text_bottom'] ?? '';
+                $this->log('manual_fallback', 'info', "Manual fallback: Top='{$topText}' Bottom='{$bottomText}'");
+            }
+        }
+
+        // Log final tagline values
+        $this->log('tagline_final', 'info', "Final: Top='{$topText}' Bottom='{$bottomText}'");
         
         // Log final tagline values
         $this->log('tagline_final', 'info', "Final: Top='{$topText}' Bottom='{$bottomText}'");
+
+        if (!empty($this->automation['ai_taglines_enabled'])) {
+            $socialContent = $this->buildSocialContent($videoTitle, $topText, $creativePackage);
+        }
         
         // Step 3: Transcribe with Whisper (if enabled and OpenAI key is set)
         $subtitlesPath = null;
@@ -879,7 +885,7 @@ class AutomationRunner {
                 if ($segmentTotal > 1) {
                     $caption .= ' Part ' . $clipIndex;
                 }
-                $postStats = $this->postToSocialMedia($shortPath, $caption, $segmentVideoId);
+                $postStats = $this->postToSocialMedia($shortPath, $caption, $segmentVideoId, $socialContent, $creativePackage);
 
                 $processedCount++;
                 $scheduled += (int)($postStats['scheduled'] ?? 0);
@@ -1135,7 +1141,7 @@ class AutomationRunner {
     /**
      * Post video to enabled social media platforms
      */
-    private function postToSocialMedia($videoPath, $caption, $videoId) {
+    private function postToSocialMedia($videoPath, $caption, $videoId, $socialContent = [], $creativePackage = null) {
         $stats = ['scheduled' => 0, 'posted' => 0];
 
         // Debug: Log Post for Me settings
@@ -1145,7 +1151,7 @@ class AutomationRunner {
         
         // Post for Me Integration (Unified API - Recommended)
         if (!empty($this->automation['postforme_enabled']) && !empty($this->automation['postforme_account_ids'])) {
-            return $this->postViaPostForMe($videoPath, $caption, $videoId); // Post for Me handles all platforms
+            return $this->postViaPostForMe($videoPath, $caption, $videoId, $socialContent, $creativePackage); // Post for Me handles all platforms
         } else {
             $this->log('social_skip', 'info', 'Post for Me not enabled or no accounts selected, skipping social posting', $videoId, 'debug');
         }
@@ -1220,7 +1226,7 @@ class AutomationRunner {
     /**
      * Post video using Post for Me unified API
      */
-    private function postViaPostForMe($videoPath, $caption, $videoId) {
+    private function postViaPostForMe($videoPath, $caption, $videoId, $socialContent = [], $creativePackage = null) {
         $stats = ['scheduled' => 0, 'posted' => 0];
         $this->log('postforme_start', 'info', 'Starting Post for Me upload for: ' . basename($videoPath), $videoId, 'postforme');
         
@@ -1262,32 +1268,42 @@ class AutomationRunner {
                 $partSuffix = $partMatch[1];
             }
 
-            if (!empty($this->automation['prankwish_enabled'])) {
-                try {
-                    $pwSocial = new PrankWishSocialContent($this->pdo);
-                    $socialPackage = $pwSocial->getNextPostPackage(
-                        $this->automationId,
-                        (string) ($caption ?: pathinfo(basename((string) $videoPath), PATHINFO_FILENAME)),
-                        $this->automation['prankwish_occasion'] ?? null,
-                        basename((string) $videoPath)
-                    );
+            if (!empty($this->automation['prankwish_enabled']) && is_array($creativePackage) && !empty($creativePackage['success'])) {
+                $postCaption = (string) ($creativePackage['caption'] ?? $caption);
+                $options['platform_overrides'] = is_array($creativePackage['platform_overrides'] ?? null)
+                    ? $creativePackage['platform_overrides']
+                    : [];
+                $this->log(
+                    'postforme_social',
+                    'info',
+                    "PrankWish creative pack cycle {$creativePackage['cycle']} ({$creativePackage['occasion_key']})",
+                    $videoId,
+                    'postforme'
+                );
+            }
 
-                    if (!empty($socialPackage['success'])) {
-                        $postCaption = (string) ($socialPackage['caption'] ?? $caption);
-                        $options['platform_overrides'] = is_array($socialPackage['platform_overrides'] ?? null)
-                            ? $socialPackage['platform_overrides']
-                            : [];
-                        $this->log(
-                            'postforme_social',
-                            'info',
-                            "PrankWish social pack cycle {$socialPackage['cycle']} ({$socialPackage['occasion_key']})",
-                            $videoId,
-                            'postforme'
-                        );
+            if (!empty($socialContent['success'])) {
+                $platformOverrides = is_array($options['platform_overrides'] ?? null)
+                    ? $options['platform_overrides']
+                    : [];
+
+                $platformOverrides = $this->mergeAiSocialContentIntoPlatformOverrides($platformOverrides, $socialContent);
+                $options['platform_overrides'] = $platformOverrides;
+
+                if (!empty($socialContent['description'])) {
+                    $postCaption = (string)$socialContent['description'];
+                    if (!empty($socialContent['hashtags']) && is_array($socialContent['hashtags'])) {
+                        $postCaption .= "\n\n" . implode(' ', $socialContent['hashtags']);
                     }
-                } catch (Exception $e) {
-                    $this->log('postforme_social', 'warning', 'PrankWish social content fallback: ' . $e->getMessage(), $videoId, 'postforme');
                 }
+
+                $this->log(
+                    'ai_social_content',
+                    'success',
+                    'AI social content prepared for unique title/description generation',
+                    $videoId,
+                    'postforme'
+                );
             }
 
             if ($partSuffix !== null) {
@@ -1531,6 +1547,63 @@ class AutomationRunner {
         }
 
         return $stats;
+    }
+
+    private function buildSocialContent($videoTitle, $topText, $creativePackage = null) {
+        try {
+            $prompt = trim((string)($this->automation['ai_tagline_prompt'] ?? 'Generate unique social media title and description for this short video.'));
+            $prompt .= "\nMake the title and description natural, unique, and platform-friendly. Avoid repeating previous wording.";
+
+            $aiGenerator = new AITaglineGenerator($this->pdo);
+            $result = $aiGenerator->generateSocialContent($prompt, (string)$videoTitle, (string)$topText);
+
+            if (!empty($result['success'])) {
+                return $result;
+            }
+
+            $this->log('ai_social_content', 'error', 'AI social content failed: ' . ($result['error'] ?? 'Unknown error'));
+        } catch (Exception $e) {
+            $this->log('ai_social_content', 'error', 'AI social content exception: ' . $e->getMessage());
+        }
+
+        return [];
+    }
+
+    private function mergeAiSocialContentIntoPlatformOverrides(array $platformOverrides, array $socialContent) {
+        $hashtags = !empty($socialContent['hashtags']) && is_array($socialContent['hashtags'])
+            ? implode(' ', $socialContent['hashtags'])
+            : '';
+        $descriptionWithHashtags = trim((string)($socialContent['description'] ?? ''));
+        if ($hashtags !== '') {
+            $descriptionWithHashtags = trim($descriptionWithHashtags . "\n\n" . $hashtags);
+        }
+
+        $youtubeOverride = $platformOverrides['youtube'] ?? [];
+        $youtubeOverride['title'] = trim((string)($socialContent['title'] ?? ($youtubeOverride['title'] ?? '')));
+        $youtubeOverride['description'] = $descriptionWithHashtags !== '' ? $descriptionWithHashtags : (string)($youtubeOverride['description'] ?? '');
+        if (!empty($socialContent['tags']) && is_array($socialContent['tags'])) {
+            $youtubeOverride['tags'] = $socialContent['tags'];
+        }
+        $platformOverrides['youtube'] = $youtubeOverride;
+
+        foreach (['tiktok', 'instagram', 'facebook', 'twitter', 'x', 'threads', 'linkedin', 'pinterest', 'bluesky'] as $platform) {
+            $override = $platformOverrides[$platform] ?? [];
+
+            if ($descriptionWithHashtags !== '') {
+                $override['caption'] = $descriptionWithHashtags;
+                if ($platform === 'facebook' || $platform === 'pinterest') {
+                    $override['description'] = $descriptionWithHashtags;
+                }
+            }
+
+            if (!empty($socialContent['title']) && in_array($platform, ['linkedin', 'pinterest'], true)) {
+                $override['title'] = (string)$socialContent['title'];
+            }
+
+            $platformOverrides[$platform] = $override;
+        }
+
+        return $platformOverrides;
     }
     
     /**

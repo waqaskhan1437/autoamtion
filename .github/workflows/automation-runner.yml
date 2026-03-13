@@ -19,7 +19,12 @@ on:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      VW_OLLAMA_BASE_URL: http://127.0.0.1:11434
+      VW_OLLAMA_AUTO_FALLBACK: "1"
+      GH_RUNNER_OLLAMA_MODEL: ${{ vars.GH_RUNNER_OLLAMA_MODEL }}
 
     services:
       mysql:
@@ -52,6 +57,58 @@ jobs:
 
       - name: Setup yt-dlp
         uses: AnimMouse/setup-yt-dlp@v3
+
+      - name: Install and warm Ollama
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+
+          for i in {1..30}; do
+            if curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null
+
+          OLLAMA_MODEL="${GH_RUNNER_OLLAMA_MODEL:-qwen2.5:3b}"
+          echo "Using Ollama model: ${OLLAMA_MODEL}"
+          echo "GH_RUNNER_OLLAMA_MODEL=${OLLAMA_MODEL}" >> "$GITHUB_ENV"
+          echo "VW_OLLAMA_MODEL=${OLLAMA_MODEL}" >> "$GITHUB_ENV"
+
+          ollama pull "${OLLAMA_MODEL}"
+
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+          model = os.environ.get("GH_RUNNER_OLLAMA_MODEL") or "qwen2.5:3b"
+          payload = json.dumps({
+              "model": model,
+              "prompt": 'Return valid JSON only. {"top":"Smoke test tagline","bottom":"prankwish.com"}',
+              "stream": False,
+              "format": "json",
+              "options": {"temperature": 0}
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              f"http://{host}/api/generate",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=180) as response:
+              data = json.loads(response.read().decode("utf-8"))
+
+          text = (data.get("response") or "").strip()
+          if '"top"' not in text or '"bottom"' not in text:
+              raise SystemExit(f"Ollama smoke test returned unexpected payload: {text}")
+
+          print("Ollama smoke test OK:", text)
+          PY
 
       - name: Restore yt-dlp YouTube cookies
         env:
@@ -180,5 +237,14 @@ jobs:
         with:
           name: automation-output-${{ steps.payload.outputs.automation_id }}-${{ github.run_id }}
           path: /tmp/VideoWorkflow/output/*
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload Ollama log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-log-${{ github.run_id }}
+          path: /tmp/ollama.log
           if-no-files-found: ignore
           retention-days: 3

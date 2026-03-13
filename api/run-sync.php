@@ -252,6 +252,7 @@ try {
     require_once __DIR__ . '/../includes/FacebookSafeVideoHelper.php';
     require_once __DIR__ . '/../includes/FacebookReelsPublisher.php';
     require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
+    require_once __DIR__ . '/../includes/PrankWishCreativeGenerator.php';
     require_once __DIR__ . '/../includes/PrankWishSocialContent.php';
     require_once __DIR__ . '/../includes/ShortSegmentPlanner.php';
     require_once __DIR__ . '/../includes/YouTubeSource.php';
@@ -811,45 +812,37 @@ foreach ($videos as $index => $video) {
     $bottomText = $automation['branding_text_bottom'] ?? '';
     $emojiPng = null; // Emoji PNG path for colorful overlay
     $taglineGenerated = false;
+    $creativePackage = null;
     
     // Check if PrankWish branded taglines are enabled
     if (!empty($automation['prankwish_enabled'])) {
-        sendProgress('ai', 'info', "Using PrankWish branded taglines...", $currentProgress + ($progressPerVideo * 0.4), $stats);
+        sendProgress('ai', 'info', 'Generating unique PrankWish creative package...', $currentProgress + ($progressPerVideo * 0.4), $stats);
         
         try {
-            require_once __DIR__ . '/../includes/PrankWishTaglineGenerator.php';
-            $pwGenerator = new PrankWishTaglineGenerator($pdo);
-            $forceCycle = $automation['prankwish_cycle_override'] ?? null;
-            $taglines = $pwGenerator->getNextTagline($automationId, $forceCycle);
-            
-            if (!empty($taglines['success'])) {
-                $topText = $taglines['top'];
-                $bottomText = $taglines['bottom']; // Always "prankwish.com"
-                $cycleNumber = $taglines['cycle'];
+            $creativeGenerator = new PrankWishCreativeGenerator($pdo);
+            $creativePackage = $creativeGenerator->buildNextCreativePackage(
+                $automationId,
+                pathinfo($videoName, PATHINFO_FILENAME),
+                $automation['prankwish_occasion'] ?? null,
+                $videoName
+            );
+
+            if (!empty($creativePackage['success'])) {
+                $topText = (string)($creativePackage['top'] ?? '');
+                $bottomText = (string)($creativePackage['bottom'] ?? '');
                 $taglineGenerated = true;
-                
-                // Log usage
-                $pwGenerator->logUsage(
-                    $automationId,
-                    $cycleNumber,
-                    $topText,
-                    $videoName,
-                    $automation['prankwish_occasion'] ?? null
-                );
-                
-                sendProgress('ai', 'success', "PrankWish Cycle {$cycleNumber}: Top='{$topText}' Bottom='{$bottomText}'", $currentProgress + ($progressPerVideo * 0.45), $stats);
-                
-                // Log PrankWish taglines
-                try {
-                    $logStmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, 'prankwish_tagline', 'success', ?, ?)");
-                    $logStmt->execute([$automationId, "Cycle {$cycleNumber}: Top='{$topText}' Bottom='{$bottomText}'", $videoName]);
-                } catch (Exception $e) {}
+
+                $creativeGenerator->logAppliedPackage($automationId, $videoName, $creativePackage);
+
+                $creativeCycle = (int)($creativePackage['cycle'] ?? 1);
+                $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
+                sendProgress('ai', 'success', "PrankWish creative {$creativeCycle} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'", $currentProgress + ($progressPerVideo * 0.45), $stats);
             } else {
-                sendProgress('ai', 'warning', "PrankWish failed, trying other options...", $currentProgress + ($progressPerVideo * 0.42), $stats);
+                sendProgress('ai', 'warning', 'PrankWish creative package failed, trying other options...', $currentProgress + ($progressPerVideo * 0.42), $stats);
                 $taglineGenerated = false;
             }
         } catch (Exception $e) {
-            sendProgress('ai', 'warning', "PrankWish error: " . $e->getMessage(), $currentProgress + ($progressPerVideo * 0.42), $stats);
+            sendProgress('ai', 'warning', 'PrankWish creative error: ' . $e->getMessage(), $currentProgress + ($progressPerVideo * 0.42), $stats);
             $taglineGenerated = false;
         }
     }
@@ -883,13 +876,14 @@ foreach ($videos as $index => $video) {
                 $topText = $aiResult['top'];
                 $bottomText = $aiResult['bottom'];
                 $taglineGenerated = true;
+                $aiProvider = trim((string)($aiResult['provider'] ?? 'ai'));
                 
-                sendProgress('ai', 'success', "AI: \"{$topText}\" | \"{$bottomText}\"", $currentProgress + ($progressPerVideo * 0.45), $stats);
+                sendProgress('ai', 'success', "AI via {$aiProvider}: \"{$topText}\" | \"{$bottomText}\"", $currentProgress + ($progressPerVideo * 0.45), $stats);
                 
                 // Log AI taglines
                 try {
                     $logStmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, 'ai_tagline', 'success', ?, ?)");
-                    $logStmt->execute([$automationId, "Top: {$topText} | Bottom: {$bottomText}", $videoName]);
+                    $logStmt->execute([$automationId, "Provider: {$aiProvider} | Top: {$topText} | Bottom: {$bottomText}", $videoName]);
                 } catch (Exception $e) {}
             }
         } catch (Exception $e) {
@@ -999,38 +993,18 @@ foreach ($videos as $index => $video) {
                 $caption = '';
                 $platformOverrides = [];
 
-                if (!empty($automation['prankwish_enabled'])) {
-                    try {
-                        $pwSocial = new PrankWishSocialContent($pdo);
-                        $socialPackage = $pwSocial->getNextPostPackage(
-                            $automationId,
-                            (string) ($topText ?: $segmentVideoName),
-                            $automation['prankwish_occasion'] ?? null,
-                            basename($outputPath)
-                        );
-
-                        if (!empty($socialPackage['success'])) {
-                            $caption = (string) ($socialPackage['caption'] ?? '');
-                            $platformOverrides = is_array($socialPackage['platform_overrides'] ?? null)
-                                ? $socialPackage['platform_overrides']
-                                : [];
-                            sendProgress(
-                                'posting',
-                                'info',
-                                "PrankWish social pack {$socialPackage['cycle']} ({$socialPackage['occasion_key']})",
-                                $clipProgressBase + ($progressPerVideo * 0.13),
-                                $stats
-                            );
-                        }
-                    } catch (Exception $e) {
-                        sendProgress(
-                            'posting',
-                            'warning',
-                            'PrankWish social content fallback: ' . $e->getMessage(),
-                            $clipProgressBase + ($progressPerVideo * 0.13),
-                            $stats
-                        );
-                    }
+                if (!empty($automation['prankwish_enabled']) && !empty($creativePackage['success'])) {
+                    $caption = (string) ($creativePackage['caption'] ?? '');
+                    $platformOverrides = is_array($creativePackage['platform_overrides'] ?? null)
+                        ? $creativePackage['platform_overrides']
+                        : [];
+                    sendProgress(
+                        'posting',
+                        'info',
+                        "PrankWish creative pack {$creativePackage['cycle']} ({$creativePackage['occasion_key']})",
+                        $clipProgressBase + ($progressPerVideo * 0.13),
+                        $stats
+                    );
                 }
 
                 if (empty($platformOverrides)) {
