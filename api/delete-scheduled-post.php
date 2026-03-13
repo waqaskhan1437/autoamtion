@@ -7,7 +7,7 @@ require_once __DIR__ . '/../includes/PostForMeAPI.php';
 require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 
 header('Content-Type: application/json');
-vwm_require_app_user($pdo, true);
+vwm_require_app_user($pdo);
 
 function vwmIsActiveScheduledStatus(string $status): bool
 {
@@ -71,6 +71,20 @@ try {
     }
 
     if ($provider === 'facebook_direct') {
+        $fbStmt = $pdo->prepare("
+            SELECT fsp.id, fsp.automation_id, a.owner_user_id
+            FROM facebook_scheduled_posts fsp
+            LEFT JOIN automation_settings a ON fsp.automation_id = a.id
+            WHERE fsp.id = ?
+            LIMIT 1
+        ");
+        $fbStmt->execute([$id]);
+        $fbRow = $fbStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$fbRow || !vwm_can_access_automation($fbRow)) {
+            echo json_encode(['ok' => false, 'error' => 'Post not found']);
+            exit;
+        }
+
         $result = FacebookScheduledPostQueue::cancelById($pdo, $id);
         if (!empty($result['success'])) {
             echo json_encode(['ok' => true, 'message' => $result['message'] ?? 'Cancelled']);
@@ -88,11 +102,17 @@ try {
         exit;
     }
 
-    $stmt = $pdo->prepare("SELECT id, post_id, status FROM postforme_posts WHERE id = ? LIMIT 1");
+    $stmt = $pdo->prepare("
+        SELECT pp.id, pp.post_id, pp.status, pp.automation_id, a.owner_user_id
+        FROM postforme_posts pp
+        LEFT JOIN automation_settings a ON pp.automation_id = a.id
+        WHERE pp.id = ?
+        LIMIT 1
+    ");
     $stmt->execute([$id]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$row) {
+    if (!$row || !vwm_can_access_automation($row)) {
         echo json_encode(['ok' => false, 'error' => 'Post not found']);
         exit;
     }

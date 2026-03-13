@@ -268,11 +268,39 @@ class FFmpegProcessor {
         $topLine1Y = 125;
         $topLine2Y = 215;
         $bottomSafeMargin = 260;
-        $highlightColor = '0xC99700';
+        $emojiSpaces = '    ';
+        $emojiSpaceCount = ($hasEmoji ? strlen($emojiSpaces) : 0);
+        $topMaxTextWidth = max(520, $width - 36);
         
         if ($topText !== '') {
             // Split text into two lines for separate drawtext filters (avoids Windows newline issues)
-            $lines = $this->splitToTwoLines($topText, 28);
+            // and reduce font size slightly when a long line would otherwise clip off-screen.
+            $topMinFontSize = 48;
+            $lines = ['', ''];
+            for ($candidateFontSize = $topFontSize; $candidateFontSize >= $topMinFontSize; $candidateFontSize -= 2) {
+                $candidateLines = $this->splitToTwoLines(
+                    $topText,
+                    24,
+                    $topMaxTextWidth,
+                    $candidateFontSize,
+                    $topBoxBorder,
+                    $emojiSpaceCount
+                );
+                $lines = $candidateLines;
+                $topFontSize = $candidateFontSize;
+
+                if ($this->linesFitWithinWidth(
+                    $candidateLines[0] ?? '',
+                    $candidateLines[1] ?? '',
+                    $candidateFontSize,
+                    $topMaxTextWidth,
+                    $topBoxBorder,
+                    $emojiSpaceCount
+                )) {
+                    break;
+                }
+            }
+
             $line1 = $lines[0] ?? '';
             $line2 = $lines[1] ?? '';
             
@@ -288,8 +316,6 @@ class FFmpegProcessor {
             // Emoji x = center of video + half of original text width - small offset to stay inside box
             $emojiXOffset = ($textWidth / 2) - 5;
             
-            $topHighlightTarget = ($line2 !== '' && strlen($line2) >= strlen($line1)) ? 'line2' : 'line1';
-
             // Line 1
             if ($line1 !== '') {
                 $line1WithSpaces = $line1;
@@ -306,56 +332,7 @@ class FFmpegProcessor {
                 if (PHP_OS_FAMILY === 'Windows') {
                     $line1Path = str_replace(':', '\\:', $line1Path);
                 }
-
-                if ($topHighlightTarget === 'line1') {
-                    $topLine1Segments = $this->splitInteriorHighlight($line1);
-                    if ($topLine1Segments['highlight'] !== '') {
-                        $line1Width = $this->estimateTextWidth($line1WithSpaces, $topFontSize);
-                        $line1PrefixWidth = $this->estimateTextWidth($topLine1Segments['prefix'], $topFontSize);
-                        $line1HighlightWidth = $this->estimateTextWidth($topLine1Segments['highlight'], $topFontSize);
-                        $line1StartX = max(24, (int)round(($width - $line1Width) / 2));
-
-                        $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=white@0.0:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine1Y}";
-
-                        if ($topLine1Segments['prefix'] !== '') {
-                            $line1PrefixFile = $this->tempDir . '/line1_prefix_' . uniqid() . '.txt';
-                            file_put_contents($line1PrefixFile, $topLine1Segments['prefix']);
-                            $tempFiles[] = $line1PrefixFile;
-                            $line1PrefixPath = str_replace('\\', '/', $line1PrefixFile);
-                            if (PHP_OS_FAMILY === 'Windows') {
-                                $line1PrefixPath = str_replace(':', '\\:', $line1PrefixPath);
-                            }
-                            $filters[] = "drawtext=textfile='{$line1PrefixPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:x={$line1StartX}:y={$topLine1Y}";
-                        }
-
-                        $line1HighlightFile = $this->tempDir . '/line1_highlight_' . uniqid() . '.txt';
-                        file_put_contents($line1HighlightFile, $topLine1Segments['highlight']);
-                        $tempFiles[] = $line1HighlightFile;
-                        $line1HighlightPath = str_replace('\\', '/', $line1HighlightFile);
-                        if (PHP_OS_FAMILY === 'Windows') {
-                            $line1HighlightPath = str_replace(':', '\\:', $line1HighlightPath);
-                        }
-                        $line1HighlightX = $line1StartX + $line1PrefixWidth;
-                        $filters[] = "drawtext=textfile='{$line1HighlightPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor={$highlightColor}:x={$line1HighlightX}:y={$topLine1Y}";
-
-                        if ($topLine1Segments['suffix'] !== '') {
-                            $line1SuffixFile = $this->tempDir . '/line1_suffix_' . uniqid() . '.txt';
-                            file_put_contents($line1SuffixFile, $topLine1Segments['suffix']);
-                            $tempFiles[] = $line1SuffixFile;
-                            $line1SuffixPath = str_replace('\\', '/', $line1SuffixFile);
-                            if (PHP_OS_FAMILY === 'Windows') {
-                                $line1SuffixPath = str_replace(':', '\\:', $line1SuffixPath);
-                            }
-                            $line1SuffixX = $line1HighlightX + $line1HighlightWidth;
-                            $filters[] = "drawtext=textfile='{$line1SuffixPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:x={$line1SuffixX}:y={$topLine1Y}";
-                        }
-                    } else {
-                        $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine1Y}";
-                    }
-                } else {
-                    // First line - white box, black text, centered
-                    $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine1Y}";
-                }
+                $filters[] = "drawtext=textfile='{$line1Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine1Y}";
             }
             
             // Line 2
@@ -371,56 +348,7 @@ class FFmpegProcessor {
                 if (PHP_OS_FAMILY === 'Windows') {
                     $line2Path = str_replace(':', '\\:', $line2Path);
                 }
-
-                if ($topHighlightTarget === 'line2') {
-                    $topLine2Segments = $this->splitInteriorHighlight($line2);
-                    if ($topLine2Segments['highlight'] !== '') {
-                        $line2Width = $this->estimateTextWidth($line2WithSpaces, $topFontSize);
-                        $line2PrefixWidth = $this->estimateTextWidth($topLine2Segments['prefix'], $topFontSize);
-                        $line2HighlightWidth = $this->estimateTextWidth($topLine2Segments['highlight'], $topFontSize);
-                        $line2StartX = max(24, (int)round(($width - $line2Width) / 2));
-
-                        $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=white@0.0:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine2Y}";
-
-                        if ($topLine2Segments['prefix'] !== '') {
-                            $line2PrefixFile = $this->tempDir . '/line2_prefix_' . uniqid() . '.txt';
-                            file_put_contents($line2PrefixFile, $topLine2Segments['prefix']);
-                            $tempFiles[] = $line2PrefixFile;
-                            $line2PrefixPath = str_replace('\\', '/', $line2PrefixFile);
-                            if (PHP_OS_FAMILY === 'Windows') {
-                                $line2PrefixPath = str_replace(':', '\\:', $line2PrefixPath);
-                            }
-                            $filters[] = "drawtext=textfile='{$line2PrefixPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:x={$line2StartX}:y={$topLine2Y}";
-                        }
-
-                        $line2HighlightFile = $this->tempDir . '/line2_highlight_' . uniqid() . '.txt';
-                        file_put_contents($line2HighlightFile, $topLine2Segments['highlight']);
-                        $tempFiles[] = $line2HighlightFile;
-                        $line2HighlightPath = str_replace('\\', '/', $line2HighlightFile);
-                        if (PHP_OS_FAMILY === 'Windows') {
-                            $line2HighlightPath = str_replace(':', '\\:', $line2HighlightPath);
-                        }
-                        $line2HighlightX = $line2StartX + $line2PrefixWidth;
-                        $filters[] = "drawtext=textfile='{$line2HighlightPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor={$highlightColor}:x={$line2HighlightX}:y={$topLine2Y}";
-
-                        if ($topLine2Segments['suffix'] !== '') {
-                            $line2SuffixFile = $this->tempDir . '/line2_suffix_' . uniqid() . '.txt';
-                            file_put_contents($line2SuffixFile, $topLine2Segments['suffix']);
-                            $tempFiles[] = $line2SuffixFile;
-                            $line2SuffixPath = str_replace('\\', '/', $line2SuffixFile);
-                            if (PHP_OS_FAMILY === 'Windows') {
-                                $line2SuffixPath = str_replace(':', '\\:', $line2SuffixPath);
-                            }
-                            $line2SuffixX = $line2HighlightX + $line2HighlightWidth;
-                            $filters[] = "drawtext=textfile='{$line2SuffixPath}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:x={$line2SuffixX}:y={$topLine2Y}";
-                        }
-                    } else {
-                        $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine2Y}";
-                    }
-                } else {
-                    // Second line - white box, black text, centered
-                    $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine2Y}";
-                }
+                $filters[] = "drawtext=textfile='{$line2Path}':fontfile='{$this->fontPath}':fontsize={$topFontSize}:fontcolor=black:box=1:boxcolor=white@0.95:boxborderw={$topBoxBorder}:x=(w-text_w)/2:y={$topLine2Y}";
             }
             
             // Store emoji position for PNG overlay
@@ -443,58 +371,8 @@ class FFmpegProcessor {
                 $bottomTextFilePath = str_replace(':', '\\:', $bottomTextFilePath);
             }
 
-            $bottomSegments = $this->splitInteriorHighlight($bottomText);
-            if ($bottomSegments['highlight'] !== '') {
-                $estimatedFullWidth = $this->estimateTextWidth($bottomText, $bottomFontSize);
-                $estimatedPrefixWidth = $this->estimateTextWidth($bottomSegments['prefix'], $bottomFontSize);
-                $estimatedHighlightWidth = $this->estimateTextWidth($bottomSegments['highlight'], $bottomFontSize);
-                $bottomStartX = max(24, (int)round(($width - $estimatedFullWidth) / 2));
-                $bottomYExpr = "h-text_h-{$bottomSafeMargin}";
-
-                // Draw the shared white box with invisible text, then paint colored segments on top.
-                $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=white@0.0:box=1:boxcolor=white@0.92:boxborderw={$bottomBoxBorder}:x=(w-text_w)/2:y={$bottomYExpr}";
-
-                $prefix = $bottomSegments['prefix'];
-                if ($prefix !== '') {
-                    $prefixFile = $this->tempDir . '/bottom_prefix_' . uniqid() . '.txt';
-                    file_put_contents($prefixFile, $prefix);
-                    $tempFiles[] = $prefixFile;
-                    $prefixPath = str_replace('\\', '/', $prefixFile);
-                    if (PHP_OS_FAMILY === 'Windows') {
-                        $prefixPath = str_replace(':', '\\:', $prefixPath);
-                    }
-                    $filters[] = "drawtext=textfile='{$prefixPath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=black:x={$bottomStartX}:y={$bottomYExpr}";
-                }
-
-                $highlightFile = $this->tempDir . '/bottom_highlight_' . uniqid() . '.txt';
-                file_put_contents($highlightFile, $bottomSegments['highlight']);
-                $tempFiles[] = $highlightFile;
-                $highlightPath = str_replace('\\', '/', $highlightFile);
-                if (PHP_OS_FAMILY === 'Windows') {
-                    $highlightPath = str_replace(':', '\\:', $highlightPath);
-                }
-                $highlightX = $bottomStartX + $estimatedPrefixWidth;
-                $filters[] = "drawtext=textfile='{$highlightPath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor={$highlightColor}:x={$highlightX}:y={$bottomYExpr}";
-
-                $suffix = $bottomSegments['suffix'];
-                if ($suffix !== '') {
-                    $suffixFile = $this->tempDir . '/bottom_suffix_' . uniqid() . '.txt';
-                    file_put_contents($suffixFile, $suffix);
-                    $tempFiles[] = $suffixFile;
-                    $suffixPath = str_replace('\\', '/', $suffixFile);
-                    if (PHP_OS_FAMILY === 'Windows') {
-                        $suffixPath = str_replace(':', '\\:', $suffixPath);
-                    }
-                    $suffixX = $highlightX + $estimatedHighlightWidth;
-                    $filters[] = "drawtext=textfile='{$suffixPath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=black:x={$suffixX}:y={$bottomYExpr}";
-                }
-
-                file_put_contents($debugLog, "  Added highlighted bottom text with dark-yellow segment: {$bottomSegments['highlight']}\n", FILE_APPEND);
-            } else {
-                // Style: White box background, black bold text, centered (same as top)
-                $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=black:box=1:boxcolor=white@0.92:boxborderw={$bottomBoxBorder}:x=(w-text_w)/2:y=h-text_h-{$bottomSafeMargin}";
-                file_put_contents($debugLog, "  Added bottom text filter with file: {$bottomTextFilePath}\n", FILE_APPEND);
-            }
+            $filters[] = "drawtext=textfile='{$bottomTextFilePath}':fontfile='{$this->fontPath}':fontsize={$bottomFontSize}:fontcolor=black:box=1:boxcolor=white@0.92:boxborderw={$bottomBoxBorder}:x=(w-text_w)/2:y=h-text_h-{$bottomSafeMargin}";
+            file_put_contents($debugLog, "  Added bottom text filter with file: {$bottomTextFilePath}\n", FILE_APPEND);
         }
 
         if (abs($playbackSpeed - 1.0) > 0.0001) {
@@ -837,30 +715,55 @@ class FFmpegProcessor {
      * @param int $maxCharsPerLine Max characters per line
      * @return array Array with line1 and line2
      */
-    private function splitToTwoLines($text, $maxCharsPerLine = 28) {
-        $words = explode(' ', $text);
-        $line1 = '';
-        $line2 = '';
-        $onLine2 = false;
-        
-        foreach ($words as $word) {
-            if (!$onLine2) {
-                // Building line 1
-                $testLine = $line1 === '' ? $word : $line1 . ' ' . $word;
-                if (strlen($testLine) <= $maxCharsPerLine) {
-                    $line1 = $testLine;
-                } else {
-                    // Start line 2
-                    $onLine2 = true;
-                    $line2 = $word;
-                }
-            } else {
-                // Building line 2
-                $line2 .= ' ' . $word;
+    private function splitToTwoLines($text, $maxCharsPerLine = 28, $maxLineWidth = 0, $fontSize = 0, $boxBorder = 0, $emojiExtraSpaces = 0) {
+        $text = trim(preg_replace('/\s+/u', ' ', (string)$text) ?? '');
+        if ($text === '') {
+            return ['', ''];
+        }
+
+        $words = preg_split('/\s+/u', $text, -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($words) || empty($words)) {
+            return ['', ''];
+        }
+
+        if (count($words) === 1) {
+            return [$text, ''];
+        }
+
+        if ($this->linesFitWithinWidth($text, '', max(1, (int)$fontSize), $maxLineWidth, $boxBorder, $emojiExtraSpaces)
+            && strlen($text) <= $maxCharsPerLine) {
+            return [$text, ''];
+        }
+
+        $bestLines = [$text, ''];
+        $bestScore = null;
+
+        for ($splitIndex = 1; $splitIndex < count($words); $splitIndex++) {
+            $line1 = implode(' ', array_slice($words, 0, $splitIndex));
+            $line2 = implode(' ', array_slice($words, $splitIndex));
+            if ($line1 === '' || $line2 === '') {
+                continue;
+            }
+
+            $line1Width = $this->measureOverlayLineWidth($line1, $fontSize, $boxBorder, false);
+            $line2Width = $this->measureOverlayLineWidth($line2, $fontSize, $boxBorder, $emojiExtraSpaces > 0);
+            $overflow = 0;
+            if ($maxLineWidth > 0) {
+                $overflow += max(0, $line1Width - $maxLineWidth);
+                $overflow += max(0, $line2Width - $maxLineWidth);
+            }
+
+            $charPenalty = max(0, strlen($line1) - $maxCharsPerLine) + max(0, strlen($line2) - $maxCharsPerLine);
+            $balancePenalty = abs($line1Width - $line2Width);
+            $score = [$overflow, $charPenalty, $balancePenalty, abs(strlen($line1) - strlen($line2))];
+
+            if ($bestScore === null || $score < $bestScore) {
+                $bestScore = $score;
+                $bestLines = [$line1, $line2];
             }
         }
-        
-        return [trim($line1), trim($line2)];
+
+        return [trim($bestLines[0]), trim($bestLines[1])];
     }
 
     private function splitInteriorHighlight($text) {
@@ -870,31 +773,49 @@ class FFmpegProcessor {
             return ['prefix' => '', 'highlight' => '', 'suffix' => ''];
         }
 
-        $candidates = [];
-        $lastIndex = count($chars) - 1;
+        $eligibleWordSpans = [];
+        $charCount = count($chars);
 
-        for ($i = 1; $i < $lastIndex; $i++) {
+        for ($i = 0; $i < $charCount; $i++) {
             $char = (string)$chars[$i];
-            if (trim($char) === '') {
-                continue;
-            }
             if (!preg_match('/[\p{L}\p{N}]/u', $char)) {
                 continue;
             }
-            $candidates[] = $i;
+
+            $wordStart = $i;
+            while ($i < $charCount && preg_match('/[\p{L}\p{N}]/u', (string)$chars[$i])) {
+                $i++;
+            }
+            $wordEnd = $i - 1;
+            $wordLength = $wordEnd - $wordStart + 1;
+            $before = $wordStart > 0 ? (string)$chars[$wordStart - 1] : '';
+            $after = ($wordEnd + 1) < $charCount ? (string)$chars[$wordEnd + 1] : '';
+
+            if ($wordLength < 3) {
+                continue;
+            }
+            if ($this->isLinkAdjacentDelimiter($before) || $this->isLinkAdjacentDelimiter($after)) {
+                continue;
+            }
+
+            $eligibleWordSpans[] = [$wordStart, $wordEnd];
         }
 
-        if (empty($candidates)) {
+        if (empty($eligibleWordSpans)) {
             return ['prefix' => '', 'highlight' => '', 'suffix' => ''];
         }
 
         $hash = abs(crc32($text));
-        $startIndex = (int)$candidates[$hash % count($candidates)];
+        $selectedSpan = $eligibleWordSpans[$hash % count($eligibleWordSpans)];
+        $wordStart = $selectedSpan[0];
+        $wordEnd = $selectedSpan[1];
+        $availableInterior = max(1, ($wordEnd - $wordStart) - 1);
+        $startIndex = $wordStart + 1 + ($hash % $availableInterior);
         $highlightLength = 1;
 
-        if (($hash % 2) === 0 && $startIndex < ($lastIndex - 1)) {
+        if (($hash % 2) === 0 && ($startIndex + 1) < $wordEnd) {
             $nextChar = (string)$chars[$startIndex + 1];
-            if (trim($nextChar) !== '' && preg_match('/[\p{L}\p{N}]/u', $nextChar) && ($startIndex + 1) < $lastIndex) {
+            if (preg_match('/[\p{L}\p{N}]/u', $nextChar)) {
                 $highlightLength = 2;
             }
         }
@@ -908,6 +829,37 @@ class FFmpegProcessor {
             'highlight' => $highlight,
             'suffix' => $suffix,
         ];
+    }
+
+    private function isLinkAdjacentDelimiter($char) {
+        return $char !== '' && preg_match('/[.\/@?=&]/u', (string)$char);
+    }
+
+    private function measureOverlayLineWidth($text, $fontSize, $boxBorder = 0, $addEmojiPadding = false) {
+        $requiredWidth = $this->estimateTextWidth((string)$text, (int)$fontSize) + ((int)$boxBorder * 2) + 24;
+        if ($addEmojiPadding) {
+            $requiredWidth += $this->estimateTextWidth('    ', (int)$fontSize);
+        }
+
+        return $requiredWidth;
+    }
+
+    private function linesFitWithinWidth($line1, $line2, $fontSize, $maxLineWidth, $boxBorder = 0, $emojiExtraSpaces = 0) {
+        if ((int)$maxLineWidth <= 0) {
+            return true;
+        }
+
+        $line1Width = $this->measureOverlayLineWidth($line1, $fontSize, $boxBorder, $emojiExtraSpaces > 0 && trim((string)$line2) === '');
+        if ($line1Width > $maxLineWidth) {
+            return false;
+        }
+
+        if (trim((string)$line2) === '') {
+            return true;
+        }
+
+        $line2Width = $this->measureOverlayLineWidth($line2, $fontSize, $boxBorder, $emojiExtraSpaces > 0);
+        return $line2Width <= $maxLineWidth;
     }
 
     private function estimateTextWidth($text, $fontSize) {

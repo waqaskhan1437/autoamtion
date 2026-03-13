@@ -4,18 +4,36 @@ require_once __DIR__ . '/../includes/auth_gate.php';
 require_once __DIR__ . '/../includes/PostForMeAPI.php';
 
 header('Content-Type: application/json');
-vwm_require_app_user($pdo, true);
+vwm_require_app_user($pdo);
 
 try {
     $automationId = isset($_GET['automation_id']) ? (int)$_GET['automation_id'] : 0;
+    $canBrowseAll = vwm_can_access_all_outputs();
+    $scopeParams = [];
+    $scopeSql = '';
+
+    if ($automationId > 0) {
+        $automation = vwm_fetch_accessible_automation($pdo, $automationId);
+        if (!$automation) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Access denied for this automation']);
+            exit;
+        }
+    } else {
+        $automation = null;
+    }
+
+    if (!$canBrowseAll) {
+        $scopeSql = " AND a.owner_user_id = ? ";
+        $scopeParams[] = vwm_current_user_id();
+    }
+
     $targetAutomationAccounts = [];
     $trackedPostIds = [];
     $trackedPostIdSet = [];
     if ($automationId > 0) {
         try {
-            $aStmt = $pdo->prepare("SELECT postforme_account_ids FROM automation_settings WHERE id = ? LIMIT 1");
-            $aStmt->execute([$automationId]);
-            $rawAccounts = $aStmt->fetchColumn();
+            $rawAccounts = $automation['postforme_account_ids'] ?? null;
             $decodedAccounts = json_decode((string)$rawAccounts, true);
             if (is_array($decodedAccounts)) {
                 $targetAutomationAccounts = array_values(array_filter(array_map('strval', $decodedAccounts)));
@@ -55,7 +73,7 @@ try {
         $stmt->execute();
         $apiKey = (string)($stmt->fetchColumn() ?: '');
 
-        if ($apiKey !== '') {
+        if ($apiKey !== '' && ($canBrowseAll || $automationId > 0)) {
             $pf = new PostForMeAPI($apiKey);
             $pages = [1, 2, 3];
 
@@ -199,6 +217,10 @@ try {
         $sql .= " AND pp.automation_id = ? ";
         $params[] = $automationId;
     }
+    if ($scopeSql !== '') {
+        $sql .= $scopeSql;
+        $params = array_merge($params, $scopeParams);
+    }
 
     $sql .= "
         ORDER BY 
@@ -236,6 +258,9 @@ try {
     ";
     if ($automationId > 0) {
         $fbSql .= " AND fsp.automation_id = ? ";
+    }
+    if ($scopeSql !== '') {
+        $fbSql .= $scopeSql;
     }
     $fbSql .= "
         ORDER BY

@@ -7,7 +7,7 @@ require_once __DIR__ . '/../includes/PostForMeAPI.php';
 require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
 
 header('Content-Type: application/json');
-vwm_require_app_user($pdo, true);
+vwm_require_app_user($pdo);
 
 function vwmBulkIsActiveScheduledStatus(string $status): bool
 {
@@ -64,15 +64,54 @@ try {
     }
 
     $automationId = isset($_POST['automation_id']) ? (int)$_POST['automation_id'] : 0;
+    $canBrowseAll = vwm_can_access_all_outputs();
 
-    $facebookCancelled = FacebookScheduledPostQueue::cancelAll($pdo, $automationId > 0 ? $automationId : null);
+    if ($automationId > 0) {
+        $automation = vwm_fetch_accessible_automation($pdo, $automationId);
+        if (!$automation) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Access denied for this automation']);
+            exit;
+        }
+    }
 
-    $sql = "
-        SELECT id, post_id, status
-        FROM postforme_posts
-        WHERE status IN ('pending', 'scheduled', 'partial', 'queued', 'processing')
-    ";
+    if ($canBrowseAll || $automationId > 0) {
+        $facebookCancelled = FacebookScheduledPostQueue::cancelAll($pdo, $automationId > 0 ? $automationId : null);
+    } else {
+        $fbCancelStmt = $pdo->prepare("
+            UPDATE facebook_scheduled_posts fsp
+            INNER JOIN automation_settings a ON fsp.automation_id = a.id
+            SET fsp.status = 'cancelled',
+                fsp.error_message = NULL
+            WHERE fsp.status IN ('scheduled', 'queued', 'processing', 'partial')
+              AND a.owner_user_id = ?
+        ");
+        $fbCancelStmt->execute([vwm_current_user_id()]);
+        $facebookCancelled = [
+            'success' => true,
+            'cancelled' => (int)$fbCancelStmt->rowCount(),
+        ];
+    }
+
+    if ($canBrowseAll || $automationId > 0) {
+        $sql = "
+            SELECT id, post_id, status
+            FROM postforme_posts
+            WHERE status IN ('pending', 'scheduled', 'partial', 'queued', 'processing')
+        ";
+    } else {
+        $sql = "
+            SELECT pp.id, pp.post_id, pp.status
+            FROM postforme_posts pp
+            INNER JOIN automation_settings a ON pp.automation_id = a.id
+            WHERE pp.status IN ('pending', 'scheduled', 'partial', 'queued', 'processing')
+              AND a.owner_user_id = ?
+        ";
+    }
     $params = [];
+    if (!$canBrowseAll && $automationId <= 0) {
+        $params[] = vwm_current_user_id();
+    }
     if ($automationId > 0) {
         $sql .= " AND automation_id = ?";
         $params[] = $automationId;
