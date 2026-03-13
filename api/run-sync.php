@@ -22,6 +22,84 @@ while (ob_get_level()) ob_end_clean();
 // Global PDO reference for updateDatabase
 $globalPdo = null;
 $globalAutomationId = null;
+$globalStructuredResults = [
+    'facebook_scheduled_jobs' => [],
+    'processed_video_records' => [],
+    'postforme_posts' => [],
+    'automation_log_entries' => []
+];
+$globalStructuredResultKeys = [];
+
+function appendStructuredResult(string $bucket, array $record, string $dedupeKey = ''): void {
+    global $globalStructuredResults, $globalStructuredResultKeys;
+
+    if (!isset($globalStructuredResults[$bucket]) || empty($record)) {
+        return;
+    }
+
+    if ($dedupeKey === '') {
+        $encoded = json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $dedupeKey = $encoded !== false ? sha1($encoded) : sha1(serialize($record));
+    }
+
+    if (!isset($globalStructuredResultKeys[$bucket])) {
+        $globalStructuredResultKeys[$bucket] = [];
+    }
+
+    if (isset($globalStructuredResultKeys[$bucket][$dedupeKey])) {
+        return;
+    }
+
+    $globalStructuredResultKeys[$bucket][$dedupeKey] = true;
+    $globalStructuredResults[$bucket][] = $record;
+}
+
+function mergeStructuredExtra(array $extra, string $bucket, array $record, string $dedupeKey = ''): array {
+    if (empty($record)) {
+        return $extra;
+    }
+
+    appendStructuredResult($bucket, $record, $dedupeKey);
+    if (empty($extra[$bucket]) || !is_array($extra[$bucket])) {
+        $extra[$bucket] = [];
+    }
+    $extra[$bucket][] = $record;
+    return $extra;
+}
+
+function getStructuredResultsPayload(array $extra = []): array {
+    global $globalStructuredResults;
+
+    $merged = [];
+    foreach ($globalStructuredResults as $bucket => $records) {
+        if (!empty($records)) {
+            $merged[$bucket] = array_values($records);
+        }
+    }
+
+    foreach ($extra as $key => $value) {
+        if (!isset($merged[$key])) {
+            $merged[$key] = $value;
+            continue;
+        }
+
+        if (is_array($merged[$key]) && is_array($value)) {
+            $merged[$key] = array_values(array_merge($merged[$key], $value));
+        }
+    }
+
+    return $merged;
+}
+
+function buildAutomationLogEntry(string $action, string $status, string $message, string $videoId = '', string $platform = ''): array {
+    return [
+        'action' => $action,
+        'status' => $status,
+        'message' => $message,
+        'video_id' => $videoId,
+        'platform' => $platform
+    ];
+}
 
 function sendProgress($step, $status, $message, $percent = 0, $stats = [], $extra = []) {
     global $globalPdo, $globalAutomationId;
@@ -63,13 +141,21 @@ function sendPing() {
     @flush();
 }
 
-function sendDone($success, $message, $stats = []) {
-    $data = json_encode([
+function sendDone($success, $message, $stats = [], $extra = []) {
+    $payload = [
         'done' => true,
         'success' => $success,
         'message' => $message,
         'stats' => $stats
-    ]);
+    ];
+
+    foreach (getStructuredResultsPayload($extra) as $key => $value) {
+        if (!array_key_exists($key, $payload)) {
+            $payload[$key] = $value;
+        }
+    }
+
+    $data = json_encode($payload);
     echo "data: {$data}\n\n";
     flush();
     exit($success ? 0 : 1);
@@ -972,6 +1058,8 @@ foreach ($videos as $index => $video) {
             $stats['errors']++;
             $errorMsg = is_array($processResult) ? ($processResult['error'] ?? 'Unknown error') : 'FFmpeg failed';
             sendProgress('process', 'warning', "Failed {$clipLabel}: {$videoName} - {$errorMsg}", $clipProgressBase, $stats);
+            $logEntry = buildAutomationLogEntry('video_processed', 'error', "{$clipLabel} error: {$errorMsg}", $segmentVideoName);
+            appendStructuredResult('automation_log_entries', $logEntry);
             try {
                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
                 $stmt->execute([$automationId, 'video_processed', 'error', "{$clipLabel} error: {$errorMsg}", $segmentVideoName]);
@@ -982,8 +1070,17 @@ foreach ($videos as $index => $video) {
         $sourceHadSuccess = true;
         $stats['processed']++;
         $outputSize = round(filesize($outputPath) / 1024 / 1024, 1);
-        sendProgress('process', 'success', "Created {$clipLabel}: " . basename($outputPath) . " ({$outputSize}MB)", $clipProgressBase + ($progressPerVideo * 0.1), $stats);
-
+        $videoProcessedEntry = buildAutomationLogEntry('video_processed', 'success', "Output: " . basename($outputPath), $segmentVideoName);
+        $videoProcessedExtra = [];
+        $videoProcessedExtra = mergeStructuredExtra($videoProcessedExtra, 'automation_log_entries', $videoProcessedEntry);
+        sendProgress(
+            'process',
+            'success',
+            "Created {$clipLabel}: " . basename($outputPath) . " ({$outputSize}MB)",
+            $clipProgressBase + ($progressPerVideo * 0.1),
+            $stats,
+            $videoProcessedExtra
+        );
         try {
             $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$automationId, 'video_processed', 'success', "Output: " . basename($outputPath), $segmentVideoName]);
@@ -1266,23 +1363,51 @@ foreach ($videos as $index => $video) {
                                 error_log('run-sync postforme_posts save failed: ' . $e->getMessage());
                             }
 
+                            $postformeRecord = [
+                                'post_id' => (string)$postId,
+                                'video_id' => (string)$segmentVideoName,
+                                'caption' => (string)$caption,
+                                'account_ids' => array_values($postForMeAccountIds),
+                                'status' => $dbScheduledAt ? 'scheduled' : 'pending',
+                                'scheduled_at' => $dbScheduledAt,
+                                'results' => $postResult
+                            ];
+                            appendStructuredResult('postforme_posts', $postformeRecord, (string)$postId);
+
+                            $postformeLogMessage = $scheduledAt ? "Scheduled: {$postId}" : "Posted: {$postId}";
+                            $postformeLogEntry = buildAutomationLogEntry('postforme_success', 'success', $postformeLogMessage, $segmentVideoName, 'postforme');
+                            appendStructuredResult('automation_log_entries', $postformeLogEntry);
+
+                            $postformeExtra = [
+                                'postforme_posts' => [$postformeRecord],
+                                'automation_log_entries' => [$postformeLogEntry]
+                            ];
                             if ($scheduledAt) {
                                 $stats['scheduled']++;
                                 $countedAsScheduled = true;
-                                sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                                sendProgress('posting', 'success', "Scheduled {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats, $postformeExtra);
                             } else {
                                 $stats['posted']++;
                                 $countedAsPosted = true;
-                                sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                                sendProgress('posting', 'success', "Posted {$clipLabel}: {$postId}", $clipProgressBase + ($progressPerVideo * 0.18), $stats, $postformeExtra);
                             }
 
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
-                                $stmt->execute([$automationId, 'postforme_success', 'success', "Posted: {$postId}", $segmentVideoName, 'postforme']);
+                                $stmt->execute([$automationId, 'postforme_success', 'success', $postformeLogMessage, $segmentVideoName, 'postforme']);
                             } catch (Exception $e) {}
                         } else {
                             $errMsg = $postResult['error'] ?? 'Unknown error';
-                            sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errMsg}", $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+                            $postformeErrorEntry = buildAutomationLogEntry('postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme');
+                            appendStructuredResult('automation_log_entries', $postformeErrorEntry);
+                            sendProgress(
+                                'posting',
+                                'error',
+                                "Post failed for {$clipLabel}: {$errMsg}",
+                                $clipProgressBase + ($progressPerVideo * 0.18),
+                                $stats,
+                                ['automation_log_entries' => [$postformeErrorEntry]]
+                            );
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
                                 $stmt->execute([$automationId, 'postforme_error', 'error', $errMsg, $segmentVideoName, 'postforme']);
@@ -1311,18 +1436,20 @@ foreach ($videos as $index => $video) {
 
                             $queueId = (int)($queueResult['id'] ?? 0);
                             $message = "Scheduled {$clipLabel}: Facebook local queue #{$queueId}";
-                            $extra = [
-                                'facebook_scheduled_jobs' => [[
-                                    'job_key' => (string)($queueResult['job_key'] ?? ''),
-                                    'video_id' => (string)$segmentVideoName,
-                                    'media_url' => (string)($queueResult['media_url'] ?? ''),
-                                    'scheduled_at' => (string)($queueResult['scheduled_at'] ?? ''),
-                                    'account_ids' => array_values((array)($queueResult['account_ids'] ?? [])),
-                                    'caption' => (string)($queueResult['payload']['caption'] ?? ''),
-                                    'title' => (string)($queueResult['payload']['title'] ?? ''),
-                                    'description' => (string)($queueResult['payload']['description'] ?? ''),
-                                ]]
+                            $facebookScheduledJob = [
+                                'job_key' => (string)($queueResult['job_key'] ?? ''),
+                                'video_id' => (string)$segmentVideoName,
+                                'media_url' => (string)($queueResult['media_url'] ?? ''),
+                                'scheduled_at' => (string)($queueResult['scheduled_at'] ?? ''),
+                                'account_ids' => array_values((array)($queueResult['account_ids'] ?? [])),
+                                'caption' => (string)($queueResult['payload']['caption'] ?? ''),
+                                'title' => (string)($queueResult['payload']['title'] ?? ''),
+                                'description' => (string)($queueResult['payload']['description'] ?? ''),
                             ];
+                            $facebookScheduleEntry = buildAutomationLogEntry('facebook_schedule_success', 'success', $message, $segmentVideoName, 'facebook');
+                            $extra = [];
+                            $extra = mergeStructuredExtra($extra, 'facebook_scheduled_jobs', $facebookScheduledJob, (string)($queueResult['job_key'] ?? $message));
+                            $extra = mergeStructuredExtra($extra, 'automation_log_entries', $facebookScheduleEntry);
                             sendProgress(
                                 'posting',
                                 'success',
@@ -1338,7 +1465,16 @@ foreach ($videos as $index => $video) {
                             } catch (Exception $e) {}
                         } else {
                             $errorSummary = trim((string)($queueResult['error'] ?? 'Facebook local scheduling failed.'));
-                            sendProgress('posting', 'error', "Post failed for {$clipLabel}: {$errorSummary}", $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+                            $facebookScheduleErrorEntry = buildAutomationLogEntry('facebook_schedule_error', 'error', $errorSummary, $segmentVideoName, 'facebook');
+                            appendStructuredResult('automation_log_entries', $facebookScheduleErrorEntry);
+                            sendProgress(
+                                'posting',
+                                'error',
+                                "Post failed for {$clipLabel}: {$errorSummary}",
+                                $clipProgressBase + ($progressPerVideo * 0.182),
+                                $stats,
+                                ['automation_log_entries' => [$facebookScheduleErrorEntry]]
+                            );
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
                                 $stmt->execute([$automationId, 'facebook_schedule_error', 'error', $errorSummary, $segmentVideoName, 'facebook']);
@@ -1362,7 +1498,16 @@ foreach ($videos as $index => $video) {
                             if ($publishedId !== '') {
                                 $message .= " ({$publishedId})";
                             }
-                            sendProgress('posting', 'success', $message, $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+                            $facebookDirectSuccessEntry = buildAutomationLogEntry('facebook_direct_success', 'success', $message, $segmentVideoName, 'facebook');
+                            appendStructuredResult('automation_log_entries', $facebookDirectSuccessEntry);
+                            sendProgress(
+                                'posting',
+                                'success',
+                                $message,
+                                $clipProgressBase + ($progressPerVideo * 0.182),
+                                $stats,
+                                ['automation_log_entries' => [$facebookDirectSuccessEntry]]
+                            );
 
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
@@ -1374,7 +1519,16 @@ foreach ($videos as $index => $video) {
                             $accountLabel = trim((string)($fbError['account_name'] ?? $fbError['account_id'] ?? 'Facebook'));
                             $errorText = trim((string)($fbError['error'] ?? 'Unknown Facebook publishing error'));
                             $message = "Direct Facebook Reel failed on {$accountLabel}: {$errorText}";
-                            sendProgress('posting', 'error', $message, $clipProgressBase + ($progressPerVideo * 0.182), $stats);
+                            $facebookDirectErrorEntry = buildAutomationLogEntry('facebook_direct_error', 'error', $message, $segmentVideoName, 'facebook');
+                            appendStructuredResult('automation_log_entries', $facebookDirectErrorEntry);
+                            sendProgress(
+                                'posting',
+                                'error',
+                                $message,
+                                $clipProgressBase + ($progressPerVideo * 0.182),
+                                $stats,
+                                ['automation_log_entries' => [$facebookDirectErrorEntry]]
+                            );
 
                             try {
                                 $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
@@ -1408,6 +1562,17 @@ foreach ($videos as $index => $video) {
         $rotVideoId = $rotVideoIds[0] ?? (is_array($video) ? ($video['guid'] ?? $video['ObjectName'] ?? $video['filename'] ?? $video['name'] ?? md5(json_encode($video))) : basename($video));
         $rotFileSize = is_array($video) ? intval($video['Length'] ?? $video['size'] ?? $video['ContentLength'] ?? 0) : 0;
         $rotHash = $getRotationFingerprint($video);
+        $rotationExtra = [];
+        foreach ($rotVideoIds as $candidateId) {
+            $rotationRecord = [
+                'video_identifier' => (string)$candidateId,
+                'video_filename' => (string)$videoName,
+                'file_size' => (int)$rotFileSize,
+                'content_hash' => ((string)$candidateId === (string)$rotVideoId) ? (string)$rotHash : '',
+                'cycle_number' => (int)$rotCycle
+            ];
+            $rotationExtra = mergeStructuredExtra($rotationExtra, 'processed_video_records', $rotationRecord, (string)$candidateId . '|' . (string)$rotCycle);
+        }
         try {
             $rotStmt = $pdo->prepare("INSERT INTO processed_videos (automation_id, video_identifier, video_filename, file_size, cycle_number, processed_at) VALUES (?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE processed_at = NOW()");
             foreach ($rotVideoIds as $candidateId) {
@@ -1418,6 +1583,10 @@ foreach ($videos as $index => $video) {
                 $rotHashStmt->execute([$rotHash, $automationId, $rotCycle, $rotVideoId]);
             }
         } catch (Exception $e) {}
+
+        if (!empty($rotationExtra)) {
+            sendProgress('rotation', 'info', "Saved rotation markers for {$videoName}", $currentProgress + $progressPerVideo, $stats, $rotationExtra);
+        }
     }
 
     if (!$sourceHadSuccess) {

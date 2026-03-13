@@ -141,6 +141,25 @@ function appendOutput(array $outputs, ?string $name): array
     return $outputs;
 }
 
+function extractStructuredExtra(array $event): array
+{
+    $extra = [];
+    $keys = [
+        'facebook_scheduled_jobs',
+        'processed_video_records',
+        'postforme_posts',
+        'automation_log_entries'
+    ];
+
+    foreach ($keys as $key) {
+        if (!empty($event[$key]) && is_array($event[$key])) {
+            $extra[$key] = $event[$key];
+        }
+    }
+
+    return $extra;
+}
+
 function publishEvent(
     string $callbackUrl,
     string $callbackSecret,
@@ -308,10 +327,7 @@ while (!feof($handle)) {
     }
 
     $knownOutputs = appendOutput($knownOutputs, extractOutputName($message));
-    $extra = [];
-    if (!empty($event['facebook_scheduled_jobs']) && is_array($event['facebook_scheduled_jobs'])) {
-        $extra['facebook_scheduled_jobs'] = $event['facebook_scheduled_jobs'];
-    }
+    $extra = extractStructuredExtra($event);
 
     if (!empty($event['done'])) {
         $ok = !empty($event['success']);

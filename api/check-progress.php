@@ -13,6 +13,7 @@ try {
     require_once __DIR__ . '/../config.php';
     require_once __DIR__ . '/../includes/auth_gate.php';
     require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
+    require_once __DIR__ . '/../includes/RemoteExecutionHelper.php';
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'error' => 'Config error']);
     exit;
@@ -376,13 +377,25 @@ function cpAutomationAccountIds(PDO $pdo, int $automationId): ?string
     return null;
 }
 
+function cpExtractPostForMeMarkerPostId(string $message): ?string
+{
+    if (preg_match('/Post ID:\s*([A-Za-z0-9_\-]+)/i', $message, $pm)) {
+        $postId = trim((string)$pm[1]);
+        return $postId !== '' ? $postId : null;
+    }
+
+    if (preg_match('/\b(?:Scheduled|Posted)\s+Clip\s+\d+\/\d+:\s*(sp_[A-Za-z0-9_\-]+)/i', $message, $pm)) {
+        $postId = trim((string)$pm[1]);
+        return $postId !== '' ? $postId : null;
+    }
+
+    return null;
+}
+
 function cpUpsertPostForMeFromMarker(PDO $pdo, int $automationId, string $message, ?string $videoName = null): void
 {
-    if (!preg_match('/Post ID:\s*([A-Za-z0-9_\-]+)/i', $message, $pm)) {
-        return;
-    }
-    $postId = trim((string)$pm[1]);
-    if ($postId === '') {
+    $postId = cpExtractPostForMeMarkerPostId($message);
+    if ($postId === null) {
         return;
     }
 
@@ -392,9 +405,9 @@ function cpUpsertPostForMeFromMarker(PDO $pdo, int $automationId, string $messag
     }
 
     $status = 'pending';
-    if ($scheduledAt !== null || stripos($message, 'SCHEDULED!') !== false) {
+    if ($scheduledAt !== null || stripos($message, 'SCHEDULED!') !== false || preg_match('/\bScheduled\s+Clip\b/i', $message)) {
         $status = 'scheduled';
-    } elseif (stripos($message, 'POSTED!') !== false) {
+    } elseif (stripos($message, 'POSTED!') !== false || preg_match('/\bPosted\s+Clip\b/i', $message)) {
         $status = 'posted';
     }
 
@@ -429,6 +442,82 @@ function cpUpsertPostForMeFromMarker(PDO $pdo, int $automationId, string $messag
     }
 }
 
+function cpBackfillDerivedResultsFromMarkers(PDO $pdo, int $automationId, array $markers): void
+{
+    if (empty($markers)) {
+        return;
+    }
+
+    $currentVideo = '';
+    $entries = [];
+
+    foreach ($markers as $marker) {
+        $message = trim((string)($marker['message'] ?? ''));
+        if ($message === '') {
+            continue;
+        }
+
+        if (preg_match('/Processing:\s*(.+)$/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        } elseif (preg_match('/Downloading:\s*([^()]+)\(/i', $message, $m)) {
+            $currentVideo = trim((string)$m[1]);
+        }
+
+        $outputName = cpExtractOutputNameFromMessage($message);
+        if ($outputName !== null && preg_match('/\bCreated\s+Clip\b/i', $message)) {
+            $entries[] = [
+                'action' => 'video_processed',
+                'status' => 'success',
+                'message' => 'Output: ' . $outputName,
+                'video_id' => $currentVideo,
+                'platform' => ''
+            ];
+        }
+
+        $postId = cpExtractPostForMeMarkerPostId($message);
+        if ($postId !== null) {
+            cpUpsertPostForMeFromMarker($pdo, $automationId, $message, $currentVideo !== '' ? $currentVideo : null);
+            $entries[] = [
+                'action' => 'postforme_success',
+                'status' => 'success',
+                'message' => preg_match('/\bScheduled\s+Clip\b/i', $message) ? ('Scheduled: ' . $postId) : ('Posted: ' . $postId),
+                'video_id' => $currentVideo,
+                'platform' => 'postforme'
+            ];
+        }
+
+        if (preg_match('/^Scheduled\s+Clip\s+\d+\/\d+:\s+Facebook local queue #\d+/i', $message)) {
+            $entries[] = [
+                'action' => 'facebook_schedule_success',
+                'status' => 'success',
+                'message' => $message,
+                'video_id' => $currentVideo,
+                'platform' => 'facebook'
+            ];
+        } elseif (stripos($message, 'Direct Facebook Reel posted on ') === 0) {
+            $entries[] = [
+                'action' => 'facebook_direct_success',
+                'status' => 'success',
+                'message' => $message,
+                'video_id' => $currentVideo,
+                'platform' => 'facebook'
+            ];
+        } elseif (stripos($message, 'Direct Facebook Reel failed on ') === 0) {
+            $entries[] = [
+                'action' => 'facebook_direct_error',
+                'status' => 'error',
+                'message' => $message,
+                'video_id' => $currentVideo,
+                'platform' => 'facebook'
+            ];
+        }
+    }
+
+    if (!empty($entries)) {
+        remoteExecutionPersistAutomationLogs($pdo, $automationId, $entries);
+    }
+}
+
 function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &$progressPercent, array $markers): bool
 {
     if (empty($markers)) {
@@ -436,9 +525,7 @@ function cpApplyMarkers(PDO $pdo, int $automationId, array &$progressData, int &
     }
 
     foreach ($markers as $marker) {
-        if (!empty($marker['facebook_scheduled_jobs']) && is_array($marker['facebook_scheduled_jobs'])) {
-            FacebookScheduledPostQueue::persistCallbackJobs($pdo, $automationId, $marker['facebook_scheduled_jobs']);
-        }
+        remoteExecutionPersistStructuredPayload($pdo, $automationId, $marker);
     }
 
     $changed = false;
@@ -643,6 +730,11 @@ if ($isGithubTrackedRun && in_array($automation['status'], ['running', 'processi
                 if (($automation['status'] ?? '') === 'completed' && empty($progressData['postforme_backfilled'])) {
                     cpBackfillPostForMeFromMarkers($pdo, $automationId, $markers);
                     $progressData['postforme_backfilled'] = 1;
+                    $dataChanged = true;
+                }
+                if (($automation['status'] ?? '') === 'completed' && empty($progressData['marker_backfill_v2'])) {
+                    cpBackfillDerivedResultsFromMarkers($pdo, $automationId, $markers);
+                    $progressData['marker_backfill_v2'] = 1;
                     $dataChanged = true;
                 }
             }
