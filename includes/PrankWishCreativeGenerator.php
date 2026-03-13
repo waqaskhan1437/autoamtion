@@ -209,6 +209,10 @@ class PrankWishCreativeGenerator
 
     private function getProviderOrder(): array
     {
+        if ($this->shouldForceOllama()) {
+            return ['ollama'];
+        }
+
         $preferred = strtolower(trim($this->provider));
         $orderMap = [
             'openai' => ['openai', 'ollama', 'gemini'],
@@ -217,6 +221,10 @@ class PrankWishCreativeGenerator
         ];
 
         $order = $orderMap[$preferred] ?? $orderMap['gemini'];
+        if ($this->shouldPreferOllama()) {
+            $order = array_values(array_unique(array_merge(['ollama'], $order)));
+        }
+
         $providers = [];
         foreach ($order as $provider) {
             if ($this->isProviderAvailable($provider)) {
@@ -244,6 +252,32 @@ class PrankWishCreativeGenerator
         return false;
     }
 
+    private function shouldPreferOllama(): bool
+    {
+        return $this->isProviderAvailable('ollama')
+            && (
+                $this->shouldForceOllama()
+                || $this->readBoolEnv('VW_OLLAMA_AUTO_FALLBACK')
+                || $this->readBoolEnv('OLLAMA_AUTO_FALLBACK')
+            );
+    }
+
+    private function shouldForceOllama(): bool
+    {
+        return $this->isProviderAvailable('ollama')
+            && ($this->readBoolEnv('VW_OLLAMA_FORCE') || $this->readBoolEnv('OLLAMA_FORCE'));
+    }
+
+    private function readBoolEnv(string $key): bool
+    {
+        $value = getenv($key);
+        if ($value === false) {
+            return false;
+        }
+
+        return in_array(strtolower(trim((string)$value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
     private function buildProviderFailure(string $provider, string $message): string
     {
         $message = trim($message);
@@ -266,6 +300,21 @@ class PrankWishCreativeGenerator
             }
 
             if (empty($raw['success']) || !is_array($raw['data'] ?? null)) {
+                if ($this->pdo) {
+                    $this->insertLog(
+                        $automationId,
+                        'creative_ai_provider_failed',
+                        'info',
+                        [
+                            'provider' => (string)($raw['provider'] ?? $provider),
+                            'source' => (string)($raw['source'] ?? ('prankwish_' . $provider)),
+                            'error' => (string)($raw['error'] ?? 'AI generation failed.'),
+                        ],
+                        $videoFilename,
+                        'overlay'
+                    );
+                }
+
                 $errors[] = $this->buildProviderFailure(
                     (string)($raw['provider'] ?? $provider),
                     (string)($raw['error'] ?? 'AI generation failed.')
@@ -314,6 +363,14 @@ class PrankWishCreativeGenerator
             ];
         }
 
+        $outputPlatforms = [];
+        foreach (array_keys($seedPlatforms) as $platform) {
+            $outputPlatforms[(string)$platform] = ['title' => 'string', 'description' => 'string'];
+        }
+        if (empty($outputPlatforms)) {
+            $outputPlatforms['instagram'] = ['title' => 'string', 'description' => 'string'];
+        }
+
         $recentTitles = array_slice(array_values(array_unique(array_filter($history['titles'] ?? []))), 0, 12);
         $recentDescriptions = array_slice(array_values(array_unique(array_filter($history['descriptions'] ?? []))), 0, 8);
         $recentTaglines = array_slice(array_values(array_unique(array_filter($history['taglines'] ?? []))), 0, 12);
@@ -345,6 +402,8 @@ class PrankWishCreativeGenerator
                 'Never start any title with phrases like Happy Birthday, Merry Christmas, Happy New Year, Mother\'s Day, Father\'s Day, Valentine\'s Day, Wedding, Graduation, Congratulations, Brother, Sister, Mom, Dad, Boyfriend, or Girlfriend.',
                 'Descriptions must mention PrankWish.com and explain the 3-step order flow in natural wording.',
                 'Descriptions may naturally mention occasion and relationship search intent like mother, father, brother, sister, friend, boyfriend, girlfriend, wedding, graduation, Christmas, New Year, Valentine\'s Day, and birthday gift.',
+                'Keep every platform description to 1 or 2 short sentences, around 18 to 35 words when possible.',
+                'Only return platform keys that appear inside seed_platforms.',
                 'Top tagline must be 4 to 8 words, punchy, human, no hashtags, no emojis.',
                 'Bottom tagline must be 3 to 6 words, must contain prankwish.com, no hashtags.',
                 'Do not include quotation marks around the output text.',
@@ -360,17 +419,7 @@ class PrankWishCreativeGenerator
             'output_format' => [
                 'top_tagline' => 'string',
                 'bottom_tagline' => 'string',
-                'platforms' => [
-                    'youtube' => ['title' => 'string', 'description' => 'string'],
-                    'tiktok' => ['title' => 'string', 'description' => 'string'],
-                    'instagram' => ['title' => 'string', 'description' => 'string'],
-                    'facebook' => ['title' => 'string', 'description' => 'string'],
-                    'twitter' => ['title' => 'string', 'description' => 'string'],
-                    'threads' => ['title' => 'string', 'description' => 'string'],
-                    'linkedin' => ['title' => 'string', 'description' => 'string'],
-                    'pinterest' => ['title' => 'string', 'description' => 'string'],
-                    'bluesky' => ['title' => 'string', 'description' => 'string'],
-                ],
+                'platforms' => $outputPlatforms,
             ],
         ];
 
@@ -430,8 +479,8 @@ class PrankWishCreativeGenerator
 
         $response = $this->ollamaClient->generateJson(
             "Return valid JSON only.\n" . $prompt,
-            ['temperature' => 1.0, 'top_p' => 0.95, 'max_tokens' => 4096],
-            120
+            ['temperature' => 0.4, 'top_p' => 0.9, 'max_tokens' => 1800],
+            240
         );
 
         if (empty($response['success'])) {

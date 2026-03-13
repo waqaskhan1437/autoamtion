@@ -64,6 +64,10 @@ class AITaglineGenerator {
     }
 
     private function getProviderOrder() {
+        if ($this->shouldForceOllama()) {
+            return ['ollama'];
+        }
+
         $preferred = strtolower(trim((string)$this->provider));
         $orderMap = [
             'openai' => ['openai', 'ollama', 'gemini'],
@@ -72,6 +76,10 @@ class AITaglineGenerator {
         ];
 
         $order = $orderMap[$preferred] ?? $orderMap['gemini'];
+        if ($this->shouldPreferOllama()) {
+            $order = array_values(array_unique(array_merge(['ollama'], $order)));
+        }
+
         $providers = [];
         foreach ($order as $provider) {
             if ($this->isProviderAvailable($provider)) {
@@ -96,6 +104,29 @@ class AITaglineGenerator {
         }
 
         return false;
+    }
+
+    private function shouldPreferOllama() {
+        return $this->isProviderAvailable('ollama')
+            && (
+                $this->shouldForceOllama()
+                || $this->readBoolEnv('VW_OLLAMA_AUTO_FALLBACK')
+                || $this->readBoolEnv('OLLAMA_AUTO_FALLBACK')
+            );
+    }
+
+    private function shouldForceOllama() {
+        return $this->isProviderAvailable('ollama')
+            && ($this->readBoolEnv('VW_OLLAMA_FORCE') || $this->readBoolEnv('OLLAMA_FORCE'));
+    }
+
+    private function readBoolEnv($key) {
+        $value = getenv((string)$key);
+        if ($value === false) {
+            return false;
+        }
+
+        return in_array(strtolower(trim((string)$value)), ['1', 'true', 'yes', 'on'], true);
     }
 
     private function addProviderError(array &$errors, $provider, array $result) {
