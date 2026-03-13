@@ -87,6 +87,53 @@ function normalizePlaybackSpeedInput($rawInput) {
     return number_format($speed, 1, '.', '');
 }
 
+function normalizeCustomPromptInput($rawInput, $maxLength = 600) {
+    $text = trim(is_string($rawInput) ? $rawInput : (string)$rawInput);
+    if ($text === '') {
+        return null;
+    }
+
+    $text = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $text) ?? $text;
+    $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+
+    $blockedPatterns = [
+        '/ignore\s+(all\s+)?(previous|above|earlier|system)\s+instructions?/iu',
+        '/disregard\s+(all\s+)?(previous|above|earlier|system)\s+instructions?/iu',
+        '/override\s+(the\s+)?(rules|guardrails|limits|constraints)/iu',
+        '/system\s+prompt/iu',
+    ];
+    foreach ($blockedPatterns as $pattern) {
+        $text = preg_replace($pattern, '', $text) ?? $text;
+    }
+
+    $text = trim($text);
+    if ($text === '') {
+        return null;
+    }
+
+    if (function_exists('mb_substr')) {
+        $text = mb_substr($text, 0, $maxLength);
+    } else {
+        $text = substr($text, 0, $maxLength);
+    }
+
+    return trim($text) !== '' ? trim($text) : null;
+}
+
+function normalizeScheduleHourInput($rawInput) {
+    $hour = is_numeric($rawInput) ? (int)$rawInput : 9;
+    if ($hour === 24) {
+        return 0;
+    }
+    if ($hour < 0) {
+        return 0;
+    }
+    if ($hour > 23) {
+        return 23;
+    }
+    return $hour;
+}
+
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -98,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at, prankwish_enabled, prankwish_occasion, prankwish_cycle_override, prankwish_use_universal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at, prankwish_enabled, prankwish_occasion, prankwish_cycle_override, prankwish_use_universal, prankwish_ollama_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -119,11 +166,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
+        $prankwishOllamaPrompt = normalizeCustomPromptInput($_POST['prankwish_ollama_prompt'] ?? null);
         
         $nextRunAt = null;
         if ($enabled) {
             $scheduleType = $_POST['schedule_type'] ?? 'daily';
-            $scheduleHour = intval($_POST['schedule_hour'] ?? 9);
+            $scheduleHour = normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9);
             $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
             $nextRunAt = calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes);
         }
@@ -161,7 +209,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             isset($_POST['whisper_enabled']) ? 1 : 0,
             $_POST['whisper_language'] ?? 'en',
             $_POST['schedule_type'] ?? 'daily',
-            $_POST['schedule_hour'] ?? 9,
+            normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9),
             intval($_POST['schedule_every_minutes'] ?? 10),
             isset($_POST['youtube_enabled']) ? 1 : 0,
             $_POST['youtube_api_key'] ?? null,
@@ -188,7 +236,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             isset($_POST['prankwish_enabled']) ? 1 : 0,
             $_POST['prankwish_occasion'] ?? null,
             $_POST['prankwish_cycle_override'] ?? null,
-            isset($_POST['prankwish_use_universal']) ? 1 : 0
+            isset($_POST['prankwish_use_universal']) ? 1 : 0,
+            $prankwishOllamaPrompt
         ]);
         // Redirect to prevent form resubmission on refresh
         header('Location: automation.php?msg=created');
@@ -204,7 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $automation = $stmt->fetch();
             
             $scheduleType = $automation['schedule_type'] ?? 'daily';
-            $scheduleHour = $automation['schedule_hour'] ?? 9;
+            $scheduleHour = normalizeScheduleHourInput($automation['schedule_hour'] ?? 9);
             $scheduleEveryMinutes = $automation['schedule_every_minutes'] ?? 10;
             $nextRunAt = calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes);
             
@@ -224,7 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=?, prankwish_enabled=?, prankwish_occasion=?, prankwish_cycle_override=?, prankwish_use_universal=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=?, prankwish_enabled=?, prankwish_occasion=?, prankwish_cycle_override=?, prankwish_use_universal=?, prankwish_ollama_prompt=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -245,8 +294,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
+        $prankwishOllamaPrompt = normalizeCustomPromptInput($_POST['prankwish_ollama_prompt'] ?? null);
         $scheduleType = $_POST['schedule_type'] ?? 'daily';
-        $scheduleHour = intval($_POST['schedule_hour'] ?? 9);
+        $scheduleHour = normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9);
         $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
         $nextRunAt = $enabled ? calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes) : null;
         
@@ -311,6 +361,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['prankwish_occasion'] ?? null,
             $_POST['prankwish_cycle_override'] ?? null,
             isset($_POST['prankwish_use_universal']) ? 1 : 0,
+            $prankwishOllamaPrompt,
             $_POST['id']
         ]);
         
@@ -384,7 +435,7 @@ if (isset($_GET['msg'])) {
 
 function calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes = 10) {
     $nextRun = new DateTime();
-    $scheduleHour = (int)$scheduleHour;
+    $scheduleHour = normalizeScheduleHourInput($scheduleHour);
     $scheduleEveryMinutes = max(1, (int)$scheduleEveryMinutes);
 
     switch ($scheduleType) {
@@ -432,7 +483,7 @@ foreach ($automations as &$automation) {
     if ($isEnabled && ($missingNextRun || $hourlyDriftDetected || $minutesDriftDetected)) {
         $fixedNextRunAt = calculateAutomationNextRunAt(
             $automation['schedule_type'] ?? 'daily',
-            $automation['schedule_hour'] ?? 9,
+            normalizeScheduleHourInput($automation['schedule_hour'] ?? 9),
             $automation['schedule_every_minutes'] ?? 10
         );
         $pdo->prepare("UPDATE automation_settings SET next_run_at = ? WHERE id = ?")
@@ -444,6 +495,63 @@ unset($automation);
 
 $stmt = $pdo->query("SELECT * FROM api_keys WHERE status = 'active'");
 $keys = $stmt->fetchAll();
+
+$editAutomationFields = [
+    'id',
+    'name',
+    'video_source',
+    'manual_video_links',
+    'youtube_channel_url',
+    'run_mode',
+    'api_key_id',
+    'enabled',
+    'video_days_filter',
+    'video_start_date',
+    'video_end_date',
+    'videos_per_run',
+    'short_duration',
+    'short_aspect_ratio',
+    'playback_speed',
+    'source_shorts_mode',
+    'source_shorts_max_count',
+    'whisper_enabled',
+    'whisper_language',
+    'schedule_type',
+    'schedule_hour',
+    'schedule_every_minutes',
+    'youtube_enabled',
+    'tiktok_enabled',
+    'instagram_enabled',
+    'facebook_enabled',
+    'postforme_enabled',
+    'postforme_account_ids',
+    'postforme_schedule_mode',
+    'postforme_schedule_datetime',
+    'postforme_schedule_timezone',
+    'postforme_schedule_offset_minutes',
+    'postforme_schedule_spread_minutes',
+    'rotation_enabled',
+    'rotation_shuffle',
+    'rotation_auto_reset',
+    'ai_taglines_enabled',
+    'ai_tagline_prompt',
+    'branding_text_top',
+    'branding_text_bottom',
+    'prankwish_enabled',
+    'prankwish_occasion',
+    'prankwish_cycle_override',
+    'prankwish_use_universal',
+    'prankwish_ollama_prompt',
+];
+
+$editAutomationPayloads = [];
+foreach ($automations as $automation) {
+    $payload = [];
+    foreach ($editAutomationFields as $field) {
+        $payload[$field] = $automation[$field] ?? null;
+    }
+    $editAutomationPayloads[(string)($automation['id'] ?? '')] = $payload;
+}
 
 $selectedLogs = [];
 $selectedLogAutomationId = isset($_GET['logs']) ? intval($_GET['logs']) : 0;
@@ -459,6 +567,9 @@ include 'includes/header.php';
 <?php if ($message): ?>
     <script>document.addEventListener('DOMContentLoaded', () => showToast('<?= $message ?>'));</script>
 <?php endif; ?>
+<script>
+window.editAutomationPayloads = <?= json_encode($editAutomationPayloads, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?>;
+</script>
 
 <!-- Live Debug Banner -->
 <div id="debug_banner" class="sticky top-2 z-40 mb-4 hidden">
@@ -669,7 +780,7 @@ refreshOutputVideoCount();
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                             </button>
                         </form>
-                        <button type="button" onclick='openEditModal(<?= json_encode($automation, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?>)' class="inline-flex items-center gap-2 px-3 py-2 hover:bg-gray-700 rounded text-blue-400 border border-blue-500/20 bg-blue-500/10" title="Automation Settings">
+                        <button type="button" onclick="openEditModalById(<?= intval($automation['id']) ?>)" class="inline-flex items-center gap-2 px-3 py-2 hover:bg-gray-700 rounded text-blue-400 border border-blue-500/20 bg-blue-500/10" title="Automation Settings">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                             <span class="text-xs font-medium">Settings</span>
                         </button>
@@ -1247,6 +1358,10 @@ refreshOutputVideoCount();
                                     <option value="birthday_best_friend">Birthday For Best Friend</option>
                                     <option value="birthday_girlfriend">Birthday For Girlfriend</option>
                                     <option value="birthday_boyfriend">Birthday For Boyfriend</option>
+                                    <option value="birthday_wife">Birthday For Wife</option>
+                                    <option value="birthday_husband">Birthday For Husband</option>
+                                    <option value="birthday_son">Birthday For Son</option>
+                                    <option value="birthday_daughter">Birthday For Daughter</option>
                                     <option value="funny_roast_friend">Funny Roast Friend</option>
                                     <option value="mothers_day">Mother's Day</option>
                                     <option value="fathers_day">Father's Day</option>
@@ -1261,6 +1376,19 @@ refreshOutputVideoCount();
                                     <option value="promotion">Legacy: Promotion</option>
                                 </select>
                                 <p class="text-xs text-gray-500 mt-2">This helps with social media SEO. Video taglines remain universal.</p>
+                            </div>
+
+                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg">
+                                <label for="prankwish_ollama_prompt" class="block text-sm text-gray-300 mb-2">Ollama Custom Prompt (Optional)</label>
+                                <textarea
+                                    name="prankwish_ollama_prompt"
+                                    id="prankwish_ollama_prompt"
+                                    rows="4"
+                                    maxlength="600"
+                                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                                    placeholder="Example: Keep tone warm and simple. Focus on family emotion. Use easy English. Avoid slang."
+                                ></textarea>
+                                <p class="text-xs text-gray-500 mt-2">Yahan sirf tone, style, ya emphasis likhein. System ki hard limits, brand rules, length controls, aur fallback safety hamesha enforce rahengi.</p>
                             </div>
                         </div>
                     </div>
@@ -1810,6 +1938,10 @@ refreshOutputVideoCount();
                                     <option value="birthday_best_friend">Birthday For Best Friend</option>
                                     <option value="birthday_girlfriend">Birthday For Girlfriend</option>
                                     <option value="birthday_boyfriend">Birthday For Boyfriend</option>
+                                    <option value="birthday_wife">Birthday For Wife</option>
+                                    <option value="birthday_husband">Birthday For Husband</option>
+                                    <option value="birthday_son">Birthday For Son</option>
+                                    <option value="birthday_daughter">Birthday For Daughter</option>
                                     <option value="funny_roast_friend">Funny Roast Friend</option>
                                     <option value="mothers_day">Mother's Day</option>
                                     <option value="fathers_day">Father's Day</option>
@@ -1823,6 +1955,19 @@ refreshOutputVideoCount();
                                     <option value="eid">Eid</option>
                                     <option value="promotion">Legacy: Promotion</option>
                                 </select>
+                            </div>
+
+                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg">
+                                <label for="edit_prankwish_ollama_prompt" class="block text-sm text-gray-300 mb-2">Ollama Custom Prompt (Optional)</label>
+                                <textarea
+                                    name="prankwish_ollama_prompt"
+                                    id="edit_prankwish_ollama_prompt"
+                                    rows="4"
+                                    maxlength="600"
+                                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                                    placeholder="Example: Keep tone warm and simple. Focus on family emotion. Use easy English. Avoid slang."
+                                ></textarea>
+                                <p class="text-xs text-gray-500 mt-2">Custom prompt sirf Ollama ki style guide karega. Required brand rules, length limits, aur fallback protections override nahi honge.</p>
                             </div>
                         </div>
                     </div>
@@ -2457,6 +2602,18 @@ function applyEditYouTubePreset(preset) {
 }
 
 // Function to open edit modal and populate with automation data
+function openEditModalById(automationId) {
+    const store = window.editAutomationPayloads || {};
+    const automationData = store[String(automationId)] || null;
+    if (!automationData) {
+        if (typeof showToast === 'function') {
+            showToast('Unable to load automation settings for this card', 'error');
+        }
+        return;
+    }
+    openEditModal(automationData);
+}
+
 function openEditModal(automationData) {
     if (!automationData || typeof automationData !== 'object') {
         if (typeof showToast === 'function') {
@@ -2472,7 +2629,13 @@ function openEditModal(automationData) {
     document.getElementById('edit_run_mode').value = automationData.run_mode || 'local';
     document.getElementById('edit_api_key_id').value = automationData.api_key_id || '';
     document.getElementById('edit_schedule_type').value = automationData.schedule_type || 'daily';
-    document.getElementById('edit_schedule_hour').value = automationData.schedule_hour || 9;
+    const normalizedScheduleHour = (() => {
+        const raw = Number(automationData.schedule_hour ?? 9);
+        if (raw === 24) return 0;
+        if (!Number.isFinite(raw)) return 9;
+        return Math.max(0, Math.min(23, raw));
+    })();
+    document.getElementById('edit_schedule_hour').value = normalizedScheduleHour;
     document.getElementById('edit_schedule_every_minutes').value = automationData.schedule_every_minutes || 10;
     document.getElementById('edit_enabled').checked = automationData.enabled == 1;
     document.getElementById('edit_video_days_filter').value = automationData.video_days_filter || 30;
@@ -2499,6 +2662,9 @@ function openEditModal(automationData) {
     // PrankWish fields
     document.getElementById('edit_prankwish_enabled').checked = automationData.prankwish_enabled == 1;
     document.getElementById('edit_prankwish_occasion').value = automationData.prankwish_occasion || '';
+    document.getElementById('edit_prankwish_cycle_override').value = automationData.prankwish_cycle_override || '';
+    document.getElementById('edit_prankwish_use_universal').value = automationData.prankwish_use_universal == 1 ? '1' : '0';
+    document.getElementById('edit_prankwish_ollama_prompt').value = automationData.prankwish_ollama_prompt || '';
     document.getElementById('edit_postforme_enabled').checked = automationData.postforme_enabled == 1;
     document.getElementById('edit_youtube_enabled').checked = automationData.youtube_enabled == 1;
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;

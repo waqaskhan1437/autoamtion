@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
     prankwish_occasion VARCHAR(50) DEFAULT NULL,
     prankwish_cycle_override INT DEFAULT NULL,
     prankwish_use_universal TINYINT(1) DEFAULT 1,
+    prankwish_ollama_prompt TEXT NULL,
     
     -- Branding Settings
     branding_text_top VARCHAR(255),

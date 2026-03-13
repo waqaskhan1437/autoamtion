@@ -178,6 +178,9 @@ try {
         if (!in_array('prankwish_use_universal', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_use_universal TINYINT(1) DEFAULT 1");
         }
+        if (!in_array('prankwish_ollama_prompt', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN prankwish_ollama_prompt TEXT NULL");
+        }
         
         // Add progress tracking columns
         if (!in_array('progress_percent', $columns)) {
@@ -651,6 +654,7 @@ try {
                 prankwish_occasion VARCHAR(50) DEFAULT NULL,
                 prankwish_cycle_override INT DEFAULT NULL,
                 prankwish_use_universal TINYINT(1) DEFAULT 1,
+                prankwish_ollama_prompt TEXT NULL,
                 branding_text_top VARCHAR(255),
                 branding_text_bottom VARCHAR(255),
                 random_words JSON,
