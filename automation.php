@@ -142,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
-            $_POST['api_key_id'] ?: null,
+            !empty($_POST['api_key_id']) ? $_POST['api_key_id'] : null,
             $enabled,
             $videoDaysFilter,
             $videoStartDate,
@@ -264,7 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $manualVideoLinks,
             $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
             $_POST['run_mode'] ?? 'local',
-            $_POST['api_key_id'] ?: null,
+            !empty($_POST['api_key_id']) ? $_POST['api_key_id'] : null,
             $videoDaysFilter,
             $videoStartDate,
             $videoEndDate,
@@ -945,7 +945,7 @@ refreshOutputVideoCount();
             </button>
         </div>
         
-        <form method="POST" class="overflow-y-auto" style="max-height: calc(90vh - 140px);">
+        <form method="POST" id="createForm" novalidate class="overflow-y-auto" style="max-height: calc(90vh - 140px);">
             <input type="hidden" name="action" value="create">
             
             <!-- Tab 1: Basic Settings -->
@@ -1507,7 +1507,7 @@ refreshOutputVideoCount();
             </button>
         </div>
         
-        <form method="POST" id="editForm" class="overflow-y-auto" style="max-height: calc(90vh - 140px);">
+        <form method="POST" id="editForm" novalidate class="overflow-y-auto" style="max-height: calc(90vh - 140px);">
             <input type="hidden" name="action" value="update">
             <input type="hidden" name="id" id="edit_automation_id" value="">
             
@@ -2036,6 +2036,176 @@ refreshOutputVideoCount();
 </div>
 
 <script>
+function resolveAutomationFormMode(form) {
+    return form && form.id === 'editForm' ? 'edit' : 'create';
+}
+
+function showAutomationTabForField(field, mode) {
+    if (!field) return;
+
+    const tabMap = [
+        { prefix: mode === 'edit' ? 'edit_form_basic' : 'form_basic', tab: 'basic' },
+        { prefix: mode === 'edit' ? 'edit_form_video' : 'form_video', tab: 'video' },
+        { prefix: mode === 'edit' ? 'edit_form_taglines' : 'form_taglines', tab: 'taglines' },
+        { prefix: mode === 'edit' ? 'edit_form_social' : 'form_social', tab: 'social' }
+    ];
+
+    for (const entry of tabMap) {
+        const section = document.getElementById(entry.prefix);
+        if (section && section.contains(field)) {
+            if (mode === 'edit') {
+                showEditFormTab(entry.tab);
+            } else {
+                showFormTab(entry.tab);
+            }
+            return;
+        }
+    }
+}
+
+function getAutomationField(form, name) {
+    return form.querySelector(`[name="${name}"]`);
+}
+
+function getCheckedAutomationField(form, name) {
+    return form.querySelector(`input[name="${name}"]:checked`);
+}
+
+function clearAutomationCustomValidity(form) {
+    form.querySelectorAll('input, textarea, select').forEach(field => field.setCustomValidity(''));
+}
+
+function markAutomationFieldInvalid(field, message, mode) {
+    if (!field) return false;
+    if (message) {
+        field.setCustomValidity(message);
+    }
+    showAutomationTabForField(field, mode);
+    window.requestAnimationFrame(() => {
+        try {
+            field.reportValidity();
+        } catch (_) {}
+        if (typeof field.focus === 'function') {
+            field.focus();
+        }
+    });
+    return false;
+}
+
+function validateAutomationField(field, mode, message = '') {
+    if (!field) {
+        return true;
+    }
+    field.setCustomValidity(message);
+    if (field.checkValidity()) {
+        field.setCustomValidity('');
+        return true;
+    }
+    return markAutomationFieldInvalid(field, message || '', mode);
+}
+
+function validateAutomationForm(form) {
+    const mode = resolveAutomationFormMode(form);
+    clearAutomationCustomValidity(form);
+
+    const nameField = getAutomationField(form, 'name');
+    if (!nameField || !nameField.value.trim()) {
+        return markAutomationFieldInvalid(nameField, 'Automation name is required.', mode);
+    }
+
+    const videoSourceField = getAutomationField(form, 'video_source');
+    const videoSource = (videoSourceField && videoSourceField.value) || 'ftp';
+
+    const numericFields = [
+        getAutomationField(form, 'schedule_hour'),
+        getAutomationField(form, 'schedule_every_minutes'),
+        getAutomationField(form, 'videos_per_run'),
+        getAutomationField(form, 'short_duration'),
+        getAutomationField(form, 'playback_speed')
+    ];
+    for (const field of numericFields) {
+        if (!validateAutomationField(field, mode)) {
+            return false;
+        }
+    }
+
+    const shortsModeField = getAutomationField(form, 'source_shorts_mode');
+    const shortsMode = (shortsModeField && shortsModeField.value) || 'single';
+    if (shortsMode !== 'single' && !validateAutomationField(getAutomationField(form, 'source_shorts_max_count'), mode)) {
+        return false;
+    }
+
+    const videoSelectionMethodField = getAutomationField(form, 'video_selection_method_hidden') || getCheckedAutomationField(form, 'video_selection_method');
+    const videoSelectionMethod = (videoSelectionMethodField && videoSelectionMethodField.value) || 'days';
+    if (videoSelectionMethod === 'date_range') {
+        const startField = getAutomationField(form, 'video_start_date');
+        const endField = getAutomationField(form, 'video_end_date');
+        if (!startField || !startField.value) {
+            return markAutomationFieldInvalid(startField, 'Start date is required for date range mode.', mode);
+        }
+        if (!endField || !endField.value) {
+            return markAutomationFieldInvalid(endField, 'End date is required for date range mode.', mode);
+        }
+        if (!validateAutomationField(startField, mode) || !validateAutomationField(endField, mode)) {
+            return false;
+        }
+    } else if (!validateAutomationField(getAutomationField(form, 'video_days_filter'), mode)) {
+        return false;
+    }
+
+    if (videoSource === 'bunny') {
+        const apiKeyField = getAutomationField(form, 'api_key_id');
+        if (!apiKeyField || !apiKeyField.value) {
+            return markAutomationFieldInvalid(apiKeyField, 'Select a Bunny CDN connection.', mode);
+        }
+    }
+
+    if (videoSource === 'manual_links') {
+        const manualField = getAutomationField(form, 'manual_video_links');
+        if (!manualField || !manualField.value.trim()) {
+            return markAutomationFieldInvalid(manualField, 'Add at least one manual video URL.', mode);
+        }
+    }
+
+    if (videoSource === 'youtube_channel') {
+        const youtubeField = getAutomationField(form, 'youtube_channel_url');
+        if (!youtubeField || !youtubeField.value.trim()) {
+            return markAutomationFieldInvalid(youtubeField, 'YouTube channel URL is required.', mode);
+        }
+        if (!validateAutomationField(youtubeField, mode)) {
+            return false;
+        }
+    }
+
+    const postformeField = getAutomationField(form, 'postforme_enabled');
+    if (postformeField && postformeField.checked) {
+        const scheduleModeField = getAutomationField(form, 'postforme_schedule_mode');
+        const scheduleMode = (scheduleModeField && scheduleModeField.value) || 'immediate';
+        const selectedAccounts = form.querySelectorAll('input[name="postforme_account_ids[]"]:checked');
+        if (selectedAccounts.length === 0) {
+            const accountField = form.querySelector('input[name="postforme_account_ids[]"]');
+            return markAutomationFieldInvalid(accountField, 'Select at least one Post for Me account.', mode);
+        }
+        if (scheduleMode === 'scheduled') {
+            const dateTimeField = getAutomationField(form, 'postforme_schedule_datetime');
+            if (!dateTimeField || !dateTimeField.value) {
+                return markAutomationFieldInvalid(dateTimeField, 'Schedule date and time is required.', mode);
+            }
+        }
+    }
+
+    return true;
+}
+
+function submitAutomationForm(event) {
+    const form = event.target;
+    if (!validateAutomationForm(form)) {
+        event.preventDefault();
+        return false;
+    }
+    return true;
+}
+
 function showFormTab(tab) {
     // Hide all tabs
     ['basic', 'video', 'taglines', 'social'].forEach(t => {
@@ -3097,6 +3267,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const sourceShortsMode = document.getElementById('source_shorts_mode');
     if (sourceShortsMode) {
         toggleSourceShortsMode(sourceShortsMode.value || 'single');
+    }
+    const createForm = document.getElementById('createForm');
+    if (createForm) {
+        createForm.addEventListener('submit', submitAutomationForm);
+    }
+    const editForm = document.getElementById('editForm');
+    if (editForm) {
+        editForm.addEventListener('submit', submitAutomationForm);
     }
     startLiveDebugBanner();
 });
