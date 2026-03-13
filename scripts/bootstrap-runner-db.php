@@ -39,6 +39,27 @@ if (!is_array($processedVideos)) {
     $processedVideos = [];
 }
 
+$envFlag = static function(string $key): bool {
+    $value = getenv($key);
+    if ($value === false) {
+        return false;
+    }
+
+    $normalized = strtolower(trim((string)$value));
+    return in_array($normalized, ['1', 'true', 'yes', 'on'], true);
+};
+
+$ollamaAutoFallback = $envFlag('VW_OLLAMA_AUTO_FALLBACK') || $envFlag('OLLAMA_AUTO_FALLBACK');
+if ($ollamaAutoFallback) {
+    $ollamaBaseUrl = trim((string)(getenv('VW_OLLAMA_BASE_URL') ?: getenv('OLLAMA_BASE_URL') ?: 'http://127.0.0.1:11434'));
+    $ollamaModel = trim((string)(getenv('VW_OLLAMA_MODEL') ?: getenv('OLLAMA_MODEL') ?: 'qwen2.5:3b'));
+
+    $settings['ai_provider'] = 'ollama';
+    $settings['ollama_auto_fallback'] = '1';
+    $settings['ollama_base_url'] = $ollamaBaseUrl;
+    $settings['ollama_model'] = $ollamaModel;
+}
+
 $dbHost = getenv('VW_DB_HOST') ?: '127.0.0.1';
 $dbName = getenv('VW_DB_NAME') ?: 'video_workflow';
 $dbUser = getenv('VW_DB_USER') ?: 'root';
