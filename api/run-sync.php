@@ -1436,6 +1436,10 @@ foreach ($videos as $index => $video) {
 
                             $queueId = (int)($queueResult['id'] ?? 0);
                             $message = "Scheduled {$clipLabel}: Facebook local queue #{$queueId}";
+                            $queueScheduledLabel = trim((string)($queueResult['scheduled_at'] ?? ''));
+                            if ($queueScheduledLabel !== '') {
+                                $message .= " ({$queueScheduledLabel})";
+                            }
                             $facebookScheduledJob = [
                                 'job_key' => (string)($queueResult['job_key'] ?? ''),
                                 'video_id' => (string)$segmentVideoName,
