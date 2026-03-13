@@ -11,6 +11,7 @@ require_once __DIR__ . '/WhisperAPI.php';
 require_once __DIR__ . '/SocialMediaUploader.php';
 require_once __DIR__ . '/AITaglineGenerator.php';
 require_once __DIR__ . '/PostForMeAPI.php';
+require_once __DIR__ . '/PostForMeCaptionResolver.php';
 require_once __DIR__ . '/FacebookSafeVideoHelper.php';
 require_once __DIR__ . '/FacebookReelsPublisher.php';
 require_once __DIR__ . '/FacebookScheduledPostQueue.php';
@@ -1332,6 +1333,7 @@ class AutomationRunner {
 
             $facebookAccounts = [];
             $postForMeAccountIds = $accountIds;
+            $postForMeAccounts = [];
             $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $accountIds);
             if (!empty($publishTargets['success'])) {
                 $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
@@ -1340,6 +1342,9 @@ class AutomationRunner {
                 $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
                     ? $publishTargets['postforme_account_ids']
                     : $accountIds;
+                $postForMeAccounts = is_array($publishTargets['postforme_accounts'] ?? null)
+                    ? $publishTargets['postforme_accounts']
+                    : [];
 
                 foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
                     $warning = trim((string)$warning);
@@ -1372,6 +1377,22 @@ class AutomationRunner {
                     (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
                     $videoId,
                     'facebook'
+                );
+            }
+
+            $resolvedCaption = PostForMeCaptionResolver::resolvePrimaryCaption(
+                $postForMeAccounts,
+                $postCaption,
+                is_array($options['platform_overrides'] ?? null) ? $options['platform_overrides'] : []
+            );
+            if ($resolvedCaption !== $postCaption) {
+                $postCaption = $resolvedCaption;
+                $this->log(
+                    'postforme_caption',
+                    'info',
+                    'Using platform-safe primary caption for selected PostForMe accounts.',
+                    $videoId,
+                    'postforme'
                 );
             }
 

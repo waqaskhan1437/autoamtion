@@ -248,6 +248,7 @@ try {
     require_once __DIR__ . '/../includes/FFmpegProcessor.php';
     require_once __DIR__ . '/../includes/AITaglineGenerator.php';
     require_once __DIR__ . '/../includes/PostForMeAPI.php';
+    require_once __DIR__ . '/../includes/PostForMeCaptionResolver.php';
     require_once __DIR__ . '/../includes/FacebookSafeVideoHelper.php';
     require_once __DIR__ . '/../includes/FacebookReelsPublisher.php';
     require_once __DIR__ . '/../includes/FacebookScheduledPostQueue.php';
@@ -1145,6 +1146,7 @@ foreach ($videos as $index => $video) {
 
                 $facebookAccounts = [];
                 $postForMeAccountIds = $pfAccounts;
+                $postForMeAccounts = [];
                 $publishTargets = FacebookReelsPublisher::splitPublishTargets($postForMe, $pfAccounts);
                 if (!empty($publishTargets['success'])) {
                     $facebookAccounts = is_array($publishTargets['facebook_accounts'] ?? null)
@@ -1153,6 +1155,9 @@ foreach ($videos as $index => $video) {
                     $postForMeAccountIds = is_array($publishTargets['postforme_account_ids'] ?? null)
                         ? $publishTargets['postforme_account_ids']
                         : $pfAccounts;
+                    $postForMeAccounts = is_array($publishTargets['postforme_accounts'] ?? null)
+                        ? $publishTargets['postforme_accounts']
+                        : [];
 
                     foreach ((array)($publishTargets['warnings'] ?? []) as $warning) {
                         $warning = trim((string)$warning);
@@ -1190,6 +1195,22 @@ foreach ($videos as $index => $video) {
                         'warning',
                         (string)($publishTargets['error'] ?? 'Unable to resolve Facebook direct publishing targets. Using PostForMe fallback.'),
                         $clipProgressBase + ($progressPerVideo * 0.135),
+                        $stats
+                    );
+                }
+
+                $resolvedCaption = PostForMeCaptionResolver::resolvePrimaryCaption(
+                    $postForMeAccounts,
+                    $caption,
+                    $platformOverrides
+                );
+                if ($resolvedCaption !== $caption) {
+                    $caption = $resolvedCaption;
+                    sendProgress(
+                        'posting',
+                        'info',
+                        'Using platform-safe primary caption for selected Post for Me accounts.',
+                        $clipProgressBase + ($progressPerVideo * 0.18),
                         $stats
                     );
                 }

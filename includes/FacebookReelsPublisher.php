@@ -38,6 +38,7 @@ class FacebookReelsPublisher
 
         $facebookAccounts = [];
         $postForMeAccountIds = [];
+        $postForMeAccounts = [];
         $warnings = [];
 
         foreach ($selectedIds as $accountId) {
@@ -53,6 +54,7 @@ class FacebookReelsPublisher
             if ($platform === 'facebook') {
                 if ($token === '') {
                     $postForMeAccountIds[] = $accountId;
+                    $postForMeAccounts[] = $account;
                     $warnings[] = "Facebook account {$accountId} is missing a page token; using PostForMe fallback.";
                     continue;
                 }
@@ -62,12 +64,14 @@ class FacebookReelsPublisher
             }
 
             $postForMeAccountIds[] = $accountId;
+            $postForMeAccounts[] = $account;
         }
 
         return [
             'success' => true,
             'facebook_accounts' => $facebookAccounts,
             'postforme_account_ids' => $postForMeAccountIds,
+            'postforme_accounts' => $postForMeAccounts,
             'warnings' => $warnings,
         ];
     }
