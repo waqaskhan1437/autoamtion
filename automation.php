@@ -141,6 +141,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $redirectMsg = '';
     
     if ($action === 'create') {
+        // Run database migration for new tagline columns if needed
+        try {
+            $columnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'top_taglines_json'");
+            if ($columnsStmt->rowCount() === 0) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT AFTER short_aspect_ratio");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT AFTER top_taglines_json");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential' AFTER bottom_taglines_json");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0 AFTER tagline_rotation_mode");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1 AFTER current_tagline_index");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1 AFTER last_top_index");
+            }
+        } catch (Exception $e) {
+            // Migration failed, continue anyway
+        }
+        
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
@@ -261,6 +276,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: automation.php?msg=toggled');
         exit;
     } elseif ($action === 'update') {
+        // Run database migration for new tagline columns if needed
+        try {
+            $columnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'top_taglines_json'");
+            if ($columnsStmt->rowCount() === 0) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT AFTER short_aspect_ratio");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT AFTER top_taglines_json");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential' AFTER bottom_taglines_json");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0 AFTER tagline_rotation_mode");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1 AFTER current_tagline_index");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1 AFTER last_top_index");
+            }
+        } catch (Exception $e) {
+            // Migration failed, continue anyway
+        }
+        
         $randomWords = array_filter(array_map('trim', explode(',', $_POST['random_words'] ?? '')));
         
         // Post for Me account IDs (as JSON array)
