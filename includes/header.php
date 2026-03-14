@@ -50,13 +50,11 @@ $vwmIsAdmin = vwm_is_admin();
                         Player
                     </span>
                 </a>
-                <?php if ($vwmIsAdmin): ?>
                 <a href="settings.php" class="px-4 py-2 rounded hover:bg-gray-800 <?= basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'bg-gray-800' : '' ?>">Settings</a>
-                <?php endif; ?>
             </nav>
             <div class="flex items-center gap-3 text-sm">
                 <div class="text-right">
-                    <div class="font-medium text-gray-100"><?= htmlspecialchars($vwmCurrentUser['display_name'] ?: $vwmCurrentUser['email'] ?: 'User') ?></div>
+                    <div class="font-medium text-gray-100"><?= htmlspecialchars($vwmCurrentUser ? ($vwmCurrentUser['display_name'] ?: $vwmCurrentUser['email'] ?: 'User') : 'User') ?></div>
                     <div class="text-xs text-gray-400"><?= $vwmIsAdmin ? 'Admin' : 'User' ?></div>
                 </div>
                 <a href="<?= htmlspecialchars(basename($_SERVER['PHP_SELF'])) ?>?logout=1" class="px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-200">Logout</a>

@@ -16,9 +16,6 @@ require_once __DIR__ . '/FacebookSafeVideoHelper.php';
 require_once __DIR__ . '/FacebookReelsPublisher.php';
 require_once __DIR__ . '/FacebookScheduledPostQueue.php';
 require_once __DIR__ . '/LocalTaglineGenerator.php';
-require_once __DIR__ . '/PrankWishCreativeGenerator.php';
-require_once __DIR__ . '/PrankWishTaglineGenerator.php';
-require_once __DIR__ . '/PrankWishSocialContent.php';
 require_once __DIR__ . '/ShortSegmentPlanner.php';
 require_once __DIR__ . '/YouTubeSource.php';
 require_once __DIR__ . '/ManualVideoDownloader.php';
@@ -723,7 +720,7 @@ class AutomationRunner {
         // Step 1: Download video
         $localPath = $this->downloadVideo($video);
         
-        // Step 2: Get branding text (AI or manual)
+        // Step 2: Get branding text from custom taglines ONLY (NO FALLBACK)
         $topText = '';
         $bottomText = '';
         $emoji = '';
@@ -731,114 +728,71 @@ class AutomationRunner {
         $creativePackage = null;
         $socialContent = [];
         
-        // Debug logging
-        $pwEnabled = $this->automation['prankwish_enabled'] ?? 'NOT_SET';
-        $aiEnabled = $this->automation['ai_taglines_enabled'] ?? 'NOT_SET';
-        $pwEnabledType = gettype($this->automation['prankwish_enabled'] ?? null);
-        $this->log('tagline_debug', 'info', "Settings: prankwish_enabled={$pwEnabled} (type:{$pwEnabledType}), ai_taglines_enabled={$aiEnabled}");
+        // Custom Taglines System
+        $topTaglinesJson = $this->automation['top_taglines_json'] ?? '';
+        $bottomTaglinesJson = $this->automation['bottom_taglines_json'] ?? '';
+        $rotationMode = $this->automation['tagline_rotation_mode'] ?? 'sequential';
+        $currentIndex = (int)($this->automation['current_tagline_index'] ?? 0);
         
-        // Priority: PrankWish > AI Taglines > Manual Fallback
-
-        // First priority: PrankWish creative package (brand-specific flow)
-        if (!empty($this->automation['prankwish_enabled'])) {
-            $this->log('prankwish_tagline', 'info', 'Generating PrankWish creative package (highest priority)');
-
-            $pwValue = $this->automation['prankwish_enabled'] ?? 0;
-            $this->log('tagline_debug', 'info', "PrankWish check: value='{$pwValue}', empty()=" . (empty($pwValue) ? 'TRUE' : 'FALSE'));
-
-            $creativeGenerator = new PrankWishCreativeGenerator($this->pdo);
-            $creativePackage = $creativeGenerator->buildNextCreativePackage(
-                (int)$this->automationId,
-                (string)$videoTitle,
-                $this->automation['prankwish_occasion'] ?? null,
-                (string)($video['title'] ?? $videoId)
-            );
-
-            if (isset($creativePackage['success']) && $creativePackage['success']) {
-                $topText = (string)($creativePackage['top'] ?? '');
-                $bottomText = (string)($creativePackage['bottom'] ?? '');
-                $creativeGenerator->logAppliedPackage($this->automationId, (string)$videoId, $creativePackage);
-                $cycleNumber = (int)($creativePackage['cycle'] ?? 1);
-                $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
-                $fallbackDetail = '';
-                if ($creativeSource === 'prankwish_fallback_library' && !empty($creativePackage['fallback_error'])) {
-                    $fallbackDetail = ' | AI fallback reason: ' . substr((string)$creativePackage['fallback_error'], 0, 220);
-                }
-
-                $this->log('prankwish_tagline', 'success', "Cycle {$cycleNumber} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'{$fallbackDetail}");
-            } else {
-                $errorDetail = isset($creativePackage['error']) ? $creativePackage['error'] : 'Unknown error';
-                $this->log('prankwish_tagline', 'error', "PrankWish creative failed: {$errorDetail}");
-                // Fall through to next fallback
-                $topText = '';
-                $bottomText = '';
-            }
-        }
-
-        // Second priority: AI Taglines (Gemini/OpenAI) when enabled and PrankWish did not provide text
-        if (empty($topText) && !empty($this->automation['ai_taglines_enabled'])) {
-            $this->log('ai_tagline', 'info', 'Generating AI taglines for video (fallback after PrankWish)');
-
-            $aiGenerator = new AITaglineGenerator($this->pdo);
-            $prompt = $this->automation['ai_tagline_prompt'] ?? 'Generate catchy viral taglines';
-            $taglines = $aiGenerator->generateTaglines(
-                $prompt,
-                $videoTitle,
-                $this->getUsedTaglines()
-            );
-
-            if (isset($taglines['success']) && $taglines['success']) {
-                $topText = $taglines['top'];
-                $bottomText = $taglines['bottom'];
-                $this->saveUsedTagline($topText, $bottomText);
-                $providerLabel = trim((string)($taglines['provider'] ?? 'ai'));
-                $this->log('ai_tagline', 'success', "AI Generated via {$providerLabel}: Top='{$topText}' Bottom='{$bottomText}'");
-            } else {
-                $this->log('ai_tagline', 'error', 'AI tagline failed: ' . ($taglines['error'] ?? 'Unknown error'));
-            }
-        }
-
-        // Third priority: Local tagline generator (if both PrankWish and AI failed or not enabled)
-        if (empty($topText)) {
-            $this->log('local_tagline', 'info', 'Using local tagline generator (final fallback)');
-            try {
-                $localGen = new LocalTaglineGenerator();
-                $local = $localGen->generate();
-                $topText = $local['top'] ?? '';
-                $bottomText = $local['bottom'] ?? '';
-                $emoji = $local['emoji'] ?? '';
-                $emojiPng = $local['emojiPng'] ?? null;
-
-                if ($topText !== '' || $bottomText !== '') {
-                    $this->saveUsedTagline($topText, $bottomText);
-                    $emojiStatus = $emojiPng ? "Emoji: {$emoji}" : "No emoji PNG";
-                    $this->log('local_tagline', 'success', "Generated: Top='{$topText}' Bottom='{$bottomText}' | {$emojiStatus}");
+        // Parse taglines (one per line)
+        $topTaglines = array_filter(array_map('trim', explode("\n", $topTaglinesJson)));
+        $bottomTaglines = array_filter(array_map('trim', explode("\n", $bottomTaglinesJson)));
+        
+        $topCount = count($topTaglines);
+        $bottomCount = count($bottomTaglines);
+        
+        $this->log('tagline_debug', 'info', "Custom Taglines: Top({$topCount}) Bottom({$bottomCount}) Mode: {$rotationMode}, Index: {$currentIndex}");
+        
+        // ONLY use custom taglines - NO FALLBACK
+        if ($topCount > 0 || $bottomCount > 0) {
+            $maxCount = max($topCount, $bottomCount, 1);
+            
+            if ($rotationMode === 'random') {
+                // Random with NO DUPLICATION - avoid picking same as last time
+                $lastTopIndex = (int)($this->automation['last_top_index'] ?? -1);
+                $lastBottomIndex = (int)($this->automation['last_bottom_index'] ?? -1);
+                
+                if ($topCount > 1) {
+                    do {
+                        $topIndex = array_rand($topTaglines);
+                    } while ($topIndex === $lastTopIndex && $topCount > 1);
                 } else {
-                    throw new Exception('Local generator returned empty result');
+                    $topIndex = 0;
                 }
-            } catch (Exception $localError) {
-                $this->log('local_tagline', 'error', 'Local tagline failed: ' . $localError->getMessage());
-                // Final fallback: static manual branding text
-                $randomWords = json_decode($this->automation['random_words'] ?? '[]', true) ?: [];
-                $randomWord = !empty($randomWords) ? $randomWords[array_rand($randomWords)] : '';
-                $topText = $this->automation['branding_text_top'] ?? '';
-                if ($topText && $randomWord) {
-                    $topText .= ' ' . $randomWord;
+                
+                if ($bottomCount > 1) {
+                    do {
+                        $bottomIndex = array_rand($bottomTaglines);
+                    } while ($bottomIndex === $lastBottomIndex && $bottomCount > 1);
+                } else {
+                    $bottomIndex = 0;
                 }
-                $bottomText = $this->automation['branding_text_bottom'] ?? '';
-                $this->log('manual_fallback', 'info', "Manual fallback: Top='{$topText}' Bottom='{$bottomText}'");
+                
+                // Save last indices to avoid duplicate next time
+                $this->pdo->prepare("UPDATE automation_settings SET last_top_index = ?, last_bottom_index = ? WHERE id = ?")
+                    ->execute([$topIndex, $bottomIndex, $this->automationId]);
+            } else {
+                // Sequential - use current index, then increment
+                $topIndex = $currentIndex % max($topCount, 1);
+                $bottomIndex = $currentIndex % max($bottomCount, 1);
+                
+                // Update index for next video (increment, wrap at max)
+                $newIndex = ($currentIndex + 1) % $maxCount;
+                $this->pdo->prepare("UPDATE automation_settings SET current_tagline_index = ? WHERE id = ?")
+                    ->execute([$newIndex, $this->automationId]);
             }
+            
+            $topText = $topTaglines[$topIndex] ?? '';
+            $bottomText = $bottomTaglines[$bottomIndex] ?? '';
+            
+            $this->log('custom_tagline', 'success', "Tagline [{$rotationMode}]: Top#{$topIndex}='{$topText}' Bottom#{$bottomIndex}='{$bottomText}'");
+        } else {
+            // NO FALLBACK - if no taglines set, use empty
+            $this->log('custom_tagline', 'info', "No custom taglines configured - using empty");
         }
 
         // Log final tagline values
         $this->log('tagline_final', 'info', "Final: Top='{$topText}' Bottom='{$bottomText}'");
-        
-        // Log final tagline values
-        $this->log('tagline_final', 'info', "Final: Top='{$topText}' Bottom='{$bottomText}'");
-
-        if (!empty($this->automation['ai_taglines_enabled'])) {
-            $socialContent = $this->buildSocialContent($videoTitle, $topText, $creativePackage);
-        }
         
         // Step 3: Transcribe with Whisper (if enabled and OpenAI key is set)
         $subtitlesPath = null;
@@ -1273,19 +1227,7 @@ class AutomationRunner {
                 $partSuffix = $partMatch[1];
             }
 
-            if (!empty($this->automation['prankwish_enabled']) && is_array($creativePackage) && !empty($creativePackage['success'])) {
-                $postCaption = (string) ($creativePackage['caption'] ?? $caption);
-                $options['platform_overrides'] = is_array($creativePackage['platform_overrides'] ?? null)
-                    ? $creativePackage['platform_overrides']
-                    : [];
-                $this->log(
-                    'postforme_social',
-                    'info',
-                    "PrankWish creative pack cycle {$creativePackage['cycle']} ({$creativePackage['occasion_key']})",
-                    $videoId,
-                    'postforme'
-                );
-            }
+
 
             if (!empty($socialContent['success'])) {
                 $platformOverrides = is_array($options['platform_overrides'] ?? null)

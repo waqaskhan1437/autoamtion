@@ -6,6 +6,7 @@ This folder holds the refillable PrankWish social-copy queue.
 
 - `library.json`: the active queue used by the app
 - `library.template.json`: a sample refill format
+- `tagline-library.json`: fallback overlay taglines if Gemini is unavailable
 
 ## How The Queue Works
 
@@ -13,9 +14,12 @@ This folder holds the refillable PrankWish social-copy queue.
 2. It uses `Cycle 1 -> Pack 1`, `Cycle 2 -> Pack 2`, and so on.
 3. Titles stay service-based and brand-aware.
 4. Occasion coverage should live in descriptions, keywords, and hashtags.
-5. When you replace the queue with fresh packs, change `library_key`.
+5. Gemini can rewrite titles, descriptions, and taglines per video, but `library.json` remains the safe fallback seed.
+6. When you replace the queue with fresh packs, change `library_key`.
 
 If `library_key` changes, the app starts again from pack `1`.
+
+`tagline-library.json` is separate and is only used if AI generation is unavailable.
 
 ## Required Format
 
@@ -71,4 +75,10 @@ C:\xampp\php\php.exe scripts/validate-prankwish-social-library.php
 
 ```powershell
 C:\xampp\php\php.exe scripts/generate-prankwish-social-library.php prankwish-service-library-v2
+```
+
+5. If you want to rebuild the fallback tagline file:
+
+```powershell
+C:\xampp\php\php.exe scripts/generate-prankwish-tagline-library.php
 ```

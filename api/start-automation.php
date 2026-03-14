@@ -61,6 +61,12 @@ if (!$automationId) {
     exit;
 }
 
+$requestedRunMode = trim((string)($_GET['mode_override'] ?? $_POST['mode_override'] ?? ''));
+if (!in_array($requestedRunMode, ['', 'local', 'github_runner'], true)) {
+    echo json_encode(['success' => false, 'error' => 'Invalid run mode override']);
+    exit;
+}
+
 $stmt = $pdo->prepare("
     SELECT id, name, owner_user_id, status, enabled, run_mode, local_agent_id, schedule_type, schedule_hour, schedule_every_minutes
     FROM automation_settings
@@ -90,7 +96,7 @@ if ($automation['status'] === 'queued') {
     exit;
 }
 
-$runMode = $automation['run_mode'] ?? 'local';
+$runMode = $requestedRunMode !== '' ? $requestedRunMode : ($automation['run_mode'] ?? 'local');
 $assignedLocalAgentId = vwm_current_user_assigned_local_agent_id();
 
 if ($runMode === 'github_runner' && !vwm_current_user_can_use_github_runner()) {

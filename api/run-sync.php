@@ -893,122 +893,72 @@ foreach ($videos as $index => $video) {
     // Process video with FFmpeg
     sendProgress('process', 'info', "Processing: $videoName", $currentProgress + ($progressPerVideo * 0.5), $stats);
     
-    // Determine overlay text - PrankWish, AI generated, or static
-    $topText = $automation['branding_text_top'] ?? '';
-    $bottomText = $automation['branding_text_bottom'] ?? '';
-    $emojiPng = null; // Emoji PNG path for colorful overlay
-    $taglineGenerated = false;
+    // Custom Taglines System - NO FALLBACK, NO DUPLICATION
+    $topText = '';
+    $bottomText = '';
+    $emojiPng = null;
+    $emoji = '';
     $creativePackage = null;
     
-    // Check if PrankWish branded taglines are enabled
-    if (!empty($automation['prankwish_enabled'])) {
-        sendProgress('ai', 'info', 'Generating unique PrankWish creative package...', $currentProgress + ($progressPerVideo * 0.4), $stats);
-        
-        try {
-            $creativeGenerator = new PrankWishCreativeGenerator($pdo);
-            $creativePackage = $creativeGenerator->buildNextCreativePackage(
-                $automationId,
-                pathinfo($videoName, PATHINFO_FILENAME),
-                $automation['prankwish_occasion'] ?? null,
-                $videoName
-            );
-
-            if (!empty($creativePackage['success'])) {
-                $topText = (string)($creativePackage['top'] ?? '');
-                $bottomText = (string)($creativePackage['bottom'] ?? '');
-                $taglineGenerated = true;
-
-                $creativeGenerator->logAppliedPackage($automationId, $videoName, $creativePackage);
-
-                $creativeCycle = (int)($creativePackage['cycle'] ?? 1);
-                $creativeSource = (string)($creativePackage['source'] ?? 'prankwish');
-                $fallbackDetail = '';
-                if ($creativeSource === 'prankwish_fallback_library' && !empty($creativePackage['fallback_error'])) {
-                    $fallbackDetail = ' | AI fallback reason: ' . substr((string)$creativePackage['fallback_error'], 0, 220);
-                }
-
-                sendProgress('ai', 'success', "PrankWish creative {$creativeCycle} via {$creativeSource}: Top='{$topText}' Bottom='{$bottomText}'{$fallbackDetail}", $currentProgress + ($progressPerVideo * 0.45), $stats);
-            } else {
-                sendProgress('ai', 'warning', 'PrankWish creative package failed, trying other options...', $currentProgress + ($progressPerVideo * 0.42), $stats);
-                $taglineGenerated = false;
-            }
-        } catch (Exception $e) {
-            sendProgress('ai', 'warning', 'PrankWish creative error: ' . $e->getMessage(), $currentProgress + ($progressPerVideo * 0.42), $stats);
-            $taglineGenerated = false;
-        }
-    }
+    $topTaglinesJson = $automation['top_taglines_json'] ?? '';
+    $bottomTaglinesJson = $automation['bottom_taglines_json'] ?? '';
+    $rotationMode = $automation['tagline_rotation_mode'] ?? 'sequential';
+    $currentIndex = (int)($automation['current_tagline_index'] ?? 0);
     
-    // Check if AI taglines are enabled (if PrankWish not used)
-    if (!$taglineGenerated && !empty($automation['ai_taglines_enabled'])) {
-        sendProgress('ai', 'info', "Generating unique tagline for: $videoName", $currentProgress + ($progressPerVideo * 0.4), $stats);
+    // Parse taglines (one per line)
+    $topTaglines = array_filter(array_map('trim', explode("\n", $topTaglinesJson)));
+    $bottomTaglines = array_filter(array_map('trim', explode("\n", $bottomTaglinesJson)));
+    
+    $topCount = count($topTaglines);
+    $bottomCount = count($bottomTaglines);
+    
+    sendProgress('tagline', 'info', "Taglines: Top({$topCount}) Bottom({$bottomCount}) Mode: {$rotationMode}", $currentProgress + ($progressPerVideo * 0.4), $stats);
+    
+    if ($topCount > 0 || $bottomCount > 0) {
+        $maxCount = max($topCount, $bottomCount, 1);
         
-        $prompt = $automation['ai_tagline_prompt'] ?? 'Generate catchy viral taglines';
-        $videoTitle = pathinfo($videoName, PATHINFO_FILENAME);
-        
-        $taglineGenerated = false;
-        
-        // Try AI first (Gemini/OpenAI)
-        try {
-            require_once __DIR__ . '/../includes/AITaglineGenerator.php';
-            $aiGenerator = new AITaglineGenerator($pdo);
+        if ($rotationMode === 'random') {
+            // Random with NO DUPLICATION - avoid picking same as last time
+            $lastTopIndex = (int)($automation['last_top_index'] ?? -1);
+            $lastBottomIndex = (int)($automation['last_bottom_index'] ?? -1);
             
-            // Get previously used taglines to avoid repetition
-            $previousTaglines = [];
-            try {
-                $prevStmt = $pdo->prepare("SELECT message FROM automation_logs WHERE automation_id = ? AND action = 'ai_tagline' ORDER BY created_at DESC LIMIT 20");
-                $prevStmt->execute([$automationId]);
-                $previousTaglines = array_column($prevStmt->fetchAll(), 'message');
-            } catch (Exception $e) {}
-            
-            // Generate unique taglines for this video
-            $aiResult = $aiGenerator->generateTaglines($prompt, $videoTitle, $previousTaglines);
-            
-            if (!empty($aiResult['success']) && !empty($aiResult['top'])) {
-                $topText = $aiResult['top'];
-                $bottomText = $aiResult['bottom'];
-                $taglineGenerated = true;
-                $aiProvider = trim((string)($aiResult['provider'] ?? 'ai'));
-                
-                sendProgress('ai', 'success', "AI via {$aiProvider}: \"{$topText}\" | \"{$bottomText}\"", $currentProgress + ($progressPerVideo * 0.45), $stats);
-                
-                // Log AI taglines
-                try {
-                    $logStmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, 'ai_tagline', 'success', ?, ?)");
-                    $logStmt->execute([$automationId, "Provider: {$aiProvider} | Top: {$topText} | Bottom: {$bottomText}", $videoName]);
-                } catch (Exception $e) {}
+            if ($topCount > 1) {
+                do {
+                    $topIndex = array_rand($topTaglines);
+                } while ($topIndex === $lastTopIndex && $topCount > 1);
+            } else {
+                $topIndex = 0;
             }
-        } catch (Exception $e) {
-            sendProgress('ai', 'warning', "AI error: " . $e->getMessage(), $currentProgress + ($progressPerVideo * 0.42), $stats);
+            
+            if ($bottomCount > 1) {
+                do {
+                    $bottomIndex = array_rand($bottomTaglines);
+                } while ($bottomIndex === $lastBottomIndex && $bottomCount > 1);
+            } else {
+                $bottomIndex = 0;
+            }
+            
+            // Save last indices to avoid duplicate next time
+            $pdo->prepare("UPDATE automation_settings SET last_top_index = ?, last_bottom_index = ? WHERE id = ?")
+                ->execute([$topIndex, $bottomIndex, $automationId]);
+        } else {
+            // Sequential - use current index, then increment
+            $topIndex = $currentIndex % max($topCount, 1);
+            $bottomIndex = $currentIndex % max($bottomCount, 1);
+            
+            // Update index for next video
+            $newIndex = ($currentIndex + 1) % $maxCount;
+            $pdo->prepare("UPDATE automation_settings SET current_tagline_index = ? WHERE id = ?")
+                ->execute([$newIndex, $automationId]);
         }
         
-        // Fallback: Use LOCAL generator if AI failed (NO API LIMIT!)
-        if (!$taglineGenerated) {
-            sendProgress('ai', 'info', "Using local generator (fallback)...", $currentProgress + ($progressPerVideo * 0.43), $stats);
-            
-            try {
-                require_once __DIR__ . '/../includes/LocalTaglineGenerator.php';
-                // No random words - use universal taglines only
-                $localGen = new LocalTaglineGenerator();
-                $localResult = $localGen->generate();
-                
-                $topText = $localResult['top'];
-                $bottomText = $localResult['bottom'];
-                $emojiPng = $localResult['emojiPng'] ?? null;
-                $emoji = $localResult['emoji'] ?? '';
-                $taglineGenerated = true;
-                
-                $emojiStatus = $emojiPng ? "Emoji: {$emoji}" : "No emoji PNG";
-                sendProgress('ai', 'success', "Local: \"{$topText}\" | {$emojiStatus}", $currentProgress + ($progressPerVideo * 0.45), $stats);
-                
-                // Log local taglines
-                try {
-                    $logStmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id) VALUES (?, 'local_tagline', 'success', ?, ?)");
-                    $logStmt->execute([$automationId, "Top: {$topText} | Bottom: {$bottomText}", $videoName]);
-                } catch (Exception $e) {}
-            } catch (Exception $e) {
-                sendProgress('ai', 'warning', "Local gen failed: " . $e->getMessage(), $currentProgress + ($progressPerVideo * 0.45), $stats);
-            }
-        }
+        $topText = $topTaglines[$topIndex] ?? '';
+        $bottomText = $bottomTaglines[$bottomIndex] ?? '';
+        
+        sendProgress('tagline', 'success', "Tagline [{$rotationMode}]: Top='{$topText}' Bottom='{$bottomText}'", $currentProgress + ($progressPerVideo * 0.45), $stats);
+    } else {
+        // NO FALLBACK - if no taglines set, use empty
+        sendProgress('tagline', 'info', "No custom taglines configured - using empty", $currentProgress + ($progressPerVideo * 0.45), $stats);
     }
     
     $shortDuration = (int)($automation['short_duration'] ?? 60);
@@ -1091,55 +1041,32 @@ foreach ($videos as $index => $video) {
 
             try {
                 $postForMe = new PostForMeAPI($postformeApiKey);
-                $aiPrompt = $automation['ai_tagline_prompt'] ?? 'Create engaging social media content';
-                $caption = '';
+                $caption = $topText ?: $segmentVideoName;
                 $platformOverrides = [];
 
-                if (!empty($automation['prankwish_enabled']) && !empty($creativePackage['success'])) {
-                    $caption = (string) ($creativePackage['caption'] ?? '');
-                    $platformOverrides = is_array($creativePackage['platform_overrides'] ?? null)
-                        ? $creativePackage['platform_overrides']
-                        : [];
-                    sendProgress(
-                        'posting',
-                        'info',
-                        "PrankWish creative pack {$creativePackage['cycle']} ({$creativePackage['occasion_key']})",
-                        $clipProgressBase + ($progressPerVideo * 0.13),
-                        $stats
-                    );
-                }
+                // Generate social content for posting
+                $socialContent = [
+                    'title' => $topText ?: $segmentVideoName,
+                    'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
+                    'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
+                    'tags' => ['shorts', 'viral', 'trending']
+                ];
 
-                if (empty($platformOverrides)) {
-                    $socialContent = [];
+                $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
+                $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "\n\n" . $hashtagStr;
+                $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "\n\n" . $hashtagStr;
+                $shortCaption = substr($caption, 0, 280);
+                $youtubeTitle = $socialContent['title'] ?? ($topText ?: $segmentVideoName);
+                $youtubeTags = $socialContent['tags'] ?? ['shorts', 'viral', 'trending'];
 
-                    try {
-                        require_once __DIR__ . '/../includes/AITaglineGenerator.php';
-                        $aiGen = new AITaglineGenerator($pdo);
-                        $socialContent = $aiGen->generateSocialContent($aiPrompt, $segmentVideoName, $topText);
-                    } catch (Exception $e) {
-                        $socialContent = [
-                            'title' => $topText ?: $segmentVideoName,
-                            'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
-                            'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
-                            'tags' => ['shorts', 'viral', 'trending']
-                        ];
-                    }
-
-                    $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
-                    $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
-                    $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "`n`n" . $hashtagStr;
-                    $shortCaption = substr($caption, 0, 280);
-                    $youtubeTitle = $socialContent['title'] ?? ($topText ?: $segmentVideoName);
-                    $youtubeTags = $socialContent['tags'] ?? ['shorts', 'viral', 'trending'];
-
-                    $platformOverrides = [
-                        'youtube' => [
-                            'title' => substr($youtubeTitle, 0, 100),
-                            'description' => $fullDescription,
-                            'tags' => $youtubeTags,
-                            'privacy' => 'public',
-                            'shorts' => true
-                        ],
+                $platformOverrides = [
+                    'youtube' => [
+                        'title' => substr($youtubeTitle, 0, 100),
+                        'description' => $fullDescription,
+                        'tags' => $youtubeTags,
+                        'privacy' => 'public',
+                        'shorts' => true
+                    ],
                         'tiktok' => [
                             'caption' => $caption,
                             'allow_comments' => true,
@@ -1173,7 +1100,6 @@ foreach ($videos as $index => $video) {
                             'caption' => $shortCaption
                         ]
                     ];
-                }
 
                 if ($segmentTotal > 1) {
                     $partLabel = "Part {$clipIndex}/{$segmentTotal}";

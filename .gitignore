@@ -8,3 +8,7 @@ cloudflare-worker/.wrangler-dev.err.log
 .wrangler-dev.err.log
 .wrangler-root-dev.out.log
 .wrangler-root-dev.err.log
+cookies.txt
+youtube-cookies.txt
+temp-repo/
+*.log

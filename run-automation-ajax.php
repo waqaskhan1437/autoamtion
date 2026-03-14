@@ -207,23 +207,50 @@ foreach (array_slice($videos, 0, $totalVideos) as $index => $video) {
         $fileSize = round(filesize($localPath) / 1024 / 1024, 2);
         sendLog('download', 'success', "Downloaded: {$fileSize} MB", $baseProgress + 10);
         
-        // AI Taglines
-        $topText = $automation['branding_text_top'] ?? '';
-        $bottomText = $automation['branding_text_bottom'] ?? '';
+        // Custom Taglines System - NO FALLBACK, NO DUPLICATION
+        $topTaglinesJson = $automation['top_taglines_json'] ?? '';
+        $bottomTaglinesJson = $automation['bottom_taglines_json'] ?? '';
+        $rotationMode = $automation['tagline_rotation_mode'] ?? 'sequential';
+        $currentIndex = (int)($automation['current_tagline_index'] ?? 0);
         
-        if (!empty($automation['ai_taglines_enabled']) && !empty($automation['ai_tagline_prompt'])) {
-            sendLog('ai', 'info', 'Generating taglines...', $baseProgress + 15);
-            try {
-                $ai = new AITaglineGenerator($pdo);
-                $taglines = $ai->generateTaglines($automation['ai_tagline_prompt'], $videoTitle);
-                if (isset($taglines['success']) && $taglines['success']) {
-                    $topText = $taglines['top'];
-                    $bottomText = $taglines['bottom'];
-                    sendLog('ai', 'success', "Tagline: {$topText}", $baseProgress + 18);
-                }
-            } catch (Exception $e) {
-                sendLog('ai', 'error', 'AI Error: ' . $e->getMessage());
+        $topTaglines = array_filter(array_map('trim', explode("\n", $topTaglinesJson)));
+        $bottomTaglines = array_filter(array_map('trim', explode("\n", $bottomTaglinesJson)));
+        
+        $topCount = count($topTaglines);
+        $bottomCount = count($bottomTaglines);
+        $topText = '';
+        $bottomText = '';
+        
+        if ($topCount > 0 || $bottomCount > 0) {
+            $maxCount = max($topCount, $bottomCount, 1);
+            
+            if ($rotationMode === 'random') {
+                $lastTopIndex = (int)($automation['last_top_index'] ?? -1);
+                $lastBottomIndex = (int)($automation['last_bottom_index'] ?? -1);
+                
+                if ($topCount > 1) {
+                    do { $topIndex = array_rand($topTaglines); } while ($topIndex === $lastTopIndex && $topCount > 1);
+                } else { $topIndex = 0; }
+                
+                if ($bottomCount > 1) {
+                    do { $bottomIndex = array_rand($bottomTaglines); } while ($bottomIndex === $lastBottomIndex && $bottomCount > 1);
+                } else { $bottomIndex = 0; }
+                
+                $pdo->prepare("UPDATE automation_settings SET last_top_index = ?, last_bottom_index = ? WHERE id = ?")
+                    ->execute([$topIndex, $bottomIndex, $automationId]);
+            } else {
+                $topIndex = $currentIndex % max($topCount, 1);
+                $bottomIndex = $currentIndex % max($bottomCount, 1);
+                $newIndex = ($currentIndex + 1) % $maxCount;
+                $pdo->prepare("UPDATE automation_settings SET current_tagline_index = ? WHERE id = ?")
+                    ->execute([$newIndex, $automationId]);
             }
+            
+            $topText = $topTaglines[$topIndex] ?? '';
+            $bottomText = $bottomTaglines[$bottomIndex] ?? '';
+            sendLog('tagline', 'success', "Tagline [{$rotationMode}]: Top='{$topText}' Bottom='{$bottomText}'", $baseProgress + 15);
+        } else {
+            sendLog('tagline', 'info', "No taglines configured - using empty", $baseProgress + 15);
         }
         
         // FFmpeg processing

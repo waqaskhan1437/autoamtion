@@ -7,6 +7,9 @@
     "cf:d1:remote": "wrangler d1 execute DB --config wrangler.jsonc --remote --file cloudflare-worker/schema.sql",
     "cf:smoke": "node cloudflare-worker/scripts/smoke-worker.mjs"
   },
+  "dependencies": {
+    "libsodium-wrappers": "^0.7.15"
+  },
   "devDependencies": {
     "wrangler": "4.71.0"
   }

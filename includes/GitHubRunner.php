@@ -57,7 +57,12 @@ class GitHubRunner
             return $snapshot;
         }
 
-        $snapshotJson = json_encode($snapshot['data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $prepared = $this->prepareSnapshotForHostedRunner($snapshot['data'] ?? []);
+        if (!$prepared['success']) {
+            return $prepared;
+        }
+
+        $snapshotJson = json_encode($prepared['data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if ($snapshotJson === false) {
             return ['success' => false, 'error' => 'Failed to encode automation payload.'];
         }
@@ -134,6 +139,45 @@ class GitHubRunner
         return $this->snapshotBuilder->build($automationId);
     }
 
+    private function prepareSnapshotForHostedRunner(array $snapshotData): array
+    {
+        $automation = $snapshotData['automation'] ?? null;
+        if (!is_array($automation)) {
+            return ['success' => false, 'error' => 'Automation payload is incomplete.'];
+        }
+
+        $videoSource = strtolower(trim((string)($automation['video_source'] ?? 'ftp')));
+        if ($videoSource !== 'youtube_channel') {
+            return ['success' => true, 'data' => $snapshotData];
+        }
+
+        $publicBaseUrl = trim((string)($this->settings['panel_public_base_url'] ?? ''));
+        if (!$this->isUsablePublicBaseUrl($publicBaseUrl)) {
+            return [
+                'success' => false,
+                'error' => 'Public panel base URL is required for GitHub runner YouTube prefetch.'
+            ];
+        }
+
+        $callbackSecret = trim((string)($this->settings['github_runner_callback_secret'] ?? ''));
+        if ($callbackSecret === '') {
+            return [
+                'success' => false,
+                'error' => 'GitHub runner callback secret is required for YouTube prefetch.'
+            ];
+        }
+
+        $prefetch = $this->prefetchYouTubeSourceVideos($automation, $publicBaseUrl, $callbackSecret);
+        if (!$prefetch['success']) {
+            return $prefetch;
+        }
+
+        $snapshotData['automation']['video_source'] = 'manual_links';
+        $snapshotData['automation']['manual_video_links'] = implode("\n", $prefetch['urls']);
+
+        return ['success' => true, 'data' => $snapshotData];
+    }
+
     private function loadSettings(): array
     {
         $keys = [
@@ -154,6 +198,191 @@ class GitHubRunner
         $rows = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
 
         return is_array($rows) ? $rows : [];
+    }
+
+    private function prefetchYouTubeSourceVideos(array $automation, string $publicBaseUrl, string $secret): array
+    {
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'YouTubeSource.php';
+
+        $channelUrl = $this->resolveYouTubeChannelUrl($automation);
+        if ($channelUrl === '') {
+            return ['success' => false, 'error' => 'YouTube channel URL is not configured for this automation.'];
+        }
+
+        $daysFilter = max(1, (int)($automation['video_days_filter'] ?? 30));
+        $videosPerRun = max(1, min(10, (int)($automation['videos_per_run'] ?? 1)));
+        [$startDate, $endDate] = $this->resolveAutomationDateRange($automation);
+
+        $batchId = gmdate('YmdHis') . '-' . substr(sha1((string)$automation['id'] . '|' . microtime(true)), 0, 12);
+        $targetDir = $this->getPrefetchedSourceBatchDir((int)($automation['id'] ?? 0), $batchId);
+        if (!is_dir($targetDir) && !@mkdir($targetDir, 0777, true)) {
+            return ['success' => false, 'error' => 'Unable to create prefetched source directory.'];
+        }
+
+        $this->cleanupOldPrefetchedSourceBatches((int)($automation['id'] ?? 0), $batchId);
+
+        try {
+            $youtube = new YouTubeSource($channelUrl);
+            $videos = $youtube->listVideos($daysFilter, $startDate, $endDate, $videosPerRun);
+        } catch (Throwable $e) {
+            return ['success' => false, 'error' => 'YouTube prefetch list failed: ' . $e->getMessage()];
+        }
+
+        if (empty($videos)) {
+            return ['success' => true, 'urls' => []];
+        }
+
+        $expires = time() + 86400;
+        $urls = [];
+
+        foreach ($videos as $video) {
+            try {
+                $downloaded = $youtube->downloadVideo((array)$video, $targetDir);
+            } catch (Throwable $e) {
+                return ['success' => false, 'error' => 'YouTube prefetch download failed: ' . $e->getMessage()];
+            }
+
+            $fileName = basename((string)$downloaded);
+            if ($fileName === '') {
+                continue;
+            }
+
+            $urls[] = $this->buildPrefetchedSourceUrl(
+                $publicBaseUrl,
+                (int)($automation['id'] ?? 0),
+                $batchId,
+                $fileName,
+                $expires,
+                $secret
+            );
+        }
+
+        return ['success' => true, 'urls' => $urls];
+    }
+
+    private function resolveYouTubeChannelUrl(array $automation): string
+    {
+        $url = trim((string)($automation['youtube_channel_url'] ?? ''));
+        if ($url !== '') {
+            return $url;
+        }
+
+        $fallback = trim((string)($automation['manual_video_links'] ?? ''));
+        if ($fallback === '') {
+            return '';
+        }
+
+        $parts = preg_split('/[\r\n,]+/', $fallback) ?: [];
+        return trim((string)($parts[0] ?? ''));
+    }
+
+    private function resolveAutomationDateRange(array $automation): array
+    {
+        $start = trim((string)($automation['video_start_date'] ?? ''));
+        $end = trim((string)($automation['video_end_date'] ?? ''));
+        if ($start === '' || $end === '' || strtolower($start) === 'null' || strtolower($end) === 'null') {
+            return [null, null];
+        }
+
+        $startTs = strtotime($start);
+        $endTs = strtotime($end);
+        if ($startTs === false || $endTs === false || $startTs > $endTs) {
+            return [null, null];
+        }
+
+        return [$start, $end];
+    }
+
+    private function getPrefetchedSourceRootDir(int $automationId): string
+    {
+        return rtrim((string)BASE_DATA_DIR, '/\\')
+            . DIRECTORY_SEPARATOR . 'prefetched-sources'
+            . DIRECTORY_SEPARATOR . max(1, $automationId);
+    }
+
+    private function getPrefetchedSourceBatchDir(int $automationId, string $batchId): string
+    {
+        return $this->getPrefetchedSourceRootDir($automationId) . DIRECTORY_SEPARATOR . trim($batchId);
+    }
+
+    private function cleanupOldPrefetchedSourceBatches(int $automationId, string $keepBatchId): void
+    {
+        $root = $this->getPrefetchedSourceRootDir($automationId);
+        if (!is_dir($root)) {
+            return;
+        }
+
+        $entries = scandir($root);
+        if (!is_array($entries)) {
+            return;
+        }
+
+        $cutoff = time() - 172800;
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..' || $entry === $keepBatchId) {
+                continue;
+            }
+
+            $path = $root . DIRECTORY_SEPARATOR . $entry;
+            if (!is_dir($path)) {
+                continue;
+            }
+
+            $mtime = @filemtime($path);
+            if ($mtime !== false && $mtime > $cutoff) {
+                continue;
+            }
+
+            $this->deleteDirectoryRecursive($path);
+        }
+    }
+
+    private function deleteDirectoryRecursive(string $path): void
+    {
+        if (!is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+        if (!is_array($items)) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $child = $path . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($child)) {
+                $this->deleteDirectoryRecursive($child);
+                continue;
+            }
+
+            @unlink($child);
+        }
+
+        @rmdir($path);
+    }
+
+    private function buildPrefetchedSourceUrl(
+        string $publicBaseUrl,
+        int $automationId,
+        string $batchId,
+        string $fileName,
+        int $expires,
+        string $secret
+    ): string {
+        $fileName = basename($fileName);
+        $payload = $automationId . '|' . $batchId . '|' . $fileName . '|' . $expires;
+        $sig = hash_hmac('sha256', $payload, $secret);
+
+        return rtrim($publicBaseUrl, '/')
+            . '/api/prefetch-source-video.php/' . rawurlencode($fileName)
+            . '?automation_id=' . rawurlencode((string)$automationId)
+            . '&batch=' . rawurlencode($batchId)
+            . '&expires=' . rawurlencode((string)$expires)
+            . '&sig=' . rawurlencode($sig);
     }
 
     private function getConfig(): array

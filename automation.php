@@ -1,6 +1,7 @@
 <?php
 require_once 'config.php';
 require_once 'includes/AutomationRunner.php';
+require_once 'includes/NormalizationHelper.php';
 
 $message = '';
 $messageType = 'success';
@@ -140,12 +141,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $redirectMsg = '';
     
     if ($action === 'create') {
-        $randomWords = array_filter(array_map('trim', explode(',', $_POST['random_words'] ?? '')));
-        
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, ai_taglines_enabled, ai_tagline_prompt, branding_text_top, branding_text_bottom, random_words, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at, prankwish_enabled, prankwish_occasion, prankwish_cycle_override, prankwish_use_universal, prankwish_ollama_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, top_taglines_json, bottom_taglines_json, tagline_rotation_mode, branding_text_top, branding_text_bottom, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -166,7 +165,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
-        $prankwishOllamaPrompt = normalizeCustomPromptInput($_POST['prankwish_ollama_prompt'] ?? null);
         
         $nextRunAt = null;
         if ($enabled) {
@@ -201,11 +199,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sourceShortsMode,
             $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
-            isset($_POST['ai_taglines_enabled']) ? 1 : 0,
-            $_POST['ai_tagline_prompt'] ?? null,
+            $_POST['top_taglines_json'] ?? null,
+            $_POST['bottom_taglines_json'] ?? null,
+            $_POST['tagline_rotation_mode'] ?? 'sequential',
             $_POST['branding_text_top'] ?? null,
             $_POST['branding_text_bottom'] ?? null,
-            json_encode($randomWords),
             isset($_POST['whisper_enabled']) ? 1 : 0,
             $_POST['whisper_language'] ?? 'en',
             $_POST['schedule_type'] ?? 'daily',
@@ -232,12 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             isset($_POST['rotation_shuffle']) ? 1 : 0,
             isset($_POST['rotation_auto_reset']) ? 1 : 0,
             $status,
-            $nextRunAt,
-            isset($_POST['prankwish_enabled']) ? 1 : 0,
-            $_POST['prankwish_occasion'] ?? null,
-            $_POST['prankwish_cycle_override'] ?? null,
-            isset($_POST['prankwish_use_universal']) ? 1 : 0,
-            $prankwishOllamaPrompt
+            $nextRunAt
         ]);
         // Redirect to prevent form resubmission on refresh
         header('Location: automation.php?msg=created');
@@ -273,7 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, ai_taglines_enabled=?, ai_tagline_prompt=?, branding_text_top=?, branding_text_bottom=?, random_words=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=?, prankwish_enabled=?, prankwish_occasion=?, prankwish_cycle_override=?, prankwish_use_universal=?, prankwish_ollama_prompt=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, top_taglines_json=?, bottom_taglines_json=?, tagline_rotation_mode=?, branding_text_top=?, branding_text_bottom=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -294,7 +287,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
         $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
         $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
-        $prankwishOllamaPrompt = normalizeCustomPromptInput($_POST['prankwish_ollama_prompt'] ?? null);
         $scheduleType = $_POST['schedule_type'] ?? 'daily';
         $scheduleHour = normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9);
         $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
@@ -324,11 +316,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sourceShortsMode,
             $sourceShortsMaxCount,
             $_POST['short_aspect_ratio'] ?? '9:16',
-            isset($_POST['ai_taglines_enabled']) ? 1 : 0,
-            $_POST['ai_tagline_prompt'] ?? null,
+            $_POST['top_taglines_json'] ?? null,
+            $_POST['bottom_taglines_json'] ?? null,
+            $_POST['tagline_rotation_mode'] ?? 'sequential',
             $_POST['branding_text_top'] ?? null,
             $_POST['branding_text_bottom'] ?? null,
-            json_encode($randomWords),
             isset($_POST['whisper_enabled']) ? 1 : 0,
             $_POST['whisper_language'] ?? 'en',
             $scheduleType,
@@ -357,11 +349,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $status,
             $enabled,
             $nextRunAt,
-            isset($_POST['prankwish_enabled']) ? 1 : 0,
-            $_POST['prankwish_occasion'] ?? null,
-            $_POST['prankwish_cycle_override'] ?? null,
-            isset($_POST['prankwish_use_universal']) ? 1 : 0,
-            $prankwishOllamaPrompt,
             $_POST['id']
         ]);
         
@@ -533,15 +520,12 @@ $editAutomationFields = [
     'rotation_enabled',
     'rotation_shuffle',
     'rotation_auto_reset',
-    'ai_taglines_enabled',
-    'ai_tagline_prompt',
-    'branding_text_top',
-    'branding_text_bottom',
-    'prankwish_enabled',
-    'prankwish_occasion',
-    'prankwish_cycle_override',
-    'prankwish_use_universal',
-    'prankwish_ollama_prompt',
+    'top_taglines_json',
+    'bottom_taglines_json',
+    'tagline_rotation_mode',
+    'current_tagline_index',
+    'last_top_index',
+    'last_bottom_index',
 ];
 
 $editAutomationPayloads = [];
@@ -948,12 +932,25 @@ refreshOutputVideoCount();
                             </span>
                         <?php endif; ?>
                     </div>
-                    <?php if ($automation['branding_text_top']): ?>
+                    <?php 
+                    $topTaglinesDisplay = $automation['top_taglines_json'] ?? '';
+                    $bottomTaglinesDisplay = $automation['bottom_taglines_json'] ?? '';
+                    $taglineMode = $automation['tagline_rotation_mode'] ?? 'sequential';
+                    if (!empty($topTaglinesDisplay) || !empty($bottomTaglinesDisplay)): 
+                        $topLines = array_filter(array_map('trim', explode("\n", $topTaglinesDisplay)));
+                        $bottomLines = array_filter(array_map('trim', explode("\n", $bottomTaglinesDisplay)));
+                    ?>
                         <div class="mt-3 p-2 bg-gray-800/50 rounded text-sm">
-                            <span class="text-gray-400">Top Text:</span>
-                            <span class="font-medium"><?= htmlspecialchars($automation['branding_text_top']) ?></span>
-                            <?php if (!empty($randomWords)): ?>
-                                <span class="text-gray-400 ml-1">+ <?= count($randomWords) ?> random words</span>
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="text-gray-400">Taglines:</span>
+                                <span class="text-xs bg-green-600 px-2 py-0.5 rounded"><?= strtoupper($taglineMode) ?></span>
+                                <span class="text-xs text-gray-500">Top: <?= count($topLines) ?> | Bottom: <?= count($bottomLines) ?></span>
+                            </div>
+                            <?php if (!empty($topLines)): ?>
+                                <div class="text-green-400 text-xs">TOP: <?= htmlspecialchars(implode(', ', array_slice($topLines, 0, 3))) ?><?= count($topLines) > 3 ? '...' : '' ?></div>
+                            <?php endif; ?>
+                            <?php if (!empty($bottomLines)): ?>
+                                <div class="text-blue-400 text-xs">BTM: <?= htmlspecialchars(implode(', ', array_slice($bottomLines, 0, 3))) ?><?= count($bottomLines) > 3 ? '...' : '' ?></div>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
@@ -1314,115 +1311,55 @@ refreshOutputVideoCount();
                 </div>
             </div>
             
-            <!-- Tab 3: Taglines - SUPER SIMPLE -->
+            <!-- Tab 3: Custom Taglines -->
             <div id="form_taglines" class="hidden p-4 space-y-4">
                 
-                <!-- SIMPLE: Just Enable Toggle -->
+                <!-- Tagline Settings -->
                 <div class="p-6 bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/30 rounded-xl">
-                    <div class="flex items-center gap-4">
-                        <input type="checkbox" name="ai_taglines_enabled" id="ai_taglines_enabled" class="w-8 h-8 rounded-lg accent-green-500" checked>
-                        <label for="ai_taglines_enabled" class="flex-1 cursor-pointer">
-                            <div class="font-bold text-xl text-white flex items-center gap-2">
-                                <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                Enable Taglines
-                            </div>
-                            <div class="text-gray-400 mt-1">Add text overlay to all videos automatically</div>
-                        </label>
+                    <div class="flex items-center gap-4 mb-4">
+                        <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <div class="font-bold text-xl text-white">Custom Taglines</div>
                     </div>
-                </div>
-                
-                <!-- PRANKWISH BRANDED TAGLINES -->
-                <div class="p-6 bg-gradient-to-r from-pink-900/30 to-purple-900/30 border border-pink-500/30 rounded-xl">
-                    <div class="flex items-start gap-4">
-                        <input type="checkbox" name="prankwish_enabled" id="prankwish_enabled" class="w-8 h-8 rounded-lg accent-pink-500 mt-1" onchange="togglePrankWishPreview()">
-                        <div class="flex-1">
-                            <label for="prankwish_enabled" class="cursor-pointer">
-                                <div class="font-bold text-xl text-white flex items-center gap-2">
-                                    <svg class="w-6 h-6 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
-                                    Use PrankWish Branded Taglines
-                                </div>
-                                <div class="text-gray-400 mt-1">Universal taglines that fit ANY occasion + prankwish.com branding</div>
-                            </label>
-                            
-                            <!-- Occasion Selector (Optional) -->
-                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg" id="prankwish_options">
-                                <label class="block text-sm text-gray-400 mb-2">Content Type (Optional - for social media SEO)</label>
-                                <select name="prankwish_occasion" id="prankwish_occasion" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
-                                    <option value="">General (Any Occasion)</option>
-                                    <option value="birthday">Birthday / Family</option>
-                                    <option value="birthday_mother">Birthday For Mother / Mom</option>
-                                    <option value="birthday_father">Birthday For Father / Dad</option>
-                                    <option value="birthday_brother">Birthday Gift For Brother</option>
-                                    <option value="birthday_sister">Birthday Gift For Sister</option>
-                                    <option value="birthday_friend">Birthday Gift For Friend</option>
-                                    <option value="birthday_best_friend">Birthday For Best Friend</option>
-                                    <option value="birthday_girlfriend">Birthday For Girlfriend</option>
-                                    <option value="birthday_boyfriend">Birthday For Boyfriend</option>
-                                    <option value="birthday_wife">Birthday For Wife</option>
-                                    <option value="birthday_husband">Birthday For Husband</option>
-                                    <option value="birthday_son">Birthday For Son</option>
-                                    <option value="birthday_daughter">Birthday For Daughter</option>
-                                    <option value="funny_roast_friend">Funny Roast Friend</option>
-                                    <option value="mothers_day">Mother's Day</option>
-                                    <option value="fathers_day">Father's Day</option>
-                                    <option value="valentines">Valentine's Day</option>
-                                    <option value="anniversary">Anniversary</option>
-                                    <option value="wedding">Wedding</option>
-                                    <option value="christmas">Christmas</option>
-                                    <option value="new_year">New Year</option>
-                                    <option value="graduation">Graduation</option>
-                                    <option value="thank_you">Thank You</option>
-                                    <option value="eid">Eid</option>
-                                    <option value="promotion">Legacy: Promotion</option>
-                                </select>
-                                <p class="text-xs text-gray-500 mt-2">This helps with social media SEO. Video taglines remain universal.</p>
-                            </div>
-
-                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg">
-                                <label for="prankwish_ollama_prompt" class="block text-sm text-gray-300 mb-2">Ollama Custom Prompt (Optional)</label>
-                                <textarea
-                                    name="prankwish_ollama_prompt"
-                                    id="prankwish_ollama_prompt"
-                                    rows="4"
-                                    maxlength="600"
-                                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
-                                    placeholder="Example: Keep tone warm and simple. Focus on family emotion. Use easy English. Avoid slang."
-                                ></textarea>
-                                <p class="text-xs text-gray-500 mt-2">Yahan sirf tone, style, ya emphasis likhein. System ki hard limits, brand rules, length controls, aur fallback safety hamesha enforce rahengi.</p>
-                            </div>
-                        </div>
+                    <p class="text-gray-400 text-sm mb-4">Add text overlays to your videos. Each line = one tagline option.</p>
+                    
+                    <!-- Top Taglines -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">TOP Taglines (one per line)</label>
+                        <textarea 
+                            name="top_taglines_json" 
+                            id="top_taglines_json"
+                            rows="4" 
+                            class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                            placeholder="Made With Love&#10;Happy Birthday!&#10;Best Wishes&#10;Many More Returns of the Day"
+                        ></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Har line alag tagline hai. Video processing mein inme se select hoga.</p>
                     </div>
-                </div>
-                
-                <!-- Preview Box -->
-                <div class="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-                    <h4 class="text-sm text-gray-400 mb-3 font-medium">Preview - Each video will have:</h4>
-                    <div class="bg-black rounded-lg p-4 text-center space-y-2" id="tagline_preview">
-                        <!-- Default Preview -->
-                        <div id="default_preview">
-                            <div class="text-yellow-400 font-bold text-lg">"Made With Love"</div>
-                            <div class="text-white text-sm">"Get Greeting Video"</div>
-                            <div class="text-gray-500 text-xs my-4">[ Your Video ]</div>
-                            <div class="text-cyan-400 font-medium">"prankwish.com"</div>
-                        </div>
-                        <!-- PrankWish Preview -->
-                        <div id="prankwish_preview" class="hidden">
-                            <div class="text-yellow-400 font-bold text-lg">"Make Their Day Unforgettable! 🎉"</div>
-                            <div class="text-gray-500 text-xs my-4">[ Your Video ]</div>
-                            <div class="text-pink-400 font-bold text-lg">prankwish.com</div>
-                        </div>
+                    
+                    <!-- Bottom Taglines -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">BOTTOM Taglines (one per line)</label>
+                        <textarea 
+                            name="bottom_taglines_json" 
+                            id="bottom_taglines_json"
+                            rows="4" 
+                            class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                            placeholder="prankwish.com&#10;Get Greeting Video&#10;Visit us"
+                        ></textarea>
                     </div>
-                    <p class="text-xs text-gray-500 mt-3 text-center" id="tagline_info">30+ unique taglines • Each video gets different text • Branding always shown</p>
+                    
+                    <!-- Rotation Mode -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">Tagline Rotation</label>
+                        <select name="tagline_rotation_mode" id="tagline_rotation_mode" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                            <option value="sequential">Sequential (ek ek karke)</option>
+                            <option value="random">Random (b武汉dom)</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Legacy Fallback (for backward compat) -->
+                    <input type="hidden" name="branding_text_top" id="branding_text_top" value="">
+                    <input type="hidden" name="branding_text_bottom" id="branding_text_bottom" value="">
                 </div>
-                
-                <!-- Hidden fields (keep defaults) -->
-                <input type="hidden" name="ai_tagline_prompt" value="Generate universal greeting taglines">
-                <input type="hidden" name="random_words" value="">
-                <input type="hidden" name="branding_text_top" id="branding_text_top" value="">
-                <input type="hidden" name="branding_text_bottom" id="branding_text_bottom" value="">
-                <input type="hidden" name="taglines_json" id="taglines_json" value="[]">
-                <input type="hidden" name="prankwish_use_universal" value="1">
-                <input type="hidden" name="prankwish_cycle_override" value="">
                 
                 <div class="flex gap-3">
                     <button type="button" onclick="showFormTab('video')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
@@ -1894,104 +1831,54 @@ refreshOutputVideoCount();
                 </div>
             </div>
             
-            <!-- Tab 3: Taglines - SUPER SIMPLE -->
+            <!-- Tab 3: Custom Taglines (Edit) -->
             <div id="edit_form_taglines" class="hidden p-4 space-y-4">
                 
-                <!-- SIMPLE: Just Enable Toggle -->
+                <!-- Tagline Settings -->
                 <div class="p-6 bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/30 rounded-xl">
-                    <div class="flex items-center gap-4">
-                        <input type="checkbox" name="ai_taglines_enabled" id="edit_ai_taglines_enabled" class="w-8 h-8 rounded-lg accent-green-500">
-                        <label for="edit_ai_taglines_enabled" class="flex-1 cursor-pointer">
-                            <div class="font-bold text-xl text-white flex items-center gap-2">
-                                <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                Enable Taglines
-                            </div>
-                            <div class="text-gray-400 mt-1">Add text overlay to all videos automatically</div>
-                        </label>
+                    <div class="flex items-center gap-4 mb-4">
+                        <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <div class="font-bold text-xl text-white">Custom Taglines</div>
                     </div>
-                </div>
-                
-                <!-- PRANKWISH BRANDED TAGLINES -->
-                <div class="p-6 bg-gradient-to-r from-pink-900/30 to-purple-900/30 border border-pink-500/30 rounded-xl">
-                    <div class="flex items-start gap-4">
-                        <input type="checkbox" name="prankwish_enabled" id="edit_prankwish_enabled" class="w-8 h-8 rounded-lg accent-pink-500 mt-1">
-                        <div class="flex-1">
-                            <label for="edit_prankwish_enabled" class="cursor-pointer">
-                                <div class="font-bold text-xl text-white flex items-center gap-2">
-                                    <svg class="w-6 h-6 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
-                                    Use PrankWish Branded Taglines
-                                </div>
-                                <div class="text-gray-400 mt-1">Universal taglines that fit ANY occasion + prankwish.com branding</div>
-                            </label>
-                            
-                            <!-- Occasion Selector (Optional) -->
-                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg">
-                                <label class="block text-sm text-gray-400 mb-2">Content Type (Optional - for social media SEO)</label>
-                                <select name="prankwish_occasion" id="edit_prankwish_occasion" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
-                                    <option value="">General (Any Occasion)</option>
-                                    <option value="birthday">Birthday / Family</option>
-                                    <option value="birthday_mother">Birthday For Mother / Mom</option>
-                                    <option value="birthday_father">Birthday For Father / Dad</option>
-                                    <option value="birthday_brother">Birthday Gift For Brother</option>
-                                    <option value="birthday_sister">Birthday Gift For Sister</option>
-                                    <option value="birthday_friend">Birthday Gift For Friend</option>
-                                    <option value="birthday_best_friend">Birthday For Best Friend</option>
-                                    <option value="birthday_girlfriend">Birthday For Girlfriend</option>
-                                    <option value="birthday_boyfriend">Birthday For Boyfriend</option>
-                                    <option value="birthday_wife">Birthday For Wife</option>
-                                    <option value="birthday_husband">Birthday For Husband</option>
-                                    <option value="birthday_son">Birthday For Son</option>
-                                    <option value="birthday_daughter">Birthday For Daughter</option>
-                                    <option value="funny_roast_friend">Funny Roast Friend</option>
-                                    <option value="mothers_day">Mother's Day</option>
-                                    <option value="fathers_day">Father's Day</option>
-                                    <option value="valentines">Valentine's Day</option>
-                                    <option value="anniversary">Anniversary</option>
-                                    <option value="wedding">Wedding</option>
-                                    <option value="christmas">Christmas</option>
-                                    <option value="new_year">New Year</option>
-                                    <option value="graduation">Graduation</option>
-                                    <option value="thank_you">Thank You</option>
-                                    <option value="eid">Eid</option>
-                                    <option value="promotion">Legacy: Promotion</option>
-                                </select>
-                            </div>
-
-                            <div class="mt-4 p-4 bg-gray-800/50 rounded-lg">
-                                <label for="edit_prankwish_ollama_prompt" class="block text-sm text-gray-300 mb-2">Ollama Custom Prompt (Optional)</label>
-                                <textarea
-                                    name="prankwish_ollama_prompt"
-                                    id="edit_prankwish_ollama_prompt"
-                                    rows="4"
-                                    maxlength="600"
-                                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
-                                    placeholder="Example: Keep tone warm and simple. Focus on family emotion. Use easy English. Avoid slang."
-                                ></textarea>
-                                <p class="text-xs text-gray-500 mt-2">Custom prompt sirf Ollama ki style guide karega. Required brand rules, length limits, aur fallback protections override nahi honge.</p>
-                            </div>
-                        </div>
+                    <p class="text-gray-400 text-sm mb-4">Add text overlays to your videos. Each line = one tagline option.</p>
+                    
+                    <!-- Top Taglines -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">TOP Taglines (one per line)</label>
+                        <textarea 
+                            name="top_taglines_json" 
+                            id="edit_top_taglines_json"
+                            rows="4" 
+                            class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                            placeholder="Made With Love&#10;Happy Birthday!&#10;Best Wishes"
+                        ></textarea>
                     </div>
-                </div>
-                
-                <!-- Preview Box -->
-                <div class="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-                    <h4 class="text-sm text-gray-400 mb-3 font-medium">Preview - Each video will have:</h4>
-                    <div class="bg-black rounded-lg p-4 text-center space-y-2">
-                        <div class="text-yellow-400 font-bold text-lg">"Make Their Day Unforgettable! 🎉"</div>
-                        <div class="text-gray-500 text-xs my-4">[ Your Video ]</div>
-                        <div class="text-pink-400 font-bold text-lg">prankwish.com</div>
+                    
+                    <!-- Bottom Taglines -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">BOTTOM Taglines (one per line)</label>
+                        <textarea 
+                            name="bottom_taglines_json" 
+                            id="edit_bottom_taglines_json"
+                            rows="4" 
+                            class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"
+                            placeholder="prankwish.com&#10;Get Greeting Video"
+                        ></textarea>
                     </div>
-                    <p class="text-xs text-gray-500 mt-3 text-center">20 universal taglines • Auto-rotates 1-20 • Bottom: prankwish.com</p>
+                    
+                    <!-- Rotation Mode -->
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2">Tagline Rotation</label>
+                        <select name="tagline_rotation_mode" id="edit_tagline_rotation_mode" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                            <option value="sequential">Sequential</option>
+                            <option value="random">Random</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Legacy Fallback -->
+                    <input type="hidden" name="branding_text_top" id="edit_branding_text_top" value="">
+                    <input type="hidden" name="branding_text_bottom" id="edit_branding_text_bottom" value="">
                 </div>
-                
-                <!-- Hidden fields (keep defaults) -->
-                <input type="hidden" name="ai_tagline_prompt" id="edit_ai_tagline_prompt" value="Generate universal greeting taglines">
-                <input type="hidden" name="random_words" id="edit_random_words" value="">
-                <input type="hidden" name="branding_text_top" id="edit_branding_text_top" value="">
-                <input type="hidden" name="branding_text_bottom" id="edit_branding_text_bottom" value="">
-                <input type="hidden" name="taglines_json" id="edit_taglines_json" value="[]">
-                <input type="hidden" name="prankwish_use_universal" id="edit_prankwish_use_universal" value="1">
-                <input type="hidden" name="prankwish_cycle_override" id="edit_prankwish_cycle_override" value="">
                 
                 <div class="flex gap-3">
                     <button type="button" onclick="showEditFormTab('video')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
@@ -2364,23 +2251,6 @@ function showFormTab(tab) {
     document.getElementById('tab_' + tab).classList.remove('border-transparent', 'text-gray-400');
 }
 
-function togglePrankWishPreview() {
-    const enabled = document.getElementById('prankwish_enabled').checked;
-    const defaultPreview = document.getElementById('default_preview');
-    const prankwishPreview = document.getElementById('prankwish_preview');
-    const info = document.getElementById('tagline_info');
-    
-    if (enabled) {
-        defaultPreview.classList.add('hidden');
-        prankwishPreview.classList.remove('hidden');
-        info.textContent = '20 universal taglines • Auto-rotates 1-20 • Bottom: prankwish.com';
-    } else {
-        defaultPreview.classList.remove('hidden');
-        prankwishPreview.classList.add('hidden');
-        info.textContent = '30+ unique taglines • Each video gets different text • Branding always shown';
-    }
-}
-
 function toggleVideoSource(select) {
     const bunnySection = document.getElementById('bunny_source_section');
     const ftpSection = document.getElementById('ftp_source_info');
@@ -2420,25 +2290,6 @@ function toggleScheduleMode(mode) {
 
 function setOffset(minutes) {
     document.getElementById('postforme_schedule_offset_minutes').value = minutes;
-}
-
-function toggleAITaglines(checkbox) {
-    document.getElementById('ai_taglines_section').classList.toggle('hidden', !checkbox.checked);
-    // Keep manual section visible but show different label based on mode
-    const manualSection = document.getElementById('manual_taglines_section');
-    const manualLabel = document.getElementById('manual_section_label');
-    
-    if (checkbox.checked) {
-        // AI mode - manual fields are fallback/default
-        if (manualLabel) {
-            manualLabel.innerHTML = '💡 <span class="text-yellow-400">Fallback Text</span> (used if AI fails or as default):';
-        }
-    } else {
-        // Manual mode - these are the main text overlays
-        if (manualLabel) {
-            manualLabel.innerHTML = 'Set overlay text for videos:';
-        }
-    }
 }
 
 // Function to toggle video selection method in create form
@@ -2649,22 +2500,14 @@ function openEditModal(automationData) {
     document.getElementById('edit_short_aspect_ratio').value = automationData.short_aspect_ratio || '9:16';
     document.getElementById('edit_whisper_enabled').checked = automationData.whisper_enabled == 1;
     document.getElementById('edit_whisper_language').value = automationData.whisper_language || 'en';
-    document.getElementById('edit_ai_taglines_enabled').checked = automationData.ai_taglines_enabled == 1;
-    document.getElementById('edit_ai_tagline_prompt').value = automationData.ai_tagline_prompt || 'Generate universal greeting taglines';
-    document.getElementById('edit_branding_text_top').value = automationData.branding_text_top || '';
-    document.getElementById('edit_branding_text_bottom').value = automationData.branding_text_bottom || '';
+    document.getElementById('edit_top_taglines_json').value = automationData.top_taglines_json || '';
+    document.getElementById('edit_bottom_taglines_json').value = automationData.bottom_taglines_json || '';
+    document.getElementById('edit_tagline_rotation_mode').value = automationData.tagline_rotation_mode || 'sequential';
     document.getElementById('edit_manual_video_links').value = automationData.manual_video_links || '';
     document.getElementById('edit_youtube_channel_url').value = automationData.youtube_channel_url || '';
     document.getElementById('edit_rotation_enabled').checked = automationData.rotation_enabled == 1;
     document.getElementById('edit_rotation_shuffle').checked = automationData.rotation_shuffle == 1;
     document.getElementById('edit_rotation_auto_reset').checked = automationData.rotation_auto_reset == 1;
-    
-    // PrankWish fields
-    document.getElementById('edit_prankwish_enabled').checked = automationData.prankwish_enabled == 1;
-    document.getElementById('edit_prankwish_occasion').value = automationData.prankwish_occasion || '';
-    document.getElementById('edit_prankwish_cycle_override').value = automationData.prankwish_cycle_override || '';
-    document.getElementById('edit_prankwish_use_universal').value = automationData.prankwish_use_universal == 1 ? '1' : '0';
-    document.getElementById('edit_prankwish_ollama_prompt').value = automationData.prankwish_ollama_prompt || '';
     document.getElementById('edit_postforme_enabled').checked = automationData.postforme_enabled == 1;
     document.getElementById('edit_youtube_enabled').checked = automationData.youtube_enabled == 1;
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
