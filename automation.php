@@ -141,116 +141,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $redirectMsg = '';
     
     if ($action === 'create') {
+        // Get existing columns from database
+        try {
+            $existingColumns = $pdo->query("SHOW COLUMNS FROM automation_settings")->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Exception $e) {
+            $existingColumns = [];
+        }
+        
         // Run database migration for new tagline columns if needed
         try {
-            $columnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'top_taglines_json'");
-            if ($columnsStmt->rowCount() === 0) {
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT AFTER short_aspect_ratio");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT AFTER top_taglines_json");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential' AFTER bottom_taglines_json");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0 AFTER tagline_rotation_mode");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1 AFTER current_tagline_index");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1 AFTER last_top_index");
+            if (!in_array('top_taglines_json', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT");
+            }
+            if (!in_array('bottom_taglines_json', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT");
+            }
+            if (!in_array('tagline_rotation_mode', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential'");
+            }
+            if (!in_array('current_tagline_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0");
+            }
+            if (!in_array('last_top_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1");
+            }
+            if (!in_array('last_bottom_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1");
             }
         } catch (Exception $e) {
-            // Migration failed, continue anyway
+            // Migration failed silently
         }
         
-        // Post for Me account IDs (as JSON array)
-        $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
-        
-        $stmt = $pdo->prepare("INSERT INTO automation_settings (name, video_source, manual_video_links, youtube_channel_url, run_mode, api_key_id, enabled, video_days_filter, video_start_date, video_end_date, videos_per_run, short_duration, playback_speed, source_shorts_mode, source_shorts_max_count, short_aspect_ratio, top_taglines_json, bottom_taglines_json, tagline_rotation_mode, branding_text_top, branding_text_bottom, whisper_enabled, whisper_language, schedule_type, schedule_hour, schedule_every_minutes, youtube_enabled, youtube_api_key, youtube_channel_id, tiktok_enabled, tiktok_access_token, instagram_enabled, instagram_access_token, facebook_enabled, facebook_access_token, facebook_page_id, postforme_enabled, postforme_account_ids, postforme_schedule_mode, postforme_schedule_datetime, postforme_schedule_timezone, postforme_schedule_offset_minutes, postforme_schedule_spread_minutes, rotation_enabled, rotation_shuffle, rotation_auto_reset, status, next_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        
-        $enabled = isset($_POST['enabled']) ? 1 : 0;
-        $status = $enabled ? 'running' : 'inactive';
-        
-        $scheduleDatetime = !empty($_POST['postforme_schedule_datetime']) ? $_POST['postforme_schedule_datetime'] : null;
-        
-        // Handle video selection method - explicitly handle date values
-        $videoSelectionMethod = $_POST['video_selection_method_hidden'] ?? 'days';
-        $videoDaysFilter = ($videoSelectionMethod === 'days') ? intval($_POST['video_days_filter'] ?? 30) : null;
-        
-        // Get date values - handle empty strings properly and convert empty strings to null
-        $videoStartDate = ($videoSelectionMethod === 'date_range' && isset($_POST['video_start_date']) && trim($_POST['video_start_date']) !== '') ? $_POST['video_start_date'] : null;
-        $videoEndDate = ($videoSelectionMethod === 'date_range' && isset($_POST['video_end_date']) && trim($_POST['video_end_date']) !== '') ? $_POST['video_end_date'] : null;
-        
-        $videosPerRun = intval($_POST['videos_per_run'] ?? 5);
-        if ($videosPerRun < 1) $videosPerRun = 1;
-        if ($videosPerRun > 500) $videosPerRun = 500;
-        $playbackSpeed = normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0);
-        $sourceShortsMode = normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single');
-        $sourceShortsMaxCount = normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, $sourceShortsMode);
-        
-        $nextRunAt = null;
-        if ($enabled) {
-            $scheduleType = $_POST['schedule_type'] ?? 'daily';
-            $scheduleHour = normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9);
-            $scheduleEveryMinutes = intval($_POST['schedule_every_minutes'] ?? 10);
-            $nextRunAt = calculateAutomationNextRunAt($scheduleType, $scheduleHour, $scheduleEveryMinutes);
+        // Re-fetch columns after migration
+        try {
+            $existingColumns = $pdo->query("SHOW COLUMNS FROM automation_settings")->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Exception $e) {
+            $existingColumns = [];
         }
         
-        $videoSource = $_POST['video_source'] ?? 'ftp';
-        $manualVideoLinks = ($videoSource === 'manual_links')
-            ? normalizeManualVideoLinksInput($_POST['manual_video_links'] ?? '')
-            : null;
-        $youtubeChannelUrl = ($videoSource === 'youtube_channel')
-            ? normalizeYouTubeChannelUrlInput($_POST['youtube_channel_url'] ?? '')
-            : null;
-
-        $stmt->execute([
-            $_POST['name'],
-            $videoSource,
-            $manualVideoLinks,
-            $youtubeChannelUrl !== '' ? $youtubeChannelUrl : null,
-            $_POST['run_mode'] ?? 'local',
-            !empty($_POST['api_key_id']) ? $_POST['api_key_id'] : null,
-            $enabled,
-            $videoDaysFilter,
-            $videoStartDate,
-            $videoEndDate,
-            $videosPerRun,
-            $_POST['short_duration'] ?? 60,
-            $playbackSpeed,
-            $sourceShortsMode,
-            $sourceShortsMaxCount,
-            $_POST['short_aspect_ratio'] ?? '9:16',
-            $_POST['top_taglines_json'] ?? null,
-            $_POST['bottom_taglines_json'] ?? null,
-            $_POST['tagline_rotation_mode'] ?? 'sequential',
-            $_POST['branding_text_top'] ?? null,
-            $_POST['branding_text_bottom'] ?? null,
-            isset($_POST['whisper_enabled']) ? 1 : 0,
-            $_POST['whisper_language'] ?? 'en',
-            $_POST['schedule_type'] ?? 'daily',
-            normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9),
-            intval($_POST['schedule_every_minutes'] ?? 10),
-            isset($_POST['youtube_enabled']) ? 1 : 0,
-            $_POST['youtube_api_key'] ?? null,
-            $_POST['youtube_channel_id'] ?? null,
-            isset($_POST['tiktok_enabled']) ? 1 : 0,
-            $_POST['tiktok_access_token'] ?? null,
-            isset($_POST['instagram_enabled']) ? 1 : 0,
-            $_POST['instagram_access_token'] ?? null,
-            isset($_POST['facebook_enabled']) ? 1 : 0,
-            $_POST['facebook_access_token'] ?? null,
-            $_POST['facebook_page_id'] ?? null,
-            isset($_POST['postforme_enabled']) ? 1 : 0,
-            $postformeAccountIds,
-            $_POST['postforme_schedule_mode'] ?? 'immediate',
-            $scheduleDatetime,
-            $_POST['postforme_schedule_timezone'] ?? 'UTC',
-            intval($_POST['postforme_schedule_offset_minutes'] ?? 0),
-            intval($_POST['postforme_schedule_spread_minutes'] ?? 0),
-            isset($_POST['rotation_enabled']) ? 1 : 0,
-            isset($_POST['rotation_shuffle']) ? 1 : 0,
-            isset($_POST['rotation_auto_reset']) ? 1 : 0,
-            $status,
-            $nextRunAt
-        ]);
+        // Build dynamic INSERT based on existing columns
+        $columns = [];
+        $values = [];
+        
+        $colMap = [
+            'name' => $_POST['name'],
+            'video_source' => $_POST['video_source'] ?? 'ftp',
+            'manual_video_links' => isset($_POST['manual_video_links']) ? $_POST['manual_video_links'] : (isset($_POST['manual_video_links_textarea']) ? $_POST['manual_video_links_textarea'] : null),
+            'youtube_channel_url' => ($_POST['video_source'] ?? '') === 'youtube_channel' ? ($_POST['youtube_channel_url'] ?? null) : null,
+            'run_mode' => $_POST['run_mode'] ?? 'local',
+            'api_key_id' => !empty($_POST['api_key_id']) ? $_POST['api_key_id'] : null,
+            'enabled' => isset($_POST['enabled']) ? 1 : 0,
+            'video_days_filter' => ($_POST['video_selection_method_hidden'] ?? 'days') === 'days' ? intval($_POST['video_days_filter'] ?? 30) : null,
+            'video_start_date' => ($_POST['video_selection_method_hidden'] ?? 'days') === 'date_range' && !empty($_POST['video_start_date']) ? $_POST['video_start_date'] : null,
+            'video_end_date' => ($_POST['video_selection_method_hidden'] ?? 'days') === 'date_range' && !empty($_POST['video_end_date']) ? $_POST['video_end_date'] : null,
+            'videos_per_run' => intval($_POST['videos_per_run'] ?? 5),
+            'short_duration' => intval($_POST['short_duration'] ?? 60),
+            'playback_speed' => normalizePlaybackSpeedInput($_POST['playback_speed'] ?? 1.0),
+            'source_shorts_mode' => normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single'),
+            'source_shorts_max_count' => normalizeSourceShortsMaxCountInput($_POST['source_shorts_max_count'] ?? 1, normalizeSourceShortsModeInput($_POST['source_shorts_mode'] ?? 'single')),
+            'short_aspect_ratio' => $_POST['short_aspect_ratio'] ?? '9:16',
+            'top_taglines_json' => $_POST['top_taglines_json'] ?? null,
+            'bottom_taglines_json' => $_POST['bottom_taglines_json'] ?? null,
+            'tagline_rotation_mode' => $_POST['tagline_rotation_mode'] ?? 'sequential',
+            'branding_text_top' => $_POST['branding_text_top'] ?? null,
+            'branding_text_bottom' => $_POST['branding_text_bottom'] ?? null,
+            'whisper_enabled' => isset($_POST['whisper_enabled']) ? 1 : 0,
+            'whisper_language' => $_POST['whisper_language'] ?? 'en',
+            'schedule_type' => $_POST['schedule_type'] ?? 'daily',
+            'schedule_hour' => normalizeScheduleHourInput($_POST['schedule_hour'] ?? 9),
+            'schedule_every_minutes' => intval($_POST['schedule_every_minutes'] ?? 10),
+            'youtube_enabled' => isset($_POST['youtube_enabled']) ? 1 : 0,
+            'youtube_api_key' => $_POST['youtube_api_key'] ?? null,
+            'youtube_channel_id' => $_POST['youtube_channel_id'] ?? null,
+            'tiktok_enabled' => isset($_POST['tiktok_enabled']) ? 1 : 0,
+            'tiktok_access_token' => $_POST['tiktok_access_token'] ?? null,
+            'instagram_enabled' => isset($_POST['instagram_enabled']) ? 1 : 0,
+            'instagram_access_token' => $_POST['instagram_access_token'] ?? null,
+            'facebook_enabled' => isset($_POST['facebook_enabled']) ? 1 : 0,
+            'facebook_access_token' => $_POST['facebook_access_token'] ?? null,
+            'facebook_page_id' => $_POST['facebook_page_id'] ?? null,
+            'postforme_enabled' => isset($_POST['postforme_enabled']) ? 1 : 0,
+            'postforme_account_ids' => isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]',
+            'postforme_schedule_mode' => $_POST['postforme_schedule_mode'] ?? 'immediate',
+            'postforme_schedule_datetime' => !empty($_POST['postforme_schedule_datetime']) ? $_POST['postforme_schedule_datetime'] : null,
+            'postforme_schedule_timezone' => $_POST['postforme_schedule_timezone'] ?? 'UTC',
+            'postforme_schedule_offset_minutes' => intval($_POST['postforme_schedule_offset_minutes'] ?? 0),
+            'postforme_schedule_spread_minutes' => intval($_POST['postforme_schedule_spread_minutes'] ?? 0),
+            'rotation_enabled' => isset($_POST['rotation_enabled']) ? 1 : 0,
+            'rotation_shuffle' => isset($_POST['rotation_shuffle']) ? 1 : 0,
+            'rotation_auto_reset' => isset($_POST['rotation_auto_reset']) ? 1 : 0,
+            'status' => isset($_POST['enabled']) ? 'running' : 'inactive',
+            'next_run_at' => null,
+        ];
+        
+        foreach ($colMap as $col => $val) {
+            if (in_array($col, $existingColumns)) {
+                $columns[] = $col;
+                $values[] = $val;
+            }
+        }
+        
+        if (empty($columns)) {
+            die('Error: No columns found in automation_settings table');
+        }
+        
+        $columnsStr = implode(', ', $columns);
+        $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+        $stmt = $pdo->prepare("INSERT INTO automation_settings ({$columnsStr}) VALUES ({$placeholders})");
+        $stmt->execute($values);
+        
         // Redirect to prevent form resubmission on refresh
         header('Location: automation.php?msg=created');
         exit;
-    } elseif ($action === 'toggle') {
+    }
+
+    if ($action === 'toggle') {
         $newStatus = $_POST['current_enabled'] == '1' ? 0 : 1;
         $statusText = $newStatus ? 'running' : 'stopped';
         
