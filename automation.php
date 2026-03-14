@@ -7,12 +7,13 @@ $message = '';
 $messageType = 'success';
 
 // Get AI provider settings for display
-$aiSettings = $pdo->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('ai_provider', 'gemini_api_key', 'openai_api_key')")->fetchAll(PDO::FETCH_KEY_PAIR);
+$aiSettings = $pdo->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('ai_provider', 'gemini_api_key', 'openai_api_key', 'openrouter_api_key')")->fetchAll(PDO::FETCH_KEY_PAIR);
 $hasGemini = !empty($aiSettings['gemini_api_key']);
 $hasOpenAI = !empty($aiSettings['openai_api_key']);
+$hasOpenRouter = !empty($aiSettings['openrouter_api_key']);
 $selectedProvider = $aiSettings['ai_provider'] ?? 'gemini';
-$activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : ($hasGemini ? 'Gemini (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')));
-$hasAnyAI = $hasGemini || $hasOpenAI;
+$activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : (($selectedProvider === 'openrouter' && $hasOpenRouter) ? 'OpenRouter (FREE)' : ($hasGemini ? 'Gemini (FREE)' : ($hasOpenRouter ? 'OpenRouter (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')))));
+$hasAnyAI = $hasGemini || $hasOpenAI || $hasOpenRouter;
 
 function normalizeManualVideoLinksInput($rawInput) {
     $raw = is_string($rawInput) ? $rawInput : (string)$rawInput;
@@ -1349,6 +1350,127 @@ refreshOutputVideoCount();
             <!-- Tab 3: Custom Taglines -->
             <div id="form_taglines" class="hidden p-4 space-y-4">
                 
+                <!-- AI Tagline Generator Section -->
+                <div class="p-6 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-500/30 rounded-xl">
+                    <div class="flex items-center gap-4 mb-4">
+                        <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                        <div class="font-bold text-xl text-white">AI Tagline Generator</div>
+                    </div>
+                    <p class="text-gray-400 text-sm mb-4">Generate taglines using AI. Select a saved API key or enter a new one.</p>
+                    
+                    <!-- Saved API Keys Dropdown -->
+                    <?php if ($hasAnyAI): ?>
+                    <div class="mb-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                        <label class="block text-sm text-gray-300 mb-2">Saved API Keys (from Settings)</label>
+                        <select id="ai_saved_keys" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="loadSavedApiKey()">
+                            <option value="">-- Select Saved Key --</option>
+                            <?php if ($hasGemini): ?>
+                            <option value="gemini|<?= htmlspecialchars($aiSettings['gemini_api_key'] ?? '') ?>">Google Gemini (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenRouter): ?>
+                            <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenAI): ?>
+                            <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
+                            <?php endif; ?>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Select a saved key from Settings → AI</p>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <!-- AI Provider Selection -->
+                    <div class="grid grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-2">AI Provider</label>
+                            <select id="ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleAiProvider()">
+                                <option value="gemini">Google Gemini</option>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="openai">OpenAI (GPT)</option>
+                            </select>
+                        </div>
+                        <div id="gemini_model_section">
+                            <label class="block text-sm text-gray-300 mb-2">Gemini Model</label>
+                            <select id="ai_gemini_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="gemini-2.5-flash">2.5 Flash (Fast - Default)</option>
+                                <option value="gemini-2.5-flash-lite">2.5 Flash-Lite (Cheaper)</option>
+                                <option value="gemini-2.5-pro">2.5 Pro (High Quality)</option>
+                                <option value="gemini-2.0-flash">2.0 Flash (Backup)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-2">API Key</label>
+                            <div class="flex gap-2">
+                                <input type="password" id="ai_api_key" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="Enter API key">
+                                <button type="button" onclick="testAiApiKey()" class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm whitespace-nowrap">Test</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Test Result -->
+                    <div id="ai_test_result" class="hidden mb-4 p-3 rounded-lg text-sm"></div>
+                    
+                    <!-- Generate Taglines Section (shown after valid API key) -->
+                    <div id="ai_generate_section" class="hidden space-y-4">
+                        <div class="border-t border-gray-700 pt-4">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                <span class="font-medium text-white">Generate New Taglines</span>
+                            </div>
+                            
+                            <!-- Top Tagline Input -->
+                            <div class="mb-3">
+                                <label class="block text-sm text-gray-300 mb-1">TOP Tagline (short description)</label>
+                                <input type="text" id="ai_top_prompt" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="e.g., birthday wishes, love greeting, celebration">
+                            </div>
+                            
+                            <!-- Bottom Tagline Input -->
+                            <div class="mb-3">
+                                <label class="block text-sm text-gray-300 mb-1">BOTTOM Tagline (call-to-action)</label>
+                                <input type="text" id="ai_bottom_prompt" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="e.g., visit website, subscribe, order at website">
+                            </div>
+                            
+                            <div class="flex gap-2 mb-3">
+                                <button type="button" onclick="generateAiTaglines()" class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm font-medium">
+                                    ✨ Generate 5
+                                </button>
+                                <button type="button" onclick="generateBulkAiTaglines(50)" class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">
+                                    ⚡ Generate 50
+                                </button>
+                                <button type="button" onclick="generateBulkAiTaglines(100)" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium">
+                                    🚀 Generate 100
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Bulk Generated Result -->
+                        <div id="ai_bulk_result" class="hidden p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-sm font-medium text-green-400" id="bulk_result_count">Generated Successfully!</span>
+                                <button type="button" onclick="addAllBulkTaglines()" class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs">Add All to Lists</button>
+                            </div>
+                            <div class="max-h-40 overflow-y-auto text-xs text-gray-300 space-y-1" id="bulk_preview"></div>
+                        </div>
+                        
+                        <!-- Generated Result -->
+                        <div id="ai_generated_result" class="hidden p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-sm font-medium text-green-400">Generated Successfully!</span>
+                                <button type="button" onclick="addGeneratedTaglines()" class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs">Add to Lists</button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div class="p-2 bg-gray-700/50 rounded">
+                                    <div class="text-xs text-gray-400 mb-1">TOP</div>
+                                    <div id="generated_top" class="text-sm text-white"></div>
+                                </div>
+                                <div class="p-2 bg-gray-700/50 rounded">
+                                    <div class="text-xs text-gray-400 mb-1">BOTTOM</div>
+                                    <div id="generated_bottom" class="text-sm text-white"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <!-- Tagline Settings -->
                 <div class="p-6 bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/30 rounded-xl">
                     <div class="flex items-center gap-4 mb-4">
@@ -1574,7 +1696,7 @@ refreshOutputVideoCount();
                 
                 <div class="flex gap-3 pt-4 border-t border-gray-800">
                     <button type="button" onclick="showFormTab('taglines')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
-                    <button type="submit" class="flex-1 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-medium">
+                    <button type="button" onclick="if(confirm('Create automation?')){ document.getElementById('createModal').querySelector('form').submit(); }" class="flex-1 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-medium">
                         ✓ Create Automation
                     </button>
                 </div>
@@ -1869,6 +1991,124 @@ refreshOutputVideoCount();
             <!-- Tab 3: Custom Taglines (Edit) -->
             <div id="edit_form_taglines" class="hidden p-4 space-y-4">
                 
+                <!-- AI Tagline Generator Section (Edit) -->
+                <div class="p-6 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-500/30 rounded-xl">
+                    <div class="flex items-center gap-4 mb-4">
+                        <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                        <div class="font-bold text-xl text-white">AI Tagline Generator</div>
+                    </div>
+                    <p class="text-gray-400 text-sm mb-4">Generate taglines using AI. Select a saved API key or enter a new one.</p>
+                    
+                    <!-- Saved API Keys Dropdown (Edit) -->
+                    <?php if ($hasAnyAI): ?>
+                    <div class="mb-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                        <label class="block text-sm text-gray-300 mb-2">Saved API Keys (from Settings)</label>
+                        <select id="edit_ai_saved_keys" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="loadEditSavedApiKey()">
+                            <option value="">-- Select Saved Key --</option>
+                            <?php if ($hasGemini): ?>
+                            <option value="gemini|<?= htmlspecialchars($aiSettings['gemini_api_key'] ?? '') ?>">Google Gemini (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenRouter): ?>
+                            <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenAI): ?>
+                            <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
+                            <?php endif; ?>
+                        </select>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <!-- AI Provider Selection -->
+                    <div class="grid grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-2">AI Provider</label>
+                            <select id="edit_ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleEditAiProvider()">
+                                <option value="gemini">Google Gemini</option>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="openai">OpenAI (GPT)</option>
+                            </select>
+                        </div>
+                        <div id="edit_gemini_model_section">
+                            <label class="block text-sm text-gray-300 mb-2">Gemini Model</label>
+                            <select id="edit_ai_gemini_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="gemini-2.5-flash">2.5 Flash (Fast - Default)</option>
+                                <option value="gemini-2.5-pro">2.5 Pro (High Quality)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-2">API Key</label>
+                            <div class="flex gap-2">
+                                <input type="password" id="edit_ai_api_key" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="Enter API key">
+                                <button type="button" onclick="testEditAiApiKey()" class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm whitespace-nowrap">Test</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Test Result -->
+                    <div id="edit_ai_test_result" class="hidden mb-4 p-3 rounded-lg text-sm"></div>
+                    
+                    <!-- Generate Taglines Section -->
+                    <div id="edit_ai_generate_section" class="hidden space-y-4">
+                        <div class="border-t border-gray-700 pt-4">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                <span class="font-medium text-white">Generate New Taglines</span>
+                            </div>
+                            
+                            <!-- Top Tagline Input -->
+                            <div class="mb-3">
+                                <label class="block text-sm text-gray-300 mb-1">TOP Tagline (short description)</label>
+                                <input type="text" id="edit_ai_top_prompt" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="e.g., birthday wishes, love greeting">
+                            </div>
+                            
+                            <!-- Bottom Tagline Input -->
+                            <div class="mb-3">
+                                <label class="block text-sm text-gray-300 mb-1">BOTTOM Tagline (call-to-action)</label>
+                                <input type="text" id="edit_ai_bottom_prompt" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="e.g., visit website, subscribe, order at website">
+                            </div>
+                            
+                            <div class="flex gap-2 mb-3">
+                                <button type="button" onclick="generateEditAiTaglines()" class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm font-medium">
+                                    ✨ Generate 5
+                                </button>
+                                <button type="button" onclick="generateEditBulkAiTaglines(50)" class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">
+                                    ⚡ Generate 50
+                                </button>
+                                <button type="button" onclick="generateEditBulkAiTaglines(100)" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium">
+                                    🚀 Generate 100
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Bulk Generated Result -->
+                        <div id="edit_ai_bulk_result" class="hidden p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-sm font-medium text-green-400" id="edit_bulk_result_count">Generated Successfully!</span>
+                                <button type="button" onclick="addAllEditBulkTaglines()" class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs">Add All to Lists</button>
+                            </div>
+                            <div class="max-h-40 overflow-y-auto text-xs text-gray-300 space-y-1" id="edit_bulk_preview"></div>
+                        </div>
+                        
+                        <!-- Single Generated Result -->
+                        <div id="edit_ai_generated_result" class="hidden p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-sm font-medium text-green-400">Generated Successfully!</span>
+                                <button type="button" onclick="addEditGeneratedTaglines()" class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs">Add to Lists</button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div class="p-2 bg-gray-700/50 rounded">
+                                    <div class="text-xs text-gray-400 mb-1">TOP</div>
+                                    <div id="edit_generated_top" class="text-sm text-white"></div>
+                                </div>
+                                <div class="p-2 bg-gray-700/50 rounded">
+                                    <div class="text-xs text-gray-400 mb-1">BOTTOM</div>
+                                    <div id="edit_generated_bottom" class="text-sm text-white"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <!-- Tagline Settings -->
                 <div class="p-6 bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/30 rounded-xl">
                     <div class="flex items-center gap-4 mb-4">
@@ -2093,7 +2333,7 @@ refreshOutputVideoCount();
                 
                 <div class="flex gap-3 pt-4 border-t border-gray-800">
                     <button type="button" onclick="showEditFormTab('taglines')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
-                    <button type="submit" class="flex-1 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-medium">
+                    <button type="button" onclick="if(confirm('Save changes?')){ document.getElementById('editForm').submit(); }" id="editSubmitBtn" class="flex-1 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-medium">
                         ✓ Update Automation
                     </button>
                 </div>
@@ -2265,12 +2505,35 @@ function validateAutomationForm(form) {
 }
 
 function submitAutomationForm(event) {
-    const form = event.target;
-    if (!validateAutomationForm(form)) {
+    try {
+        const form = event.target;
+        console.log('Submit form:', form.id);
+        
+        // Simple validation - just check name is not empty
+        const nameField = form.querySelector('[name="name"]');
+        if (!nameField || !nameField.value.trim()) {
+            alert('Please enter an automation name');
+            if (nameField) nameField.focus();
+            event.preventDefault();
+            return false;
+        }
+        
+        console.log('Form valid, submitting...');
+        
+        // Show loading state on submit button
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Saving...';
+        }
+        
+        return true;
+    } catch (e) {
+        console.error('Form submission error:', e);
+        alert('Error: ' + e.message);
         event.preventDefault();
         return false;
     }
-    return true;
 }
 
 function showFormTab(tab) {
@@ -2351,6 +2614,530 @@ function toggleSourceShortsMode(mode) {
             input.value = '5';
         }
     }
+}
+
+function loadSavedApiKey() {
+    const select = document.getElementById('ai_saved_keys');
+    const value = select.value;
+    if (!value) return;
+    
+    const [provider, apiKey] = value.split('|');
+    if (provider && apiKey) {
+        document.getElementById('ai_provider').value = provider;
+        document.getElementById('ai_api_key').value = apiKey;
+        toggleAiProvider();
+        showToast('API key loaded! Click Test to verify.', 'success');
+    }
+}
+
+function toggleAiProvider() {
+    const provider = document.getElementById('ai_provider').value;
+    const apiKeyInput = document.getElementById('ai_api_key');
+    const modelSection = document.getElementById('gemini_model_section');
+    
+    if (provider === 'gemini') {
+        apiKeyInput.placeholder = 'Enter Gemini API key';
+        if (modelSection) modelSection.classList.remove('hidden');
+    } else if (provider === 'openrouter') {
+        apiKeyInput.placeholder = 'Enter OpenRouter API key (sk-or-...)';
+        if (modelSection) modelSection.classList.add('hidden');
+    } else {
+        apiKeyInput.placeholder = 'Enter OpenAI API key (sk-...)';
+        if (modelSection) modelSection.classList.add('hidden');
+    }
+}
+
+async function testAiApiKey() {
+    const apiKey = document.getElementById('ai_api_key').value.trim();
+    const provider = document.getElementById('ai_provider').value;
+    const model = document.getElementById('ai_gemini_model') ? document.getElementById('ai_gemini_model').value : 'gemini-2.5-flash';
+    const resultDiv = document.getElementById('ai_test_result');
+    const generateSection = document.getElementById('ai_generate_section');
+    
+    if (!apiKey) {
+        resultDiv.classList.remove('hidden');
+        resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+        resultDiv.textContent = 'Please enter an API key';
+        return;
+    }
+    
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'p-3 rounded-lg text-sm bg-blue-500/20 border border-blue-500/30 text-blue-400';
+    resultDiv.textContent = 'Testing API key...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'test_api_key');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            resultDiv.className = 'p-3 rounded-lg text-sm bg-green-500/20 border border-green-500/30 text-green-400';
+            resultDiv.textContent = '✓ ' + result.message;
+            generateSection.classList.remove('hidden');
+        } else {
+            resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+            resultDiv.textContent = '✗ ' + result.error;
+            generateSection.classList.add('hidden');
+        }
+    } catch (error) {
+        resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+        resultDiv.textContent = 'Error: ' + error.message;
+    }
+}
+
+async function generateAiTaglines() {
+    const apiKey = document.getElementById('ai_api_key').value.trim();
+    const provider = document.getElementById('ai_provider').value;
+    const model = document.getElementById('ai_gemini_model') ? document.getElementById('ai_gemini_model').value : 'gemini-2.5-flash';
+    const topPrompt = document.getElementById('ai_top_prompt').value.trim();
+    const bottomPrompt = document.getElementById('ai_bottom_prompt').value.trim();
+    const resultDiv = document.getElementById('ai_generated_result');
+    const topText = document.getElementById('generated_top');
+    const bottomText = document.getElementById('generated_bottom');
+    const btn = event.target;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key first', 'error');
+        return;
+    }
+    
+    if (!topPrompt && !bottomPrompt) {
+        showToast('Please enter at least one prompt', 'error');
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'generate_taglines');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        formData.append('top_prompt', topPrompt);
+        formData.append('bottom_prompt', bottomPrompt);
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            topText.textContent = result.top;
+            bottomText.textContent = result.bottom;
+            resultDiv.classList.remove('hidden');
+            showToast('Taglines generated successfully!', 'success');
+        } else {
+            showToast(result.error || 'Failed to generate taglines', 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✨ Generate 5';
+    }
+}
+
+function addGeneratedTaglines() {
+    const topText = document.getElementById('generated_top').textContent;
+    const bottomText = document.getElementById('generated_bottom').textContent;
+    const topTextarea = document.getElementById('top_taglines_json');
+    const bottomTextarea = document.getElementById('bottom_taglines_json');
+    
+    if (topText) {
+        const currentTop = topTextarea.value.trim();
+        topTextarea.value = currentTop ? currentTop + '\n' + topText : topText;
+    }
+    
+    if (bottomText) {
+        const currentBottom = bottomTextarea.value.trim();
+        bottomTextarea.value = currentBottom ? currentBottom + '\n' + bottomText : bottomText;
+    }
+    
+    showToast('Taglines added to lists!', 'success');
+    
+    document.getElementById('ai_generated_result').classList.add('hidden');
+    document.getElementById('ai_top_prompt').value = '';
+    document.getElementById('ai_bottom_prompt').value = '';
+}
+
+let bulkTaglinesData = [];
+
+async function generateBulkAiTaglines(count) {
+    const apiKey = document.getElementById('ai_api_key').value.trim();
+    const provider = document.getElementById('ai_provider').value;
+    const model = document.getElementById('ai_gemini_model') ? document.getElementById('ai_gemini_model').value : 'gemini-2.5-flash';
+    const topPrompt = document.getElementById('ai_top_prompt').value.trim();
+    const bottomPrompt = document.getElementById('ai_bottom_prompt').value.trim();
+    const resultDiv = document.getElementById('ai_bulk_result');
+    const btn = event.target;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key first', 'error');
+        return;
+    }
+    
+    if (!topPrompt && !bottomPrompt) {
+        showToast('Please enter at least one prompt', 'error');
+        return;
+    }
+    
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = 'Generating...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'generate_bulk_taglines');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        formData.append('top_prompt', topPrompt || 'general video content');
+        formData.append('bottom_prompt', bottomPrompt || 'order at website');
+        formData.append('count', count);
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success && result.taglines) {
+            bulkTaglinesData = result.taglines;
+            
+            document.getElementById('bulk_result_count').textContent = `Generated ${result.count} taglines!${result.model ? ' (Model: ' + result.model + ')' : ''}`;
+            
+            let preview = '';
+            result.taglines.slice(0, 20).forEach((t, i) => {
+                preview += `${i+1}. TOP: ${t.top} | BOTTOM: ${t.bottom}\n`;
+            });
+            if (result.count > 20) {
+                preview += `\n... and ${result.count - 20} more`;
+            }
+            document.getElementById('bulk_preview').textContent = preview;
+            
+            resultDiv.classList.remove('hidden');
+            showToast(`Generated ${result.count} taglines successfully!`, 'success');
+        } else {
+            showToast(result.error || 'Failed to generate taglines', 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function addAllBulkTaglines() {
+    if (!bulkTaglinesData.length) {
+        showToast('No taglines to add', 'error');
+        return;
+    }
+    
+    const topTextarea = document.getElementById('top_taglines_json');
+    const bottomTextarea = document.getElementById('bottom_taglines_json');
+    
+    let currentTop = topTextarea.value.trim();
+    let currentBottom = bottomTextarea.value.trim();
+    
+    bulkTaglinesData.forEach(t => {
+        if (t.top) {
+            currentTop = currentTop ? currentTop + '\n' + t.top : t.top;
+        }
+        if (t.bottom) {
+            currentBottom = currentBottom ? currentBottom + '\n' + t.bottom : t.bottom;
+        }
+    });
+    
+    topTextarea.value = currentTop;
+    bottomTextarea.value = currentBottom;
+    
+    showToast(`Added ${bulkTaglinesData.length} taglines to lists!`, 'success');
+    
+    document.getElementById('ai_bulk_result').classList.add('hidden');
+    bulkTaglinesData = [];
+}
+
+function loadEditSavedApiKey() {
+    const select = document.getElementById('edit_ai_saved_keys');
+    const value = select.value;
+    if (!value) return;
+    
+    const [provider, apiKey] = value.split('|');
+    if (provider && apiKey) {
+        document.getElementById('edit_ai_provider').value = provider;
+        document.getElementById('edit_ai_api_key').value = apiKey;
+        toggleEditAiProvider();
+        showToast('API key loaded! Click Test to verify.', 'success');
+    }
+}
+
+function toggleEditAiProvider() {
+    const provider = document.getElementById('edit_ai_provider').value;
+    const apiKeyInput = document.getElementById('edit_ai_api_key');
+    const modelSection = document.getElementById('edit_gemini_model_section');
+    
+    if (provider === 'gemini') {
+        apiKeyInput.placeholder = 'Enter Gemini API key';
+        if (modelSection) modelSection.classList.remove('hidden');
+    } else if (provider === 'openrouter') {
+        apiKeyInput.placeholder = 'Enter OpenRouter API key (sk-or-...)';
+        if (modelSection) modelSection.classList.add('hidden');
+    } else {
+        apiKeyInput.placeholder = 'Enter OpenAI API key (sk-...)';
+        if (modelSection) modelSection.classList.add('hidden');
+    }
+}
+
+async function testEditAiApiKey() {
+    const apiKey = document.getElementById('edit_ai_api_key').value.trim();
+    const provider = document.getElementById('edit_ai_provider').value;
+    const model = document.getElementById('edit_ai_gemini_model') ? document.getElementById('edit_ai_gemini_model').value : 'gemini-2.5-flash';
+    const resultDiv = document.getElementById('edit_ai_test_result');
+    const generateSection = document.getElementById('edit_ai_generate_section');
+    
+    if (!apiKey) {
+        resultDiv.classList.remove('hidden');
+        resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+        resultDiv.textContent = 'Please enter an API key';
+        return;
+    }
+    
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'p-3 rounded-lg text-sm bg-blue-500/20 border border-blue-500/30 text-blue-400';
+    resultDiv.textContent = 'Testing API key...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'test_api_key');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            resultDiv.className = 'p-3 rounded-lg text-sm bg-green-500/20 border border-green-500/30 text-green-400';
+            resultDiv.textContent = '✓ ' + result.message;
+            generateSection.classList.remove('hidden');
+        } else {
+            resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+            resultDiv.textContent = '✗ ' + result.error;
+            generateSection.classList.add('hidden');
+        }
+    } catch (error) {
+        resultDiv.className = 'p-3 rounded-lg text-sm bg-red-500/20 border border-red-500/30 text-red-400';
+        resultDiv.textContent = 'Error: ' + error.message;
+    }
+}
+
+async function generateEditAiTaglines() {
+    const apiKey = document.getElementById('edit_ai_api_key').value.trim();
+    const provider = document.getElementById('edit_ai_provider').value;
+    const model = document.getElementById('edit_ai_gemini_model') ? document.getElementById('edit_ai_gemini_model').value : 'gemini-2.5-flash';
+    const topPrompt = document.getElementById('edit_ai_top_prompt').value.trim();
+    const bottomPrompt = document.getElementById('edit_ai_bottom_prompt').value.trim();
+    const resultDiv = document.getElementById('edit_ai_generated_result');
+    const topText = document.getElementById('edit_generated_top');
+    const bottomText = document.getElementById('edit_generated_bottom');
+    const btn = event.target;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key first', 'error');
+        return;
+    }
+    
+    if (!topPrompt && !bottomPrompt) {
+        showToast('Please enter at least one prompt', 'error');
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'generate_taglines');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        formData.append('top_prompt', topPrompt);
+        formData.append('bottom_prompt', bottomPrompt);
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            topText.textContent = result.top;
+            bottomText.textContent = result.bottom;
+            resultDiv.classList.remove('hidden');
+            showToast('Taglines generated successfully!', 'success');
+        } else {
+            showToast(result.error || 'Failed to generate taglines', 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✨ Generate 5';
+    }
+}
+
+function addEditGeneratedTaglines() {
+    const topText = document.getElementById('edit_generated_top').textContent;
+    const bottomText = document.getElementById('edit_generated_bottom').textContent;
+    const topTextarea = document.getElementById('edit_top_taglines_json');
+    const bottomTextarea = document.getElementById('edit_bottom_taglines_json');
+    
+    if (topText) {
+        const currentTop = topTextarea.value.trim();
+        topTextarea.value = currentTop ? currentTop + '\n' + topText : topText;
+    }
+    
+    if (bottomText) {
+        const currentBottom = bottomTextarea.value.trim();
+        bottomTextarea.value = currentBottom ? currentBottom + '\n' + bottomText : bottomText;
+    }
+    
+    showToast('Taglines added to lists!', 'success');
+    
+    document.getElementById('edit_ai_generated_result').classList.add('hidden');
+    document.getElementById('edit_ai_top_prompt').value = '';
+    document.getElementById('edit_ai_bottom_prompt').value = '';
+}
+
+let editBulkTaglinesData = [];
+
+async function generateEditBulkAiTaglines(count) {
+    const apiKey = document.getElementById('edit_ai_api_key').value.trim();
+    const provider = document.getElementById('edit_ai_provider').value;
+    const model = document.getElementById('edit_ai_gemini_model') ? document.getElementById('edit_ai_gemini_model').value : 'gemini-2.5-flash';
+    const topPrompt = document.getElementById('edit_ai_top_prompt').value.trim();
+    const bottomPrompt = document.getElementById('edit_ai_bottom_prompt').value.trim();
+    const resultDiv = document.getElementById('edit_ai_bulk_result');
+    const btn = event.target;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key first', 'error');
+        return;
+    }
+    
+    if (!topPrompt && !bottomPrompt) {
+        showToast('Please enter at least one prompt', 'error');
+        return;
+    }
+    
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = 'Generating...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'generate_bulk_taglines');
+        formData.append('api_key', apiKey);
+        formData.append('provider', provider);
+        if (provider === 'gemini') {
+            formData.append('model', model);
+        }
+        formData.append('top_prompt', topPrompt || 'general video content');
+        formData.append('bottom_prompt', bottomPrompt || 'order at website');
+        formData.append('count', count);
+        
+        const response = await fetch('api/ai-tagline-generator.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success && result.taglines) {
+            editBulkTaglinesData = result.taglines;
+            
+            document.getElementById('edit_bulk_result_count').textContent = `Generated ${result.count} taglines!${result.model ? ' (Model: ' + result.model + ')' : ''}`;
+            
+            let preview = '';
+            result.taglines.slice(0, 20).forEach((t, i) => {
+                preview += `${i+1}. TOP: ${t.top} | BOTTOM: ${t.bottom}\n`;
+            });
+            if (result.count > 20) {
+                preview += `\n... and ${result.count - 20} more`;
+            }
+            document.getElementById('edit_bulk_preview').textContent = preview;
+            
+            resultDiv.classList.remove('hidden');
+            showToast(`Generated ${result.count} taglines successfully!`, 'success');
+        } else {
+            showToast(result.error || 'Failed to generate taglines', 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function addAllEditBulkTaglines() {
+    if (!editBulkTaglinesData.length) {
+        showToast('No taglines to add', 'error');
+        return;
+    }
+    
+    const topTextarea = document.getElementById('edit_top_taglines_json');
+    const bottomTextarea = document.getElementById('edit_bottom_taglines_json');
+    
+    let currentTop = topTextarea.value.trim();
+    let currentBottom = bottomTextarea.value.trim();
+    
+    editBulkTaglinesData.forEach(t => {
+        if (t.top) {
+            currentTop = currentTop ? currentTop + '\n' + t.top : t.top;
+        }
+        if (t.bottom) {
+            currentBottom = currentBottom ? currentBottom + '\n' + t.bottom : t.bottom;
+        }
+    });
+    
+    topTextarea.value = currentTop;
+    bottomTextarea.value = currentBottom;
+    
+    showToast(`Added ${editBulkTaglinesData.length} taglines to lists!`, 'success');
+    
+    document.getElementById('edit_ai_bulk_result').classList.add('hidden');
+    editBulkTaglinesData = [];
 }
 
 function toLocalDateValue(date) {
@@ -3018,8 +3805,35 @@ function runAutomationGithub(automationId, runMode = 'github_runner') {
         });
 }
 
+// Global lock to prevent multiple automations from running at the same time
+let isAutomationRunning = false;
+let runningAutomationId = null;
+
 function runAutomationLive(automationId) {
     console.log('Starting automation with SSE:', automationId);
+    
+    // Check if another automation is already running
+    if (isAutomationRunning && runningAutomationId !== automationId) {
+        alert('Another automation is already running! Please wait for it to complete or stop it first.');
+        return;
+    }
+    
+    // Set the lock
+    isAutomationRunning = true;
+    runningAutomationId = automationId;
+    
+    // Disable all Run buttons except the current one
+    document.querySelectorAll('[onclick*="runAutomationLive"]').forEach(btn => {
+        btn.disabled = true;
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+    });
+    
+    // Show running indicator
+    const currentRunBtn = document.querySelector(`[onclick="runAutomationLive(${automationId})"]`);
+    if (currentRunBtn) {
+        currentRunBtn.disabled = false;
+        currentRunBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    }
     
     // Show progress section on card
     const progressSection = document.getElementById('progress-' + automationId);
@@ -3106,6 +3920,9 @@ function runAutomationLive(automationId) {
                 processComplete = true;
                 eventSource.close();
                 
+                // Release the lock
+                releaseAutomationLock(automationId);
+                
                 if (data.success) {
                     setCardStatus(automationId, 'completed');
                     if (typeof loadOutputVideoCount === 'function') {
@@ -3128,6 +3945,7 @@ function runAutomationLive(automationId) {
         console.error('SSE Error:', error);
         eventSource.close();
         
+        // Don't release lock on connection error - let polling handle it
         if (!processComplete) {
             addLogEntry(modalLogContainer, 'warn', 'warning', '⚠ Connection interrupted - checking progress from database...');
             
@@ -3140,6 +3958,18 @@ function runAutomationLive(automationId) {
     
     // Store eventSource globally so we can close it if user stops
     window.currentEventSource = eventSource;
+}
+
+// Function to release the automation lock and re-enable buttons
+function releaseAutomationLock(completedAutomationId) {
+    isAutomationRunning = false;
+    runningAutomationId = null;
+    
+    // Re-enable all Run buttons
+    document.querySelectorAll('[onclick*="runAutomationLive"]').forEach(btn => {
+        btn.disabled = false;
+        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+    });
 }
 
 // Poll database for progress updates (works even if popup closes)
@@ -3872,5 +4702,27 @@ document.addEventListener('DOMContentLoaded', function () {
       })
       .catch(function (e) { console.error(e); });
   });
+  
+  // Check if any automation is running on page load
+  fetch('api/check-running-automation.php', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.running) {
+        isAutomationRunning = true;
+        runningAutomationId = data.automation_id;
+        
+        // Disable all Run buttons
+        document.querySelectorAll('[onclick*="runAutomationLive"]').forEach(btn => {
+          btn.disabled = true;
+          btn.classList.add('opacity-50', 'cursor-not-allowed');
+        });
+        
+        // Start monitoring the running automation
+        if (confirm('An automation is already running (ID: ' + data.automation_id + '). Would you like to view its progress?')) {
+          runAutomationLive(data.automation_id);
+        }
+      }
+    })
+    .catch(e => console.error('Error checking running automation:', e));
 });
 </script>

@@ -125,6 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute(['ai_provider', $_POST['ai_provider'] ?? 'gemini']);
         $stmt->execute(['gemini_api_key', $_POST['gemini_api_key'] ?? '']);
         $stmt->execute(['openai_api_key', $_POST['openai_api_key'] ?? '']);
+        $stmt->execute(['openrouter_api_key', $_POST['openrouter_api_key'] ?? '']);
         $stmt->execute(['default_language', $_POST['default_language'] ?? 'en']);
         $message = 'AI settings saved';
         
@@ -773,6 +774,13 @@ include 'includes/header.php';
                 <label class="block text-sm text-gray-400 mb-1">OpenAI API Key (for Whisper transcription)</label>
                 <input type="password" name="openai_api_key" value="<?= htmlspecialchars($settings['openai_api_key'] ?? '') ?>" placeholder="sk-..." class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg" data-testid="input-openai-key">
                 <p class="text-xs text-gray-500 mt-1">Get from <a href="https://platform.openai.com/api-keys" target="_blank" class="text-green-400 hover:underline">platform.openai.com/api-keys</a></p>
+            </div>
+            
+            <!-- OpenRouter API Key -->
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">OpenRouter API Key (FREE AI Models)</label>
+                <input type="password" name="openrouter_api_key" value="<?= htmlspecialchars($settings['openrouter_api_key'] ?? '') ?>" placeholder="sk-or-..." class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                <p class="text-xs text-gray-500 mt-1">Get free key from <a href="https://openrouter.ai/keys" target="_blank" class="text-green-400 hover:underline">openrouter.ai/keys</a></p>
             </div>
             <div>
                 <label class="block text-sm text-gray-400 mb-1">Default Transcription Language</label>
