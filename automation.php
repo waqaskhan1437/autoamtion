@@ -3744,6 +3744,22 @@ function runAutomationSmart(automationId, runMode) {
 }
 
 function runAutomationGithub(automationId, runMode = 'github_runner') {
+    // Check if another automation is already running
+    if (isAutomationRunning && runningAutomationId !== automationId) {
+        alert('Another automation is already running! Please wait for it to complete or stop it first.');
+        return;
+    }
+    
+    // Set the lock
+    isAutomationRunning = true;
+    runningAutomationId = automationId;
+    
+    // Disable all Run buttons
+    document.querySelectorAll('[onclick*="runAutomationLive"], [onclick*="runAutomationGithub"]').forEach(btn => {
+        btn.disabled = true;
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+    });
+    
     const progressSection = document.getElementById('progress-' + automationId);
     const progressBar = document.getElementById('progress-bar-' + automationId);
     const progressPercent = document.getElementById('progress-percent-' + automationId);
@@ -4211,6 +4227,8 @@ function resumePolling(automationId) {
                     if (data.status === 'completed' && typeof loadOutputVideoCount === 'function') {
                         loadOutputVideoCount();
                     }
+                    // Release the lock
+                    releaseAutomationLock(automationId);
                     activeResumePollers.delete(pollerKey);
                     return;
                 }
