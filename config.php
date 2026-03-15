@@ -288,8 +288,8 @@ try {
             CREATE TABLE IF NOT EXISTS processed_videos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 automation_id INT NOT NULL,
-                video_identifier VARCHAR(500) NOT NULL,
-                video_filename VARCHAR(500),
+                video_identifier VARCHAR(255) NOT NULL,
+                video_filename VARCHAR(255),
                 file_size BIGINT DEFAULT 0,
                 content_hash VARCHAR(64),
                 cycle_number INT DEFAULT 1,
@@ -795,8 +795,8 @@ try {
             CREATE TABLE IF NOT EXISTS processed_videos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 automation_id INT NOT NULL,
-                video_identifier VARCHAR(500) NOT NULL,
-                video_filename VARCHAR(500),
+                video_identifier VARCHAR(255) NOT NULL,
+                video_filename VARCHAR(255),
                 file_size BIGINT DEFAULT 0,
                 content_hash VARCHAR(64),
                 cycle_number INT DEFAULT 1,
