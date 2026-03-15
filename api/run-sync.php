@@ -1113,6 +1113,19 @@ foreach ($videos as $index => $video) {
             $socialHashtags = array_filter(array_map('trim', explode(' ', $tagLine)));
         }
         
+        // Prepare final social content (available for all platforms)
+        $finalTitle = $socialTitle ?: ($topText ?: $segmentVideoName);
+        $finalDescription = $socialDescription ?: ($topText ?: 'Check this out!');
+        $finalHashtagsArr = $socialHashtags ?: ['shorts', 'viral', 'trending'];
+        $hashtagStr = '#' . implode(' #', $finalHashtagsArr);
+        
+        $socialContent = [
+            'title' => $finalTitle,
+            'description' => $finalDescription . ' ' . $hashtagStr,
+            'hashtags' => array_map(fn($t) => '#' . $t, $finalHashtagsArr),
+            'tags' => $finalHashtagsArr
+        ];
+        
         if ($willPost) {
             sendProgress('posting', 'info', "Posting {$clipLabel} to social media...", $clipProgressBase + ($progressPerVideo * 0.12), $stats);
 
@@ -1120,18 +1133,6 @@ foreach ($videos as $index => $video) {
                 $postForMe = new PostForMeAPI($postformeApiKey);
                 
                 // Use actual social content from automation settings, fallback to taglines
-                $finalTitle = $socialTitle ?: ($topText ?: $segmentVideoName);
-                $finalDescription = $socialDescription ?: ($topText ?: 'Check this out!');
-                $finalHashtags = $socialHashtags ?: ['shorts', 'viral', 'trending'];
-                $hashtagStr = '#' . implode(' #', $finalHashtags);
-                
-                $socialContent = [
-                    'title' => $finalTitle,
-                    'description' => $finalDescription . ' ' . $hashtagStr,
-                    'hashtags' => array_map(fn($t) => '#' . $t, $finalHashtags),
-                    'tags' => $finalHashtags
-                ];
-
                 $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
                 $caption = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "\n\n" . $hashtagStr;
                 $fullDescription = ($socialContent['description'] ?? ($topText ?: $segmentVideoName)) . "\n\n" . $hashtagStr;
