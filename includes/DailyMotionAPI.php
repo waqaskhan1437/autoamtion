@@ -2,13 +2,14 @@
 /**
  * DailyMotion API Integration
  * Handles OAuth authentication and video posting to DailyMotion
- * Supports automatic token refresh using client_credentials or stored token
+ * Supports automatic token refresh using client_credentials or password grant
  */
 
 class DailyMotionAPI {
     private $apiKey;
     private $apiSecret;
     private $baseUrl = 'https://api.dailymotion.com';
+    private $partnerUrl = 'https://partner.api.dailymotion.com';
     private $pdo;
     private $cachedToken;
     private $tokenExpiry;
@@ -29,14 +30,15 @@ class DailyMotionAPI {
     }
     
     /**
-     * Get new access token using client_credentials grant
+     * Get new access token using client_credentials grant (Private API keys)
      */
-    private function getNewToken() {
+    private function getNewTokenClientCredentials() {
         if (empty($this->apiKey) || empty($this->apiSecret)) {
             return ['success' => false, 'error' => 'Missing API credentials'];
         }
         
-        $ch = curl_init($this->baseUrl . '/oauth/token');
+        // Use partner API endpoint for client_credentials
+        $ch = curl_init($this->partnerUrl . '/oauth/v1/token');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
@@ -74,7 +76,62 @@ class DailyMotionAPI {
         
         return [
             'success' => false,
-            'error' => $data['error_description'] ?? $data['error'] ?? 'Authentication failed',
+            'error' => $data['error_description'] ?? $data['error'] ?? 'Client credentials failed',
+            'details' => $data,
+            'http_code' => $httpCode
+        ];
+    }
+    
+    /**
+     * Get new access token using password grant (requires username/password)
+     */
+    public function getNewTokenPasswordGrant($username, $password) {
+        if (empty($this->apiKey) || empty($this->apiSecret) || empty($username) || empty($password)) {
+            return ['success' => false, 'error' => 'Missing credentials for password grant'];
+        }
+        
+        $ch = curl_init($this->baseUrl . '/oauth/token');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_POSTFIELDS => http_build_query([
+                'grant_type' => 'password',
+                'client_id' => $this->apiKey,
+                'client_secret' => $this->apiSecret,
+                'username' => $username,
+                'password' => $password,
+                'scope' => 'read write delete manage_videos'
+            ]),
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            return ['success' => false, 'error' => 'cURL error: ' . $error];
+        }
+        
+        $data = json_decode($response, true);
+        
+        if ($httpCode === 200 && isset($data['access_token'])) {
+            $this->cachedToken = $data['access_token'];
+            $this->tokenExpiry = time() + ($data['expires_in'] ?? 3600);
+            
+            return [
+                'success' => true,
+                'access_token' => $data['access_token'],
+                'refresh_token' => $data['refresh_token'] ?? null,
+                'expires_in' => $data['expires_in'] ?? 3600
+            ];
+        }
+        
+        return [
+            'success' => false,
+            'error' => $data['error_description'] ?? $data['error'] ?? 'Password grant failed',
             'details' => $data
         ];
     }
@@ -88,39 +145,30 @@ class DailyMotionAPI {
             return $this->cachedToken;
         }
         
-        // Try to get new token using client_credentials
-        $result = $this->getNewToken();
+        // Try client_credentials first (for private API keys)
+        $result = $this->getNewTokenClientCredentials();
         
         if ($result['success']) {
             return $result['access_token'];
         }
         
-        // If client_credentials fails, try to get from database (fallback)
+        // If client_credentials fails, try password grant if we have stored credentials
         if ($this->pdo) {
             try {
-                $stmt = $this->pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_access_token'");
-                $storedToken = $stmt->fetchColumn();
+                $stmt = $this->pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_username'");
+                $username = $stmt->fetchColumn();
                 
-                if ($storedToken) {
-                    // Verify token works
-                    $ch = curl_init($this->baseUrl . '/me?fields=id,username');
-                    curl_setopt_array($ch, [
-                        CURLOPT_RETURNTRANSFER => true,
-                        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $storedToken],
-                        CURLOPT_TIMEOUT => 10
-                    ]);
-                    curl_exec($ch);
-                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                    curl_close($ch);
-                    
-                    if ($httpCode === 200) {
-                        $this->cachedToken = $storedToken;
-                        $this->tokenExpiry = time() + 3600; // Assume 1 hour
-                        return $storedToken;
+                $stmt = $this->pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_password'");
+                $password = $stmt->fetchColumn();
+                
+                if ($username && $password) {
+                    $result = $this->getNewTokenPasswordGrant($username, $password);
+                    if ($result['success']) {
+                        return $result['access_token'];
                     }
                 }
             } catch (Exception $e) {
-                error_log("Error getting stored token: " . $e->getMessage());
+                error_log("Error getting stored credentials: " . $e->getMessage());
             }
         }
         
@@ -197,7 +245,7 @@ class DailyMotionAPI {
             return ['success' => false, 'error' => 'No upload URL returned from DailyMotion'];
         }
         
-        // Upload using POST with file contents - more reliable than PUT
+        // Upload using POST with file contents
         $fileContent = file_get_contents($videoPath);
         if ($fileContent === false) {
             return ['success' => false, 'error' => 'Failed to read video file'];
@@ -215,7 +263,7 @@ class DailyMotionAPI {
                 'Accept: application/json'
             ],
             CURLOPT_TIMEOUT => 3600,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1 // Force HTTP/1.1 to avoid HTTP/2 issues
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1
         ]);
         
         $uploadResponse = curl_exec($ch);
@@ -275,20 +323,21 @@ class DailyMotionAPI {
     }
     
     /**
-     * Test authentication with API Key and Secret
+     * Test authentication - tries both methods
      */
     public function testCredentials($apiKey, $apiSecret) {
-        $oldKey = $this->apiKey;
-        $oldSecret = $this->apiSecret;
-        
+        // Store temporarily
         $this->apiKey = $apiKey;
         $this->apiSecret = $apiSecret;
         
-        $result = $this->getNewToken();
+        // Try client_credentials first
+        $result = $this->getNewTokenClientCredentials();
         
-        $this->apiKey = $oldKey;
-        $this->apiSecret = $oldSecret;
+        if ($result['success']) {
+            return $result;
+        }
         
+        // Return failure info
         return $result;
     }
 }
