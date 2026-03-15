@@ -943,6 +943,24 @@ foreach ($videos as $index => $video) {
     $topTaglines = array_filter(array_map('trim', explode("\n", $topTaglinesJson)));
     $bottomTaglines = array_filter(array_map('trim', explode("\n", $bottomTaglinesJson)));
     
+    // Load social content (title, description, hashtags) from automation settings
+    $socialTitlesJson = $automation['social_titles_json'] ?? '';
+    $socialDescriptionsJson = $automation['social_descriptions_json'] ?? '';
+    $socialHashtagsJson = $automation['social_hashtags_json'] ?? '';
+    $socialRotationMode = $automation['social_rotation_mode'] ?? 'sequential';
+    $currentSocialIndex = (int)($automation['current_social_index'] ?? 0);
+    
+    // Parse social content arrays
+    $socialTitles = array_filter(array_map('trim', explode("\n", $socialTitlesJson)));
+    $socialDescriptions = array_filter(array_map('trim', explode("\n", $socialDescriptionsJson)));
+    $socialHashtags = array_filter(array_map('trim', explode("\n", $socialHashtagsJson)));
+    
+    $socialTitleCount = count($socialTitles);
+    $socialDescCount = count($socialDescriptions);
+    $socialTagCount = count($socialHashtags);
+    
+    sendProgress('social_content', 'info', "Social Content: Titles({$socialTitleCount}) Descriptions({$socialDescCount}) Hashtags({$socialTagCount})", $currentProgress + ($progressPerVideo * 0.38), $stats);
+    
     $topCount = count($topTaglines);
     $bottomCount = count($bottomTaglines);
     
@@ -984,6 +1002,13 @@ foreach ($videos as $index => $video) {
             $newIndex = ($currentIndex + 1) % $maxCount;
             $pdo->prepare("UPDATE automation_settings SET current_tagline_index = ? WHERE id = ?")
                 ->execute([$newIndex, $automationId]);
+            
+            // Update social content index for next video
+            if ($socialRotationMode !== 'random' && ($socialTitleCount > 0 || $socialDescCount > 0 || $socialTagCount > 0)) {
+                $newSocialIndex = ($currentSocialIndex + 1) % max(1, max($socialTitleCount, $socialDescCount, $socialTagCount));
+                $pdo->prepare("UPDATE automation_settings SET current_social_index = ? WHERE id = ?")
+                    ->execute([$newSocialIndex, $automationId]);
+            }
         }
         
         $topText = $topTaglines[$topIndex] ?? '';
@@ -1070,20 +1095,41 @@ foreach ($videos as $index => $video) {
             $stmt->execute([$automationId, 'video_processed', 'success', "Output: " . basename($outputPath), $segmentVideoName]);
         } catch (Exception $e) {}
 
+        // Get social content for this video based on rotation
+        $socialTitle = '';
+        $socialDescription = '';
+        $socialHashtags = [];
+        
+        if ($socialRotationMode === 'random' && ($socialTitleCount > 0 || $socialDescCount > 0 || $socialTagCount > 0)) {
+            $socialTitle = $socialTitles[array_rand($socialTitles)] ?? '';
+            $socialDescription = $socialDescriptions[array_rand($socialDescriptions)] ?? '';
+            $randomTags = $socialHashtags[array_rand($socialHashtags)] ?? '';
+            $socialHashtags = array_filter(array_map('trim', explode(' ', $randomTags)));
+        } else {
+            $socialIndex = $currentSocialIndex % max(1, max($socialTitleCount, $socialDescCount, $socialTagCount));
+            $socialTitle = $socialTitles[$socialIndex] ?? '';
+            $socialDescription = $socialDescriptions[$socialIndex] ?? '';
+            $tagLine = $socialHashtags[$socialIndex % max(1, $socialTagCount)] ?? '';
+            $socialHashtags = array_filter(array_map('trim', explode(' ', $tagLine)));
+        }
+        
         if ($willPost) {
             sendProgress('posting', 'info', "Posting {$clipLabel} to social media...", $clipProgressBase + ($progressPerVideo * 0.12), $stats);
 
             try {
                 $postForMe = new PostForMeAPI($postformeApiKey);
-                $caption = $topText ?: $segmentVideoName;
-                $platformOverrides = [];
-
-                // Generate social content for posting
+                
+                // Use actual social content from automation settings, fallback to taglines
+                $finalTitle = $socialTitle ?: ($topText ?: $segmentVideoName);
+                $finalDescription = $socialDescription ?: ($topText ?: 'Check this out!');
+                $finalHashtags = $socialHashtags ?: ['shorts', 'viral', 'trending'];
+                $hashtagStr = '#' . implode(' #', $finalHashtags);
+                
                 $socialContent = [
-                    'title' => $topText ?: $segmentVideoName,
-                    'description' => ($topText ?: 'Check this out!') . ' #shorts #viral #trending',
-                    'hashtags' => ['#shorts', '#viral', '#trending', '#fyp'],
-                    'tags' => ['shorts', 'viral', 'trending']
+                    'title' => $finalTitle,
+                    'description' => $finalDescription . ' ' . $hashtagStr,
+                    'hashtags' => array_map(fn($t) => '#' . $t, $finalHashtags),
+                    'tags' => $finalHashtags
                 ];
 
                 $hashtagStr = implode(' ', $socialContent['hashtags'] ?? []);
@@ -1585,13 +1631,10 @@ foreach ($videos as $index => $video) {
                     $dmAPI = new DailyMotionAPI($dmApiKey, $dmApiSecret);
                     $dmAPI->setPDO($pdo);
                     
-                    $dmTitle = $title ?? basename($segmentVideoName, '.mp4');
-                    $dmDescription = $caption ?? '';
-                    $dmTags = [];
-                    if (!empty($hashtags)) {
-                        preg_match_all('/#(\w+)/', $hashtags, $matches);
-                        $dmTags = $matches[1] ?? [];
-                    }
+                    // Use actual social content from automation settings
+                    $dmTitle = $finalTitle ?? $segmentVideoName;
+                    $dmDescription = $socialContent['description'] ?? ($topText ?: '');
+                    $dmTags = $socialContent['tags'] ?? [];
                     
                     sendProgress('dailymotion', 'info', "Posting to DailyMotion: {$dmTitle}", $clipProgressBase + ($progressPerVideo * 0.19), $stats);
                     
