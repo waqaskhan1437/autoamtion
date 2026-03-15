@@ -316,12 +316,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // When disabling, clear next_run_at
             $stmt = $pdo->prepare("UPDATE automation_settings SET enabled = ?, status = ?, next_run_at = NULL WHERE id = ?");
-            $stmt->execute([$newStatus, $statusText, $_POST['id']]);
+        $stmt->execute([$newStatus, $statusText, $_POST['id']]);
         }
         
+        // Redirect after processing
         header('Location: automation.php?msg=toggled');
         exit;
-        // Run database migrations for new columns
+    }
+    
+    // Save/Update automation - run migrations first
+    if ($action === 'save') {
         try {
             $existingColumns = [];
             try {
@@ -348,6 +352,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             if (!in_array('last_bottom_index', $existingColumns)) {
                 $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1");
+            }
+            // DailyMotion columns migration
+            if (!in_array('dailymotion_enabled', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+            }
+            if (!in_array('dailymotion_api_key', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
+            }
+            if (!in_array('dailymotion_api_secret', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_secret VARCHAR(255)");
+            }
+            if (!in_array('dailymotion_username', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_username VARCHAR(255)");
+            }
+            if (!in_array('dailymotion_password', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_password VARCHAR(255)");
+            }
+            if (!in_array('dailymotion_access_token', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_access_token TEXT");
             }
         } catch (Exception $e) {
             // Migration failed, continue anyway
@@ -619,6 +642,10 @@ $editAutomationFields = [
     'postforme_schedule_offset_minutes',
     'postforme_schedule_spread_minutes',
     'dailymotion_enabled',
+    'dailymotion_api_key',
+    'dailymotion_api_secret',
+    'dailymotion_username',
+    'dailymotion_password',
     'dailymotion_account_id',
     'rotation_enabled',
     'rotation_shuffle',
