@@ -97,7 +97,7 @@ try {
 
     $userCount = $pdo->query("SELECT COUNT(*) FROM app_users")->fetchColumn();
     if ($userCount == 0) {
-        $pdo->exec("INSERT INTO app_users (username, email, password_hash, role, created_at) VALUES ('runner', 'runner@local', '\$2y\$10\$placeholder', 'admin', NOW())");
+        $pdo->exec("INSERT INTO app_users (email, password_hash, display_name, role, status, can_use_github_runner, created_at) VALUES ('runner@local', '\$2y\$10\$placeholder', 'Runner User', 'admin', 'active', 1, NOW())");
     }
 
     $pdo->prepare("DELETE FROM settings WHERE setting_key NOT IN ('openai_api_key','ffmpeg_path','default_language')")->execute();
