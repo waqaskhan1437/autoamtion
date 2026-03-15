@@ -293,28 +293,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         header('Location: automation.php?msg=toggled');
         exit;
-    } elseif ($action === 'update') {
-        // Run database migration for new tagline columns if needed
+        // Run database migrations for new columns
         try {
-            $columnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'top_taglines_json'");
-            if ($columnsStmt->rowCount() === 0) {
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT AFTER short_aspect_ratio");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT AFTER top_taglines_json");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential' AFTER bottom_taglines_json");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0 AFTER tagline_rotation_mode");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1 AFTER current_tagline_index");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1 AFTER last_top_index");
+            $existingColumns = [];
+            try {
+                $colsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings");
+                $existingColumns = $colsStmt->fetchAll(PDO::FETCH_COLUMN);
+            } catch (Exception $e) {
+                // Table might not exist yet
             }
             
-            // Migration for DailyMotion columns
-            $dmColumnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'dailymotion_enabled'");
-            if ($dmColumnsStmt->rowCount() === 0) {
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_secret VARCHAR(255)");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_username VARCHAR(255)");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_password VARCHAR(255)");
-                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_access_token TEXT");
+            if (!in_array('top_taglines_json', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN top_taglines_json TEXT");
+            }
+            if (!in_array('bottom_taglines_json', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN bottom_taglines_json TEXT");
+            }
+            if (!in_array('tagline_rotation_mode', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN tagline_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential'");
+            }
+            if (!in_array('current_tagline_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_tagline_index INT DEFAULT 0");
+            }
+            if (!in_array('last_top_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1");
+            }
+            if (!in_array('last_bottom_index', $existingColumns)) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1");
             }
         } catch (Exception $e) {
             // Migration failed, continue anyway
