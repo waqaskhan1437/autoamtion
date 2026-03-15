@@ -688,6 +688,10 @@ function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) 
     
     $data = json_decode($response, true);
     $content = $data['choices'][0]['message']['content'] ?? '';
+
+    if (empty($content) && !empty($data['choices'][0]['message']['reasoning'])) {
+        $content = $data['choices'][0]['message']['reasoning'];
+    }
     
     $content = trim($content);
     $content = preg_replace('/^```json\s*/i', '', $content);
