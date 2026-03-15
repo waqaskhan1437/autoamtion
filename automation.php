@@ -3954,6 +3954,9 @@ function openEditModalById(automationId) {
         }
         return;
     }
+    console.log('Opening edit modal for automation:', automationId);
+    console.log('Automation data keys:', Object.keys(automationData));
+    console.log('Has dailymotion_enabled:', 'dailymotion_enabled' in automationData, 'value:', automationData.dailymotion_enabled);
     openEditModal(automationData);
 }
 
@@ -4012,7 +4015,9 @@ function openEditModal(automationData) {
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
     document.getElementById('edit_instagram_enabled').checked = automationData.instagram_enabled == 1;
     document.getElementById('edit_facebook_enabled').checked = automationData.facebook_enabled == 1;
+    console.log('DailyMotion value from automationData:', automationData.dailymotion_enabled, 'type:', typeof automationData.dailymotion_enabled);
     document.getElementById('edit_dailymotion_enabled').checked = (automationData.dailymotion_enabled ?? 0) == 1;
+    console.log('DailyMotion checkbox checked:', document.getElementById('edit_dailymotion_enabled').checked);
     document.getElementById('edit_postforme_schedule_mode').value = automationData.postforme_schedule_mode || 'immediate';
     
     // Handle PostForMe account selections
