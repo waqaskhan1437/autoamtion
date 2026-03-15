@@ -199,6 +199,24 @@ function publishEvent(
     }
 
     emitProgressMarker($marker);
+    
+    // Also print human-readable output to console for GitHub Actions logs
+    $statusIcon = match($eventStatus) {
+        'success' => '✅',
+        'error' => '❌',
+        'warning' => '⚠️',
+        default => 'ℹ️'
+    };
+    $statsStr = '';
+    if (!empty($stats)) {
+        $parts = [];
+        foreach ($stats as $k => $v) {
+            if ($v > 0) $parts[] = "{$k}:{$v}";
+        }
+        if (!empty($parts)) $statsStr = ' [' . implode(', ', $parts) . ']';
+    }
+    echo "{$statusIcon} [{$step}] {$message}{$statsStr}\n";
+    
     sendRunnerCallback(
         $callbackUrl,
         $callbackSecret,

@@ -1462,11 +1462,7 @@ class AutomationRunner {
             }
 
             $scheduledAt = $this->computeScheduleDate();
-            if ($scheduledAt) {
-                $options['scheduled_at'] = $scheduledAt;
-                $this->log('postforme_schedule', 'info', "Post scheduled for: {$scheduledAt}", $videoId, 'postforme');
-            }
-
+            
             $facebookAccounts = [];
             $postForMeAccountIds = $accountIds;
             $postForMeAccounts = [];
@@ -1489,19 +1485,12 @@ class AutomationRunner {
                     }
                 }
 
-                if (!empty($facebookAccounts) && !$scheduledAt) {
+                // Facebook ALWAYS uses direct publishing (ignores schedule for immediate posting)
+                if (!empty($facebookAccounts)) {
                     $this->log(
                         'facebook_direct',
                         'info',
                         'Using direct Meta Reels publishing for ' . count($facebookAccounts) . ' Facebook account(s).',
-                        $videoId,
-                        'facebook'
-                    );
-                } elseif (!empty($facebookAccounts) && $scheduledAt) {
-                    $this->log(
-                        'facebook_direct',
-                        'info',
-                        'Facebook accounts will use local scheduled publishing at the scheduled time.',
                         $videoId,
                         'facebook'
                     );
@@ -1514,6 +1503,12 @@ class AutomationRunner {
                     $videoId,
                     'facebook'
                 );
+            }
+
+            // PostForMe uses scheduled time if set (Facebook is handled separately above)
+            if ($scheduledAt) {
+                $options['scheduled_at'] = $scheduledAt;
+                $this->log('postforme_schedule', 'info', "Post scheduled for: {$scheduledAt}", $videoId, 'postforme');
             }
 
             $resolvedCaption = PostForMeCaptionResolver::resolvePrimaryCaption(
