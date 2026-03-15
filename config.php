@@ -269,6 +269,26 @@ try {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN owner_user_id INT NULL");
         }
 
+        // Add DailyMotion integration columns
+        if (!in_array('dailymotion_enabled', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+        }
+        if (!in_array('dailymotion_api_key', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_api_secret', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_secret VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_username', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_username VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_password', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_password VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_access_token', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_access_token TEXT");
+        }
+
         // Ensure schedule_type supports minutes testing mode
         try {
             $pdo->exec("ALTER TABLE automation_settings MODIFY COLUMN schedule_type ENUM('minutes', 'hourly', 'daily', 'weekly') DEFAULT 'daily'");
@@ -303,12 +323,12 @@ try {
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS used_taglines (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                tagline_text VARCHAR(1000) NOT NULL,
+                tagline_text VARCHAR(255) NOT NULL,
                 tagline_type ENUM('top', 'bottom') NOT NULL,
                 automation_id INT,
-                video_identifier VARCHAR(500),
+                video_identifier VARCHAR(255),
                 used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_tagline (tagline_text(500))
+                UNIQUE KEY unique_tagline (tagline_text(150))
             )
         ");
 
@@ -316,11 +336,11 @@ try {
             CREATE TABLE IF NOT EXISTS used_social_content (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 content_type ENUM('title', 'description', 'hashtag') NOT NULL,
-                content_text VARCHAR(2000) NOT NULL,
+                content_text VARCHAR(500) NOT NULL,
                 automation_id INT,
-                video_identifier VARCHAR(500),
+                video_identifier VARCHAR(255),
                 used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_social_content (content_text(1000))
+                UNIQUE KEY unique_social_content (content_text(200))
             )
         ");
 
@@ -536,6 +556,14 @@ try {
             try {
                 $pdo->exec("ALTER TABLE postforme_posts MODIFY COLUMN status VARCHAR(50) DEFAULT 'pending'");
             } catch (Exception $e) {}
+        } catch (Exception $e) {}
+        
+        // Fix existing tables with VARCHAR(500) that cause key length errors
+        try {
+            $pdo->exec("ALTER TABLE processed_videos MODIFY COLUMN video_identifier VARCHAR(255) NOT NULL");
+        } catch (Exception $e) {}
+        try {
+            $pdo->exec("ALTER TABLE processed_videos MODIFY COLUMN video_filename VARCHAR(255)");
         } catch (Exception $e) {}
     }
     
