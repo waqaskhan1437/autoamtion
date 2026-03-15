@@ -2792,8 +2792,8 @@ refreshOutputVideoCount();
                         <span class="ml-auto text-xs text-gray-500">Requires Meta App</span>
                     </label>
                     
-                    <label class="flex items-center gap-3 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
-                        <input type="checkbox" name="dailymotion_enabled" id="edit_dailymotion_enabled" class="w-4 h-4">
+                    <label class="flex items-center gap-3 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100 hidden">
+                        <input type="checkbox" name="dailymotion_enabled_legacy" id="edit_dailymotion_enabled_legacy" class="w-4 h-4">
                         <svg class="w-5 h-5 text-indigo-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
                         <span>DailyMotion</span>
                         <span class="ml-auto text-xs text-gray-500">API Key Required</span>
