@@ -747,48 +747,195 @@ class AutomationRunner {
         if ($topCount > 0 || $bottomCount > 0) {
             $maxCount = max($topCount, $bottomCount, 1);
             
+            $usedTopTaglines = [];
+            $usedBottomTaglines = [];
+            
+            $usedStmt = $this->pdo->query("SELECT tagline_text, tagline_type FROM used_taglines");
+            while ($row = $usedStmt->fetch(PDO::FETCH_ASSOC)) {
+                if ($row['tagline_type'] === 'top') {
+                    $usedTopTaglines[] = $row['tagline_text'];
+                } else {
+                    $usedBottomTaglines[] = $row['tagline_text'];
+                }
+            }
+            
+            $availableTopTaglines = array_values(array_diff($topTaglines, $usedTopTaglines));
+            $availableBottomTaglines = array_values(array_diff($bottomTaglines, $usedBottomTaglines));
+            
+            $availableTopCount = count($availableTopTaglines);
+            $availableBottomCount = count($availableBottomTaglines);
+            
+            if ($availableTopCount === 0 && $availableBottomCount === 0) {
+                $this->log('custom_tagline', 'warning', "All taglines have been used! Resetting for reuse.");
+                $this->pdo->exec("DELETE FROM used_taglines");
+                $availableTopTaglines = $topTaglines;
+                $availableBottomTaglines = $bottomTaglines;
+                $availableTopCount = count($availableTopTaglines);
+                $availableBottomCount = count($availableBottomTaglines);
+            }
+            
             if ($rotationMode === 'random') {
-                // Random with NO DUPLICATION - avoid picking same as last time
                 $lastTopIndex = (int)($this->automation['last_top_index'] ?? -1);
                 $lastBottomIndex = (int)($this->automation['last_bottom_index'] ?? -1);
                 
-                if ($topCount > 1) {
+                if ($availableTopCount > 1) {
                     do {
-                        $topIndex = array_rand($topTaglines);
-                    } while ($topIndex === $lastTopIndex && $topCount > 1);
-                } else {
+                        $topIndex = array_rand($availableTopTaglines);
+                    } while ($topIndex === $lastTopIndex && $availableTopCount > 1);
+                } elseif ($availableTopCount === 1) {
                     $topIndex = 0;
-                }
-                
-                if ($bottomCount > 1) {
-                    do {
-                        $bottomIndex = array_rand($bottomTaglines);
-                    } while ($bottomIndex === $lastBottomIndex && $bottomCount > 1);
                 } else {
-                    $bottomIndex = 0;
+                    $topIndex = -1;
                 }
                 
-                // Save last indices to avoid duplicate next time
-                $this->pdo->prepare("UPDATE automation_settings SET last_top_index = ?, last_bottom_index = ? WHERE id = ?")
-                    ->execute([$topIndex, $bottomIndex, $this->automationId]);
-            } else {
-                // Sequential - use current index, then increment
-                $topIndex = $currentIndex % max($topCount, 1);
-                $bottomIndex = $currentIndex % max($bottomCount, 1);
+                if ($availableBottomCount > 1) {
+                    do {
+                        $bottomIndex = array_rand($availableBottomTaglines);
+                    } while ($bottomIndex === $lastBottomIndex && $availableBottomCount > 1);
+                } elseif ($availableBottomCount === 1) {
+                    $bottomIndex = 0;
+                } else {
+                    $bottomIndex = -1;
+                }
                 
-                // Update index for next video (increment, wrap at max)
+                if ($topIndex >= 0) {
+                    $this->pdo->prepare("UPDATE automation_settings SET last_top_index = ? WHERE id = ?")
+                        ->execute([$topIndex, $this->automationId]);
+                }
+                if ($bottomIndex >= 0) {
+                    $this->pdo->prepare("UPDATE automation_settings SET last_bottom_index = ? WHERE id = ?")
+                        ->execute([$bottomIndex, $this->automationId]);
+                }
+            } else {
+                $topIndex = $currentIndex % max($availableTopCount, 1);
+                $bottomIndex = $currentIndex % max($availableBottomCount, 1);
+                
                 $newIndex = ($currentIndex + 1) % $maxCount;
                 $this->pdo->prepare("UPDATE automation_settings SET current_tagline_index = ? WHERE id = ?")
                     ->execute([$newIndex, $this->automationId]);
             }
             
-            $topText = $topTaglines[$topIndex] ?? '';
-            $bottomText = $bottomTaglines[$bottomIndex] ?? '';
+            $topText = $topIndex >= 0 && isset($availableTopTaglines[$topIndex]) ? $availableTopTaglines[$topIndex] : '';
+            $bottomText = $bottomIndex >= 0 && isset($availableBottomTaglines[$bottomIndex]) ? $availableBottomTaglines[$bottomIndex] : '';
             
-            $this->log('custom_tagline', 'success', "Tagline [{$rotationMode}]: Top#{$topIndex}='{$topText}' Bottom#{$bottomIndex}='{$bottomText}'");
+            if (!empty($topText)) {
+                try {
+                    $this->pdo->prepare("INSERT IGNORE INTO used_taglines (tagline_text, tagline_type, automation_id, video_identifier) VALUES (?, 'top', ?, ?)")
+                        ->execute([$topText, $this->automationId, $videoId]);
+                } catch (Exception $e) {
+                    $this->log('tagline_track', 'warning', "Could not track top tagline: " . $e->getMessage());
+                }
+            }
+            
+            if (!empty($bottomText)) {
+                try {
+                    $this->pdo->prepare("INSERT IGNORE INTO used_taglines (tagline_text, tagline_type, automation_id, video_identifier) VALUES (?, 'bottom', ?, ?)")
+                        ->execute([$bottomText, $this->automationId, $videoId]);
+                } catch (Exception $e) {
+                    $this->log('tagline_track', 'warning', "Could not track bottom tagline: " . $e->getMessage());
+                }
+            }
+            
+            $this->log('custom_tagline', 'success', "Tagline [{$rotationMode}]: Top#{$topIndex}='{$topText}' Bottom#{$bottomIndex}='{$bottomText}' (Available: {$availableTopCount} top, {$availableBottomCount} bottom)");
         } else {
             // NO FALLBACK - if no taglines set, use empty
             $this->log('custom_tagline', 'info', "No custom taglines configured - using empty");
+        }
+
+        // Social Media Content (Titles, Descriptions, Hashtags)
+        $socialTitlesJson = $this->automation['social_titles_json'] ?? '';
+        $socialDescriptionsJson = $this->automation['social_descriptions_json'] ?? '';
+        $socialHashtagsJson = $this->automation['social_hashtags_json'] ?? '';
+        $socialRotationMode = $this->automation['social_rotation_mode'] ?? 'sequential';
+        $currentSocialIndex = (int)($this->automation['current_social_index'] ?? 0);
+        
+        $socialTitles = array_filter(array_map('trim', explode("\n", $socialTitlesJson)));
+        $socialDescriptions = array_filter(array_map('trim', explode("\n", $socialDescriptionsJson)));
+        $socialHashtags = array_filter(array_map('trim', explode("\n", $socialHashtagsJson)));
+        
+        $titleCount = count($socialTitles);
+        $descCount = count($socialDescriptions);
+        $hashCount = count($socialHashtags);
+        
+        $this->log('social_content_debug', 'info', "Social Content: Titles({$titleCount}) Descriptions({$descCount}) Hashtags({$hashCount}) Mode: {$socialRotationMode}");
+        
+        if ($titleCount > 0 || $descCount > 0 || $hashCount > 0) {
+            $usedStmt = $this->pdo->prepare("SELECT content_text, content_type FROM used_social_content WHERE automation_id = ?");
+            $usedStmt->execute([$this->automationId]);
+            $usedTitles = [];
+            $usedDescriptions = [];
+            $usedHashtags = [];
+            while ($row = $usedStmt->fetch(PDO::FETCH_ASSOC)) {
+                if ($row['content_type'] === 'title') $usedTitles[] = $row['content_text'];
+                elseif ($row['content_type'] === 'description') $usedDescriptions[] = $row['content_text'];
+                elseif ($row['content_type'] === 'hashtag') $usedHashtags[] = $row['content_text'];
+            }
+            
+            $availableTitles = array_values(array_diff($socialTitles, $usedTitles));
+            $availableDescriptions = array_values(array_diff($socialDescriptions, $usedDescriptions));
+            $availableHashtags = array_values(array_diff($socialHashtags, $usedHashtags));
+            
+            $availTitleCount = count($availableTitles);
+            $availDescCount = count($availableDescriptions);
+            $availHashCount = count($availableHashtags);
+            
+            if ($availTitleCount === 0 && $availDescCount === 0 && $availHashCount === 0) {
+                $this->log('social_content', 'warning', "All social content used! Resetting for reuse.");
+                $this->pdo->prepare("DELETE FROM used_social_content WHERE automation_id = ?")->execute([$this->automationId]);
+                $availableTitles = $socialTitles;
+                $availableDescriptions = $socialDescriptions;
+                $availableHashtags = $socialHashtags;
+                $availTitleCount = count($availableTitles);
+                $availDescCount = count($availableDescriptions);
+                $availHashCount = count($availableHashtags);
+            }
+            
+            if ($socialRotationMode === 'random') {
+                $titleIndex = $availTitleCount > 0 ? array_rand($availableTitles) : -1;
+                $descIndex = $availDescCount > 0 ? array_rand($availableDescriptions) : -1;
+                $hashIndex = $availHashCount > 0 ? array_rand($availableHashtags) : -1;
+            } else {
+                $titleIndex = $availTitleCount > 0 ? $currentSocialIndex % $availTitleCount : -1;
+                $descIndex = $availDescCount > 0 ? $currentSocialIndex % $availDescCount : -1;
+                $hashIndex = $availHashCount > 0 ? $currentSocialIndex % $availHashCount : -1;
+                $newSocialIndex = ($currentSocialIndex + 1);
+                $this->pdo->prepare("UPDATE automation_settings SET current_social_index = ? WHERE id = ?")
+                    ->execute([$newSocialIndex, $this->automationId]);
+            }
+            
+            $selectedTitle = $titleIndex >= 0 && isset($availableTitles[$titleIndex]) ? $availableTitles[$titleIndex] : '';
+            $selectedDescription = $descIndex >= 0 && isset($availableDescriptions[$descIndex]) ? $availableDescriptions[$descIndex] : '';
+            $selectedHashtag = $hashIndex >= 0 && isset($availableHashtags[$hashIndex]) ? $availableHashtags[$hashIndex] : '';
+            
+            if (!empty($selectedTitle)) {
+                try {
+                    $this->pdo->prepare("INSERT IGNORE INTO used_social_content (content_type, content_text, automation_id, video_identifier) VALUES ('title', ?, ?, ?)")
+                        ->execute([$selectedTitle, $this->automationId, $videoId]);
+                } catch (Exception $e) {}
+            }
+            if (!empty($selectedDescription)) {
+                try {
+                    $this->pdo->prepare("INSERT IGNORE INTO used_social_content (content_type, content_text, automation_id, video_identifier) VALUES ('description', ?, ?, ?)")
+                        ->execute([$selectedDescription, $this->automationId, $videoId]);
+                } catch (Exception $e) {}
+            }
+            if (!empty($selectedHashtag)) {
+                try {
+                    $this->pdo->prepare("INSERT IGNORE INTO used_social_content (content_type, content_text, automation_id, video_identifier) VALUES ('hashtag', ?, ?, ?)")
+                        ->execute([$selectedHashtag, $this->automationId, $videoId]);
+                } catch (Exception $e) {}
+            }
+            
+            $socialContent = [
+                'title' => $selectedTitle,
+                'description' => $selectedDescription,
+                'hashtags' => $selectedHashtag
+            ];
+            
+            $this->log('social_content', 'success', "Social Content [{$socialRotationMode}]: Title='{$selectedTitle}' Desc='{$selectedDescription}' Hashtag='{$selectedHashtag}'");
+        } else {
+            $socialContent = [];
+            $this->log('social_content', 'info', "No custom social content configured");
         }
 
         // Log final tagline values
@@ -1229,7 +1376,7 @@ class AutomationRunner {
 
 
 
-            if (!empty($socialContent['success'])) {
+            if (!empty($socialContent['title']) || !empty($socialContent['description']) || !empty($socialContent['hashtags'])) {
                 $platformOverrides = is_array($options['platform_overrides'] ?? null)
                     ? $options['platform_overrides']
                     : [];
@@ -1237,17 +1384,23 @@ class AutomationRunner {
                 $platformOverrides = $this->mergeAiSocialContentIntoPlatformOverrides($platformOverrides, $socialContent);
                 $options['platform_overrides'] = $platformOverrides;
 
+                $hashtagStr = '';
+                if (!empty($socialContent['hashtags']) && is_array($socialContent['hashtags'])) {
+                    $hashtagStr = "\n\n" . implode(' ', $socialContent['hashtags']);
+                } elseif (!empty($socialContent['hashtags'])) {
+                    $hashtagStr = "\n\n" . $socialContent['hashtags'];
+                }
+
                 if (!empty($socialContent['description'])) {
-                    $postCaption = (string)$socialContent['description'];
-                    if (!empty($socialContent['hashtags']) && is_array($socialContent['hashtags'])) {
-                        $postCaption .= "\n\n" . implode(' ', $socialContent['hashtags']);
-                    }
+                    $postCaption = (string)$socialContent['description'] . $hashtagStr;
+                } elseif (!empty($hashtagStr)) {
+                    $postCaption = $postCaption . $hashtagStr;
                 }
 
                 $this->log(
                     'ai_social_content',
                     'success',
-                    'AI social content prepared for unique title/description generation',
+                    'AI social content prepared: Title=' . ($socialContent['title'] ?? '') . ' Desc length=' . strlen($socialContent['description'] ?? '') . ' Hashtags=' . ($socialContent['hashtags'] ?? ''),
                     $videoId,
                     'postforme'
                 );
@@ -1368,6 +1521,43 @@ class AutomationRunner {
             ];
 
             try {
+                // Show video size info
+                $videoSizeMb = is_file($videoPath) ? round(filesize($videoPath) / 1024 / 1024, 1) : 0;
+                $this->log(
+                    'postforme_info',
+                    'info',
+                    "Preparing video for upload ({$videoSizeMb}MB)... ",
+                    $videoId,
+                    'postforme'
+                );
+
+                // Check if Facebook is in accounts - if so, we need to transcode
+                $needsTranscode = false;
+                if (!empty($postForMeAccountIds)) {
+                    try {
+                        $accountsResult = $postForMe->getAccounts();
+                        if (!empty($accountsResult['success']) && !empty($accountsResult['accounts'])) {
+                            $selectedAccountIds = array_flip($postForMeAccountIds);
+                            foreach ($accountsResult['accounts'] as $acc) {
+                                if (isset($selectedAccountIds[$acc['id'] ?? '']) && ($acc['platform'] ?? '') === 'facebook') {
+                                    $needsTranscode = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception $e) {}
+                }
+
+                if ($needsTranscode) {
+                    $this->log(
+                        'postforme_info',
+                        'info',
+                        "Converting video for Facebook (this may take a moment)... ",
+                        $videoId,
+                        'postforme'
+                    );
+                }
+
                 $preparedVideo = FacebookSafeVideoHelper::prepareVideoForAccounts($postForMe, (string)$videoPath, $accountIds, $this->pdo);
                 if (empty($preparedVideo['success'])) {
                     throw new Exception((string) ($preparedVideo['error'] ?? 'Unable to prepare upload video'));
@@ -1380,7 +1570,7 @@ class AutomationRunner {
                     $this->log(
                         'postforme_info',
                         'info',
-                        'Prepared Facebook-safe upload copy for ' . $platformSummary . ': ' . basename($safePath) . " ({$safeSizeMb}MB)",
+                        'Prepared Facebook-safe copy for ' . $platformSummary . ': ' . basename($safePath) . " ({$safeSizeMb}MB)",
                         $videoId,
                         'postforme'
                     );
@@ -1390,7 +1580,19 @@ class AutomationRunner {
                 $countedAsScheduled = false;
 
                 if (!empty($postForMeAccountIds)) {
-                    $result = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $videoPath), $postCaption, $postForMeAccountIds, $options);
+                    // Show upload start
+                    $uploadPath = (string) ($preparedVideo['path'] ?? $videoPath);
+                    $uploadSizeMb = is_file($uploadPath) ? round(filesize($uploadPath) / 1024 / 1024, 1) : 0;
+                    $accountCount = count($postForMeAccountIds);
+                    $this->log(
+                        'postforme_info',
+                        'info',
+                        "Uploading video ({$uploadSizeMb}MB) to {$accountCount} account(s)... ",
+                        $videoId,
+                        'postforme'
+                    );
+
+                    $result = $postForMe->postVideo($uploadPath, $postCaption, $postForMeAccountIds, $options);
 
                     $safeResult = $this->redactSensitiveData($result);
                     $this->log('postforme_debug', 'info', 'API Response: ' . json_encode($safeResult), $videoId, 'postforme');

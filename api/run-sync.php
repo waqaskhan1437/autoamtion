@@ -1226,6 +1226,43 @@ foreach ($videos as $index => $video) {
                 ];
 
                 try {
+                    // Show file size info
+                    $videoSizeMb = is_file($outputPath) ? round(filesize($outputPath) / 1024 / 1024, 1) : 0;
+                    sendProgress(
+                        'posting',
+                        'info',
+                        "Preparing video for upload ({$videoSizeMb}MB)... ",
+                        $clipProgressBase + ($progressPerVideo * 0.12),
+                        $stats
+                    );
+
+                    // Check if Facebook is in the accounts - if so, we need to transcode
+                    $needsTranscode = false;
+                    if (!empty($pfAccounts)) {
+                        try {
+                            $accountsResult = $postForMe->getAccounts();
+                            if (!empty($accountsResult['success']) && !empty($accountsResult['accounts'])) {
+                                $selectedAccountIds = array_flip($pfAccounts);
+                                foreach ($accountsResult['accounts'] as $acc) {
+                                    if (isset($selectedAccountIds[$acc['id'] ?? '']) && ($acc['platform'] ?? '') === 'facebook') {
+                                        $needsTranscode = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (Exception $e) {}
+                    }
+
+                    if ($needsTranscode) {
+                        sendProgress(
+                            'posting',
+                            'info',
+                            "Converting video for Facebook (this may take a moment)... ",
+                            $clipProgressBase + ($progressPerVideo * 0.125),
+                            $stats
+                        );
+                    }
+
                     $preparedVideo = FacebookSafeVideoHelper::prepareVideoForAccounts($postForMe, $outputPath, $pfAccounts, $pdo);
                     if (empty($preparedVideo['success'])) {
                         throw new Exception((string) ($preparedVideo['error'] ?? 'Unable to prepare upload video'));
@@ -1238,8 +1275,8 @@ foreach ($videos as $index => $video) {
                         sendProgress(
                             'posting',
                             'info',
-                            "Prepared Facebook-safe upload copy for {$platformSummary}: " . basename($safePath) . " ({$safeSizeMb}MB)",
-                            $clipProgressBase + ($progressPerVideo * 0.14),
+                            "Prepared Facebook-safe copy for {$platformSummary}: " . basename($safePath) . " ({$safeSizeMb}MB)",
+                            $clipProgressBase + ($progressPerVideo * 0.135),
                             $stats
                         );
                     }
@@ -1248,8 +1285,29 @@ foreach ($videos as $index => $video) {
                     $countedAsScheduled = false;
 
                     if (!empty($postForMeAccountIds)) {
-                        $postResult = $postForMe->postVideo((string) ($preparedVideo['path'] ?? $outputPath), $caption, $postForMeAccountIds, $postOptions);
+                        // Show upload start message with file size
+                        $uploadPath = (string) ($preparedVideo['path'] ?? $outputPath);
+                        $uploadSizeMb = is_file($uploadPath) ? round(filesize($uploadPath) / 1024 / 1024, 1) : 0;
+                        $accountCount = count($postForMeAccountIds);
+                        sendProgress(
+                            'posting',
+                            'info',
+                            "Uploading video ({$uploadSizeMb}MB) to {$accountCount} account(s)... ",
+                            $clipProgressBase + ($progressPerVideo * 0.15),
+                            $stats
+                        );
+
+                        $postResult = $postForMe->postVideo($uploadPath, $caption, $postForMeAccountIds, $postOptions);
                         if ($postResult['success']) {
+                            // Upload complete - show success
+                            sendProgress(
+                                'posting',
+                                'info',
+                                "Video uploaded successfully! Processing...",
+                                $clipProgressBase + ($progressPerVideo * 0.16),
+                                $stats
+                            );
+
                             $postId = $postResult['post_id'] ?? 'unknown';
                             $dbScheduledAt = null;
                             if (!empty($scheduledAt)) {

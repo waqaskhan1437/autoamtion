@@ -7,13 +7,14 @@ $message = '';
 $messageType = 'success';
 
 // Get AI provider settings for display
-$aiSettings = $pdo->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('ai_provider', 'gemini_api_key', 'openai_api_key', 'openrouter_api_key')")->fetchAll(PDO::FETCH_KEY_PAIR);
+$aiSettings = $pdo->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('ai_provider', 'gemini_api_key', 'openai_api_key', 'openrouter_api_key', 'cohere_api_key')")->fetchAll(PDO::FETCH_KEY_PAIR);
 $hasGemini = !empty($aiSettings['gemini_api_key']);
 $hasOpenAI = !empty($aiSettings['openai_api_key']);
 $hasOpenRouter = !empty($aiSettings['openrouter_api_key']);
+$hasCohere = !empty($aiSettings['cohere_api_key']);
 $selectedProvider = $aiSettings['ai_provider'] ?? 'gemini';
-$activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : (($selectedProvider === 'openrouter' && $hasOpenRouter) ? 'OpenRouter (FREE)' : ($hasGemini ? 'Gemini (FREE)' : ($hasOpenRouter ? 'OpenRouter (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')))));
-$hasAnyAI = $hasGemini || $hasOpenAI || $hasOpenRouter;
+$activeAIProvider = ($selectedProvider === 'gemini' && $hasGemini) ? 'Gemini (FREE)' : (($selectedProvider === 'openai' && $hasOpenAI) ? 'OpenAI' : (($selectedProvider === 'openrouter' && $hasOpenRouter) ? 'OpenRouter (FREE)' : (($selectedProvider === 'cohere' && $hasCohere) ? 'Cohere' : ($hasGemini ? 'Gemini (FREE)' : ($hasCohere ? 'Cohere' : ($hasOpenRouter ? 'OpenRouter (FREE)' : ($hasOpenAI ? 'OpenAI' : 'Not Configured')))))));
+$hasAnyAI = $hasGemini || $hasOpenAI || $hasOpenRouter || $hasCohere;
 
 function normalizeManualVideoLinksInput($rawInput) {
     $raw = is_string($rawInput) ? $rawInput : (string)$rawInput;
@@ -204,6 +205,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'top_taglines_json' => $_POST['top_taglines_json'] ?? null,
             'bottom_taglines_json' => $_POST['bottom_taglines_json'] ?? null,
             'tagline_rotation_mode' => $_POST['tagline_rotation_mode'] ?? 'sequential',
+            'social_titles_json' => $_POST['social_titles_json'] ?? null,
+            'social_descriptions_json' => $_POST['social_descriptions_json'] ?? null,
+            'social_hashtags_json' => $_POST['social_hashtags_json'] ?? null,
+            'social_rotation_mode' => $_POST['social_rotation_mode'] ?? 'sequential',
             'branding_text_top' => $_POST['branding_text_top'] ?? null,
             'branding_text_bottom' => $_POST['branding_text_bottom'] ?? null,
             'whisper_enabled' => isset($_POST['whisper_enabled']) ? 1 : 0,
@@ -302,7 +307,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, top_taglines_json=?, bottom_taglines_json=?, tagline_rotation_mode=?, branding_text_top=?, branding_text_bottom=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, top_taglines_json=?, bottom_taglines_json=?, tagline_rotation_mode=?, social_titles_json=?, social_descriptions_json=?, social_hashtags_json=?, social_rotation_mode=?, branding_text_top=?, branding_text_bottom=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -355,6 +360,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['top_taglines_json'] ?? null,
             $_POST['bottom_taglines_json'] ?? null,
             $_POST['tagline_rotation_mode'] ?? 'sequential',
+            $_POST['social_titles_json'] ?? null,
+            $_POST['social_descriptions_json'] ?? null,
+            $_POST['social_hashtags_json'] ?? null,
+            $_POST['social_rotation_mode'] ?? 'sequential',
             $_POST['branding_text_top'] ?? null,
             $_POST['branding_text_bottom'] ?? null,
             isset($_POST['whisper_enabled']) ? 1 : 0,
@@ -562,6 +571,11 @@ $editAutomationFields = [
     'current_tagline_index',
     'last_top_index',
     'last_bottom_index',
+    'social_titles_json',
+    'social_descriptions_json',
+    'social_hashtags_json',
+    'social_rotation_mode',
+    'current_social_index',
 ];
 
 $editAutomationPayloads = [];
@@ -981,6 +995,7 @@ refreshOutputVideoCount();
                                 <span class="text-gray-400">Taglines:</span>
                                 <span class="text-xs bg-green-600 px-2 py-0.5 rounded"><?= strtoupper($taglineMode) ?></span>
                                 <span class="text-xs text-gray-500">Top: <?= count($topLines) ?> | Bottom: <?= count($bottomLines) ?></span>
+                                <button type="button" onclick="showUsedTaglines(<?= $automation['id'] ?>)" class="text-xs text-blue-400 hover:text-blue-300 ml-auto">View Used</button>
                             </div>
                             <?php if (!empty($topLines)): ?>
                                 <div class="text-green-400 text-xs">TOP: <?= htmlspecialchars(implode(', ', array_slice($topLines, 0, 3))) ?><?= count($topLines) > 3 ? '...' : '' ?></div>
@@ -1084,8 +1099,11 @@ refreshOutputVideoCount();
             <button type="button" onclick="showFormTab('taglines')" id="tab_taglines" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
                 3. Taglines
             </button>
+            <button type="button" onclick="showFormTab('social_content')" id="tab_social_content" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
+                4. Social Content
+            </button>
             <button type="button" onclick="showFormTab('social')" id="tab_social" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
-                4. Publish
+                5. Publish
             </button>
         </div>
         
@@ -1370,6 +1388,9 @@ refreshOutputVideoCount();
                             <?php if ($hasOpenRouter): ?>
                             <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
                             <?php endif; ?>
+                            <?php if ($hasCohere): ?>
+                            <option value="cohere|<?= htmlspecialchars($aiSettings['cohere_api_key'] ?? '') ?>">Cohere (Saved)</option>
+                            <?php endif; ?>
                             <?php if ($hasOpenAI): ?>
                             <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
                             <?php endif; ?>
@@ -1385,6 +1406,7 @@ refreshOutputVideoCount();
                             <select id="ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleAiProvider()">
                                 <option value="gemini">Google Gemini</option>
                                 <option value="openrouter">OpenRouter</option>
+                                <option value="cohere">Cohere</option>
                                 <option value="openai">OpenAI (GPT)</option>
                             </select>
                         </div>
@@ -1520,11 +1542,150 @@ refreshOutputVideoCount();
                 
                 <div class="flex gap-3">
                     <button type="button" onclick="showFormTab('video')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
+                    <button type="button" onclick="showFormTab('social_content')" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Next: Social Content →</button>
+                </div>
+            </div>
+            
+            <!-- Tab 4: Social Media Content (AI Generated Titles, Descriptions, Hashtags) -->
+            <div id="form_social_content" class="hidden p-4 space-y-4">
+                <h3 class="text-lg font-bold text-white mb-4">AI Social Media Content Generator</h3>
+                <p class="text-gray-400 text-sm mb-4">Generate unique titles, descriptions, and hashtags for your social media posts. All content is unique and tracked to avoid duplicates.</p>
+                
+                <!-- AI API Key Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">AI Provider</label>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <select name="social_ai_provider" id="social_ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleSocialAIModel()">
+                                <option value="gemini">Google Gemini</option>
+                                <option value="cohere">Cohere</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="openrouter">OpenRouter (Free)</option>
+                            </select>
+                        </div>
+                        <div id="social_gemini_model_section">
+                            <select name="social_ai_model" id="social_ai_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                            </select>
+                        </div>
+                        <div id="social_cohere_model_section" class="hidden">
+                            <select name="social_ai_model" id="social_cohere_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="command-a-03-2025">Command A (Latest)</option>
+                                <option value="command-a-02-2025">Command A 02</option>
+                                <option value="command-r-08-2025">Command R 08</option>
+                            </select>
+                        </div>
+                        <div>
+                            <div class="flex gap-2">
+                                <input type="password" id="social_ai_api_key" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="Enter API key">
+                                <button type="button" onclick="testSocialAiApiKey()" class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm whitespace-nowrap">Test</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <?php if ($hasGemini || $hasOpenAI || $hasOpenRouter || $hasCohere): ?>
+                    <div class="mt-2">
+                        <select id="social_ai_saved_keys" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="loadSocialSavedApiKey()">
+                            <option value="">-- Select Saved Key --</option>
+                            <?php if ($hasGemini): ?>
+                            <option value="gemini|<?= htmlspecialchars($aiSettings['gemini_api_key'] ?? '') ?>">Google Gemini (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenRouter): ?>
+                            <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasCohere): ?>
+                            <option value="cohere|<?= htmlspecialchars($aiSettings['cohere_api_key'] ?? '') ?>">Cohere (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenAI): ?>
+                            <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
+                            <?php endif; ?>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Select a saved key from Settings → AI</p>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <div id="social_ai_test_result" class="hidden mt-2 p-3 rounded-lg text-sm"></div>
+                </div>
+                
+                <!-- Topic for Content Generation -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Topic / Niche *</label>
+                    <input type="text" name="social_topic" id="social_topic" placeholder="e.g., Birthday wishes, Love quotes, Funny pranks, Festival greetings" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg">
+                    <p class="text-xs text-gray-500 mt-1">What kind of content do you want to generate?</p>
+                </div>
+                
+                <!-- Platform Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Target Platform</label>
+                    <select name="social_platform" id="social_platform" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                        <option value="youtube">YouTube</option>
+                        <option value="tiktok">TikTok</option>
+                        <option value="instagram">Instagram</option>
+                        <option value="facebook">Facebook</option>
+                        <option value="twitter">Twitter/X</option>
+                    </select>
+                </div>
+                
+                <!-- Number of Content Sets -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">How many content sets? (5-100)</label>
+                    <input type="number" name="social_count" id="social_count" value="10" min="5" max="100" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                    <p class="text-xs text-gray-500 mt-1">Each set includes 1 title + 1 description + 1 hashtags</p>
+                </div>
+                
+                <!-- Generate Button -->
+                <div class="mb-4">
+                    <button type="button" onclick="generateSocialContent()" class="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold rounded-lg">
+                        ✨ Generate Social Content (AI)
+                    </button>
+                    <div id="social_content_result" class="mt-2 text-center text-sm text-gray-400"></div>
+                </div>
+                
+                <!-- Generated Content Display -->
+                <div id="social_content_preview" class="hidden mt-4 p-4 bg-gray-800/50 rounded-lg">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-bold text-white">Generated Content:</span>
+                        <button type="button" onclick="addSocialContentToLists()" class="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded">Add All to Lists</button>
+                    </div>
+                    <div id="social_content_list" class="max-h-60 overflow-y-auto space-y-2"></div>
+                </div>
+                
+                <!-- Manual Entry Textareas -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Titles (one per line)</label>
+                        <textarea name="social_titles_json" id="social_titles_json" rows="6" placeholder="Title 1&#10;Title 2&#10;Title 3" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Max 60 chars each</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Descriptions (one per line)</label>
+                        <textarea name="social_descriptions_json" id="social_descriptions_json" rows="6" placeholder="Description 1&#10;Description 2&#10;Description 3" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Max 500 chars each</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Hashtags (one per line)</label>
+                        <textarea name="social_hashtags_json" id="social_hashtags_json" rows="6" placeholder="#hashtag1&#10;#hashtag2&#10;#hashtag3" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                        <p class="text-xs text-gray-500 mt-1">Max 500 chars each</p>
+                    </div>
+                </div>
+                
+                <!-- Rotation Mode -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Content Rotation</label>
+                    <select name="social_rotation_mode" id="social_rotation_mode" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                        <option value="sequential">Sequential (ek ek karke)</option>
+                        <option value="random">Random (b武汉dom)</option>
+                    </select>
+                </div>
+                
+                <div class="flex gap-3">
+                    <button type="button" onclick="showFormTab('taglines')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
                     <button type="button" onclick="showFormTab('social')" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Next: Publish →</button>
                 </div>
             </div>
             
-            <!-- Tab 4: Social Media -->
+            <!-- Tab 5: Social Media -->
             <div id="form_social" class="hidden p-4 space-y-4">
                 <p class="text-sm text-gray-400 mb-4">Select where to auto-publish shorts:</p>
                 
@@ -1724,8 +1885,11 @@ refreshOutputVideoCount();
             <button type="button" onclick="showEditFormTab('taglines')" id="edit_tab_taglines" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
                 3. Taglines
             </button>
+            <button type="button" onclick="showEditFormTab('social_content')" id="edit_tab_social_content" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
+                4. Social Content
+            </button>
             <button type="button" onclick="showEditFormTab('social')" id="edit_tab_social" class="flex-1 px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
-                4. Publish
+                5. Publish
             </button>
         </div>
         
@@ -2011,6 +2175,9 @@ refreshOutputVideoCount();
                             <?php if ($hasOpenRouter): ?>
                             <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
                             <?php endif; ?>
+                            <?php if ($hasCohere): ?>
+                            <option value="cohere|<?= htmlspecialchars($aiSettings['cohere_api_key'] ?? '') ?>">Cohere (Saved)</option>
+                            <?php endif; ?>
                             <?php if ($hasOpenAI): ?>
                             <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
                             <?php endif; ?>
@@ -2025,6 +2192,7 @@ refreshOutputVideoCount();
                             <select id="edit_ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleEditAiProvider()">
                                 <option value="gemini">Google Gemini</option>
                                 <option value="openrouter">OpenRouter</option>
+                                <option value="cohere">Cohere</option>
                                 <option value="openai">OpenAI (GPT)</option>
                             </select>
                         </div>
@@ -2157,11 +2325,140 @@ refreshOutputVideoCount();
                 
                 <div class="flex gap-3">
                     <button type="button" onclick="showEditFormTab('video')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
+                    <button type="button" onclick="showEditFormTab('social_content')" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Next: Social Content →</button>
+                </div>
+            </div>
+            
+            <!-- Tab 4: Social Media Content (AI Generated Titles, Descriptions, Hashtags) -->
+            <div id="edit_form_social_content" class="hidden p-4 space-y-4">
+                <h3 class="text-lg font-bold text-white mb-4">AI Social Media Content Generator</h3>
+                <p class="text-gray-400 text-sm mb-4">Generate unique titles, descriptions, and hashtags for your social media posts.</p>
+                
+                <!-- AI API Key Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">AI Provider</label>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <select name="social_ai_provider" id="edit_social_ai_provider" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="toggleEditSocialAIModel()">
+                                <option value="gemini">Google Gemini</option>
+                                <option value="cohere">Cohere</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="openrouter">OpenRouter (Free)</option>
+                            </select>
+                        </div>
+                        <div id="edit_social_gemini_model_section">
+                            <select name="social_ai_model" id="edit_social_ai_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                            </select>
+                        </div>
+                        <div id="edit_social_cohere_model_section" class="hidden">
+                            <select name="social_ai_model" id="edit_social_cohere_model" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                                <option value="command-a-03-2025">Command A (Latest)</option>
+                                <option value="command-a-02-2025">Command A 02</option>
+                                <option value="command-r-08-2025">Command R 08</option>
+                            </select>
+                        </div>
+                        <div>
+                            <div class="flex gap-2">
+                                <input type="password" id="edit_social_ai_api_key" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" placeholder="Enter API key">
+                                <button type="button" onclick="testEditSocialAiApiKey()" class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm whitespace-nowrap">Test</button>
+                            </div>
+                        </div>
+                    </div>
+                    <?php if ($hasGemini || $hasOpenAI || $hasOpenRouter): ?>
+                    <select id="edit_social_ai_saved_keys" class="w-full mt-2 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm" onchange="loadEditSocialSavedApiKey()">
+                        <option value="">-- Select Saved Key --</option>
+                            <?php if ($hasGemini): ?>
+                            <option value="gemini|<?= htmlspecialchars($aiSettings['gemini_api_key'] ?? '') ?>">Google Gemini (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenRouter): ?>
+                            <option value="openrouter|<?= htmlspecialchars($aiSettings['openrouter_api_key'] ?? '') ?>">OpenRouter (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasCohere): ?>
+                            <option value="cohere|<?= htmlspecialchars($aiSettings['cohere_api_key'] ?? '') ?>">Cohere (Saved)</option>
+                            <?php endif; ?>
+                            <?php if ($hasOpenAI): ?>
+                            <option value="openai|<?= htmlspecialchars($aiSettings['openai_api_key'] ?? '') ?>">OpenAI (Saved)</option>
+                            <?php endif; ?>
+                        </select>
+                    <p class="text-xs text-gray-500 mt-1">Select a saved key from Settings → AI</p>
+                    <?php endif; ?>
+                    <div id="edit_social_ai_test_result" class="hidden mt-2 p-3 rounded-lg text-sm"></div>
+                </div>
+                
+                <!-- Topic -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Topic / Niche *</label>
+                    <input type="text" name="social_topic" id="edit_social_topic" placeholder="e.g., Birthday wishes, Love quotes" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg">
+                </div>
+                
+                <!-- Platform -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Target Platform</label>
+                    <select name="social_platform" id="edit_social_platform" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                        <option value="youtube">YouTube</option>
+                        <option value="tiktok">TikTok</option>
+                        <option value="instagram">Instagram</option>
+                        <option value="facebook">Facebook</option>
+                    </select>
+                </div>
+                
+                <!-- Count -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">How many content sets? (5-100)</label>
+                    <input type="number" name="social_count" id="edit_social_count" value="10" min="5" max="100" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                </div>
+                
+                <!-- Generate Button -->
+                <div class="mb-4">
+                    <button type="button" onclick="generateEditSocialContent()" class="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold rounded-lg">
+                        ✨ Generate Social Content (AI)
+                    </button>
+                    <div id="edit_social_content_result" class="mt-2 text-center text-sm text-gray-400"></div>
+                </div>
+                
+                <!-- Preview -->
+                <div id="edit_social_content_preview" class="hidden mt-4 p-4 bg-gray-800/50 rounded-lg">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-bold text-white">Generated Content:</span>
+                        <button type="button" onclick="addEditSocialContentToLists()" class="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded">Add All to Lists</button>
+                    </div>
+                    <div id="edit_social_content_list" class="max-h-60 overflow-y-auto space-y-2"></div>
+                </div>
+                
+                <!-- Manual Entry -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Titles (one per line)</label>
+                        <textarea name="social_titles_json" id="edit_social_titles_json" rows="6" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Descriptions (one per line)</label>
+                        <textarea name="social_descriptions_json" id="edit_social_descriptions_json" rows="6" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-300 mb-2">Hashtags (one per line)</label>
+                        <textarea name="social_hashtags_json" id="edit_social_hashtags_json" rows="6" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm"></textarea>
+                    </div>
+                </div>
+                
+                <!-- Rotation -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-300 mb-2">Content Rotation</label>
+                    <select name="social_rotation_mode" id="edit_social_rotation_mode" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm">
+                        <option value="sequential">Sequential</option>
+                        <option value="random">Random</option>
+                    </select>
+                </div>
+                
+                <div class="flex gap-3">
+                    <button type="button" onclick="showEditFormTab('taglines')" class="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg">← Back</button>
                     <button type="button" onclick="showEditFormTab('social')" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg">Next: Publish →</button>
                 </div>
             </div>
             
-            <!-- Tab 4: Social Media -->
+            <!-- Tab 5: Social Media -->
             <div id="edit_form_social" class="hidden p-4 space-y-4">
                 <p class="text-sm text-gray-400 mb-4">Select where to auto-publish shorts:</p>
                 
@@ -2538,7 +2835,7 @@ function submitAutomationForm(event) {
 
 function showFormTab(tab) {
     // Hide all tabs
-    ['basic', 'video', 'taglines', 'social'].forEach(t => {
+    ['basic', 'video', 'taglines', 'social_content', 'social'].forEach(t => {
         document.getElementById('form_' + t).classList.add('hidden');
         document.getElementById('tab_' + t).classList.remove('border-indigo-500', 'text-white');
         document.getElementById('tab_' + t).classList.add('border-transparent', 'text-gray-400');
@@ -2640,6 +2937,9 @@ function toggleAiProvider() {
         if (modelSection) modelSection.classList.remove('hidden');
     } else if (provider === 'openrouter') {
         apiKeyInput.placeholder = 'Enter OpenRouter API key (sk-or-...)';
+        if (modelSection) modelSection.classList.add('hidden');
+    } else if (provider === 'cohere') {
+        apiKeyInput.placeholder = 'Enter Cohere API key';
         if (modelSection) modelSection.classList.add('hidden');
     } else {
         apiKeyInput.placeholder = 'Enter OpenAI API key (sk-...)';
@@ -2903,6 +3203,9 @@ function toggleEditAiProvider() {
     } else if (provider === 'openrouter') {
         apiKeyInput.placeholder = 'Enter OpenRouter API key (sk-or-...)';
         if (modelSection) modelSection.classList.add('hidden');
+    } else if (provider === 'cohere') {
+        apiKeyInput.placeholder = 'Enter Cohere API key';
+        if (modelSection) modelSection.classList.add('hidden');
     } else {
         apiKeyInput.placeholder = 'Enter OpenAI API key (sk-...)';
         if (modelSection) modelSection.classList.add('hidden');
@@ -3140,6 +3443,199 @@ function addAllEditBulkTaglines() {
     editBulkTaglinesData = [];
 }
 
+// Edit Form Social Content Generator
+let editSocialContentData = [];
+
+function generateEditSocialContent() {
+    const apiKey = document.getElementById('edit_social_ai_api_key').value.trim();
+    const provider = document.getElementById('edit_social_ai_provider').value;
+    const model = document.getElementById('edit_social_ai_model').value;
+    const topic = document.getElementById('edit_social_topic').value.trim();
+    const platform = document.getElementById('edit_social_platform').value;
+    const count = parseInt(document.getElementById('edit_social_count').value) || 10;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key', 'error');
+        return;
+    }
+    if (!topic) {
+        showToast('Please enter a topic', 'error');
+        return;
+    }
+    
+    const btn = event.target.closest('button');
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Generating...';
+    btn.disabled = true;
+    
+    document.getElementById('edit_social_content_result').textContent = 'Generating ' + count + ' unique content sets...';
+    
+    const formData = new FormData();
+    formData.append('action', 'generate_social_content');
+    formData.append('api_key', apiKey);
+    formData.append('provider', provider);
+    formData.append('model', model);
+    formData.append('topic', topic);
+    formData.append('platform', platform);
+    formData.append('count', count);
+    
+    fetch('api/ai-tagline-generator.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+        
+        if (data.success && data.items) {
+            editSocialContentData = data.items;
+            
+            const preview = document.getElementById('edit_social_content_preview');
+            const list = document.getElementById('edit_social_content_list');
+            preview.classList.remove('hidden');
+            list.innerHTML = '';
+            
+            data.items.forEach((item, i) => {
+                const div = document.createElement('div');
+                div.className = 'p-2 bg-gray-700/50 rounded text-xs';
+                div.innerHTML = '<div class="font-bold text-yellow-400">' + (i+1) + '. ' + item.title.substring(0, 50) + '</div><div class="text-gray-400 mt-1">' + item.description.substring(0, 80) + '...</div><div class="text-blue-400">' + item.hashtags.substring(0, 60) + '...</div>';
+                list.appendChild(div);
+            });
+            
+            document.getElementById('edit_social_content_result').textContent = 'Generated ' + data.count + ' unique content sets!';
+            showToast('Generated ' + data.count + ' unique content sets!', 'success');
+        } else {
+            document.getElementById('edit_social_content_result').textContent = 'Error: ' + (data.error || 'Failed to generate');
+            showToast(data.error || 'Failed to generate content', 'error');
+        }
+    })
+    .catch(err => {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+        document.getElementById('edit_social_content_result').textContent = 'Error: ' + err.message;
+        showToast('Error: ' + err.message, 'error');
+    });
+}
+
+function addEditSocialContentToLists() {
+    if (!editSocialContentData || editSocialContentData.length === 0) {
+        showToast('No content to add', 'error');
+        return;
+    }
+    
+    const titles = [];
+    const descriptions = [];
+    const hashtags = [];
+    
+    editSocialContentData.forEach(item => {
+        titles.push(item.title);
+        descriptions.push(item.description);
+        hashtags.push(item.hashtags);
+    });
+    
+    document.getElementById('edit_social_titles_json').value = titles.join('\n');
+    document.getElementById('edit_social_descriptions_json').value = descriptions.join('\n');
+    document.getElementById('edit_social_hashtags_json').value = hashtags.join('\n');
+    
+    showToast('Added ' + editSocialContentData.length + ' content sets to lists!', 'success');
+}
+
+function toggleEditAIModel() {
+    const provider = document.getElementById('edit_ai_provider').value;
+    const modelSelect = document.getElementById('edit_ai_model');
+    
+    if (provider === 'gemini') {
+        modelSelect.innerHTML = '<option value="gemini-2.5-flash">Gemini 2.5 Flash</option><option value="gemini-2.0-flash">Gemini 2.0 Flash</option>';
+    } else if (provider === 'openai') {
+        modelSelect.innerHTML = '<option value="gpt-4o">GPT-4o</option><option value="gpt-4o-mini">GPT-4o Mini</option>';
+    } else if (provider === 'openrouter') {
+        modelSelect.innerHTML = '<option value="openrouter/free">OpenRouter Free</option>';
+    }
+}
+
+// Edit Form Social Content Helper Functions
+function toggleEditSocialAIModel() {
+    const provider = document.getElementById('edit_social_ai_provider').value;
+    const modelSelect = document.getElementById('edit_social_ai_model');
+    const geminiSection = document.getElementById('edit_social_gemini_model_section');
+    const cohereSection = document.getElementById('edit_social_cohere_model_section');
+    
+    if (geminiSection) {
+        geminiSection.classList.toggle('hidden', provider !== 'gemini');
+    }
+    if (cohereSection) {
+        cohereSection.classList.toggle('hidden', provider !== 'cohere');
+    }
+    
+    if (provider === 'gemini') {
+        modelSelect.innerHTML = '<option value="gemini-2.5-flash">Gemini 2.5 Flash</option><option value="gemini-2.0-flash">Gemini 2.0 Flash</option>';
+    } else if (provider === 'cohere') {
+        modelSelect.innerHTML = '<option value="command-a-03-2025">Command A (Latest)</option><option value="command-a-02-2025">Command A 02</option><option value="command-r-08-2025">Command R 08</option>';
+    } else if (provider === 'openai') {
+        modelSelect.innerHTML = '<option value="gpt-4o">GPT-4o</option><option value="gpt-4o-mini">GPT-4o Mini</option>';
+    } else if (provider === 'openrouter') {
+        modelSelect.innerHTML = '<option value="openrouter/free">OpenRouter Free</option>';
+    }
+}
+
+function loadEditSocialSavedApiKey() {
+    const select = document.getElementById('edit_social_ai_saved_keys');
+    const value = select.value;
+    if (!value) return;
+    
+    const [provider, apiKey] = value.split('|');
+    if (provider && apiKey) {
+        document.getElementById('edit_social_ai_provider').value = provider;
+        document.getElementById('edit_social_ai_api_key').value = apiKey;
+        toggleEditSocialAIModel();
+        showToast('API key loaded! Click Test to verify.', 'success');
+    }
+}
+
+function testEditSocialAiApiKey() {
+    const apiKey = document.getElementById('edit_social_ai_api_key').value.trim();
+    const provider = document.getElementById('edit_social_ai_provider').value;
+    const model = document.getElementById('edit_social_ai_model').value;
+    const resultDiv = document.getElementById('edit_social_ai_test_result');
+    
+    if (!apiKey) {
+        resultDiv.classList.remove('hidden');
+        resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+        resultDiv.textContent = 'Please enter an API key';
+        return;
+    }
+    
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-blue-500/20 text-blue-400';
+    resultDiv.textContent = 'Testing API key...';
+    
+    const formData = new FormData();
+    formData.append('action', 'test_api_key');
+    formData.append('api_key', apiKey);
+    formData.append('provider', provider);
+    formData.append('model', model);
+    
+    fetch('api/ai-tagline-generator.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-green-500/20 text-green-400';
+            resultDiv.textContent = data.message || 'API key is valid!';
+        } else {
+            resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+            resultDiv.textContent = data.error || 'Invalid API key';
+        }
+    })
+    .catch(err => {
+        resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+        resultDiv.textContent = 'Error: ' + err.message;
+    });
+}
+
 function toLocalDateValue(date) {
     const tzOffsetMs = date.getTimezoneOffset() * 60000;
     return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 10);
@@ -3175,7 +3671,7 @@ function applyCreateYouTubePreset(preset) {
 // Edit Form Functions
 function showEditFormTab(tab) {
     // Hide all tabs
-    ['basic', 'video', 'taglines', 'social'].forEach(t => {
+    ['basic', 'video', 'taglines', 'social_content', 'social'].forEach(t => {
         document.getElementById('edit_form_' + t).classList.add('hidden');
         document.getElementById('edit_tab_' + t).classList.remove('border-indigo-500', 'text-white');
         document.getElementById('edit_tab_' + t).classList.add('border-transparent', 'text-gray-400');
@@ -3325,6 +3821,13 @@ function openEditModal(automationData) {
     document.getElementById('edit_top_taglines_json').value = automationData.top_taglines_json || '';
     document.getElementById('edit_bottom_taglines_json').value = automationData.bottom_taglines_json || '';
     document.getElementById('edit_tagline_rotation_mode').value = automationData.tagline_rotation_mode || 'sequential';
+    
+    // Load Social Content
+    document.getElementById('edit_social_titles_json').value = automationData.social_titles_json || '';
+    document.getElementById('edit_social_descriptions_json').value = automationData.social_descriptions_json || '';
+    document.getElementById('edit_social_hashtags_json').value = automationData.social_hashtags_json || '';
+    document.getElementById('edit_social_rotation_mode').value = automationData.social_rotation_mode || 'sequential';
+    
     document.getElementById('edit_manual_video_links').value = automationData.manual_video_links || '';
     document.getElementById('edit_youtube_channel_url').value = automationData.youtube_channel_url || '';
     document.getElementById('edit_rotation_enabled').checked = automationData.rotation_enabled == 1;
@@ -3636,6 +4139,211 @@ function generateBulkTaglines() {
     });
 }
 
+// AI Social Content Generator
+let socialContentData = [];
+
+function generateSocialContent() {
+    const apiKey = document.getElementById('social_ai_api_key').value.trim();
+    const provider = document.getElementById('social_ai_provider').value;
+    const model = document.getElementById('social_ai_model').value;
+    const topic = document.getElementById('social_topic').value.trim();
+    const platform = document.getElementById('social_platform').value;
+    const count = parseInt(document.getElementById('social_count').value) || 10;
+    
+    if (!apiKey) {
+        showToast('Please enter an API key', 'error');
+        return;
+    }
+    if (!topic) {
+        showToast('Please enter a topic', 'error');
+        return;
+    }
+    
+    const btn = event.target.closest('button');
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Generating...';
+    btn.disabled = true;
+    
+    document.getElementById('social_content_result').textContent = 'Generating ' + count + ' unique content sets...';
+    
+    const formData = new FormData();
+    formData.append('action', 'generate_social_content');
+    formData.append('api_key', apiKey);
+    formData.append('provider', provider);
+    formData.append('model', model);
+    formData.append('topic', topic);
+    formData.append('platform', platform);
+    formData.append('count', count);
+    
+    fetch('api/ai-tagline-generator.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+        
+        if (data.success && data.items) {
+            socialContentData = data.items;
+            
+            const preview = document.getElementById('social_content_preview');
+            const list = document.getElementById('social_content_list');
+            preview.classList.remove('hidden');
+            list.innerHTML = '';
+            
+            data.items.forEach((item, i) => {
+                const div = document.createElement('div');
+                div.className = 'p-2 bg-gray-700/50 rounded text-xs';
+                div.innerHTML = `
+                    <div class="font-bold text-yellow-400">${i+1}. ${item.title.substring(0, 50)}</div>
+                    <div class="text-gray-400 mt-1">${item.description.substring(0, 80)}...</div>
+                    <div class="text-blue-400">${item.hashtags.substring(0, 60)}...</div>
+                `;
+                list.appendChild(div);
+            });
+            
+            document.getElementById('social_content_result').textContent = 'Generated ' + data.count + ' unique content sets!';
+            showToast('Generated ' + data.count + ' unique content sets!', 'success');
+        } else {
+            document.getElementById('social_content_result').textContent = 'Error: ' + (data.error || 'Failed to generate');
+            showToast(data.error || 'Failed to generate content', 'error');
+        }
+    })
+    .catch(err => {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+        document.getElementById('social_content_result').textContent = 'Error: ' + err.message;
+        showToast('Error: ' + err.message, 'error');
+    });
+}
+
+function addSocialContentToLists() {
+    if (!socialContentData || socialContentData.length === 0) {
+        showToast('No content to add', 'error');
+        return;
+    }
+    
+    const titles = [];
+    const descriptions = [];
+    const hashtags = [];
+    
+    socialContentData.forEach(item => {
+        titles.push(item.title);
+        descriptions.push(item.description);
+        hashtags.push(item.hashtags);
+    });
+    
+    document.getElementById('social_titles_json').value = titles.join('\n');
+    document.getElementById('social_descriptions_json').value = descriptions.join('\n');
+    document.getElementById('social_hashtags_json').value = hashtags.join('\n');
+    
+    showToast('Added ' + socialContentData.length + ' content sets to lists!', 'success');
+}
+
+function toggleAIModel() {
+    const provider = document.getElementById('ai_provider').value;
+    const modelSelect = document.getElementById('ai_model');
+    
+    if (provider === 'gemini') {
+        modelSelect.innerHTML = `
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+        `;
+    } else if (provider === 'openai') {
+        modelSelect.innerHTML = `
+            <option value="gpt-4o">GPT-4o</option>
+            <option value="gpt-4o-mini">GPT-4o Mini</option>
+        `;
+    } else if (provider === 'openrouter') {
+        modelSelect.innerHTML = `
+            <option value="openrouter/free">OpenRouter Free</option>
+        `;
+    }
+}
+
+// Social Content AI Helper Functions
+function toggleSocialAIModel() {
+    const provider = document.getElementById('social_ai_provider').value;
+    const modelSelect = document.getElementById('social_ai_model');
+    const geminiSection = document.getElementById('social_gemini_model_section');
+    const cohereSection = document.getElementById('social_cohere_model_section');
+    
+    if (geminiSection) {
+        geminiSection.classList.toggle('hidden', provider !== 'gemini');
+    }
+    if (cohereSection) {
+        cohereSection.classList.toggle('hidden', provider !== 'cohere');
+    }
+    
+    if (provider === 'gemini') {
+        modelSelect.innerHTML = '<option value="gemini-2.5-flash">Gemini 2.5 Flash</option><option value="gemini-2.0-flash">Gemini 2.0 Flash</option>';
+    } else if (provider === 'cohere') {
+        modelSelect.innerHTML = '<option value="command-a-03-2025">Command A (Latest)</option><option value="command-a-02-2025">Command A 02</option><option value="command-r-08-2025">Command R 08</option>';
+    } else if (provider === 'openai') {
+        modelSelect.innerHTML = '<option value="gpt-4o">GPT-4o</option><option value="gpt-4o-mini">GPT-4o Mini</option>';
+    } else if (provider === 'openrouter') {
+        modelSelect.innerHTML = '<option value="openrouter/free">OpenRouter Free</option>';
+    }
+}
+
+function loadSocialSavedApiKey() {
+    const select = document.getElementById('social_ai_saved_keys');
+    const value = select.value;
+    if (!value) return;
+    
+    const [provider, apiKey] = value.split('|');
+    if (provider && apiKey) {
+        document.getElementById('social_ai_provider').value = provider;
+        document.getElementById('social_ai_api_key').value = apiKey;
+        toggleSocialAIModel();
+        showToast('API key loaded! Click Test to verify.', 'success');
+    }
+}
+
+function testSocialAiApiKey() {
+    const apiKey = document.getElementById('social_ai_api_key').value.trim();
+    const provider = document.getElementById('social_ai_provider').value;
+    const model = document.getElementById('social_ai_model').value;
+    const resultDiv = document.getElementById('social_ai_test_result');
+    
+    if (!apiKey) {
+        resultDiv.classList.remove('hidden');
+        resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+        resultDiv.textContent = 'Please enter an API key';
+        return;
+    }
+    
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-blue-500/20 text-blue-400';
+    resultDiv.textContent = 'Testing API key...';
+    
+    const formData = new FormData();
+    formData.append('action', 'test_api_key');
+    formData.append('api_key', apiKey);
+    formData.append('provider', provider);
+    formData.append('model', model);
+    
+    fetch('api/ai-tagline-generator.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-green-500/20 text-green-400';
+            resultDiv.textContent = data.message || 'API key is valid!';
+        } else {
+            resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+            resultDiv.textContent = data.error || 'Invalid API key';
+        }
+    })
+    .catch(err => {
+        resultDiv.className = 'mt-2 p-3 rounded-lg text-sm bg-red-500/20 text-red-400';
+        resultDiv.textContent = 'Error: ' + err.message;
+    });
+}
+
 function killAllProcesses() {
     if (!confirm('Stop ALL running background processes?\n\nThis will:\n- Kill any video processing in progress\n- Reset all automation status\n- Clear progress data')) {
         return;
@@ -3824,6 +4532,124 @@ function runAutomationGithub(automationId, runMode = 'github_runner') {
 // Global lock to prevent multiple automations from running at the same time
 let isAutomationRunning = false;
 let runningAutomationId = null;
+
+function viewAutomationProgress(automationId) {
+    console.log('Viewing automation progress:', automationId);
+    
+    isAutomationRunning = true;
+    runningAutomationId = automationId;
+    
+    document.querySelectorAll('[onclick*="runAutomationLive"]').forEach(btn => {
+        btn.disabled = true;
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+    });
+    
+    const currentRunBtn = document.querySelector(`[onclick="runAutomationLive(${automationId})"]`);
+    if (currentRunBtn) {
+        currentRunBtn.disabled = false;
+        currentRunBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    }
+    
+    const progressSection = document.getElementById('progress-' + automationId);
+    const progressBar = document.getElementById('progress-bar-' + automationId);
+    const progressPercent = document.getElementById('progress-percent-' + automationId);
+    const progressLog = document.getElementById('progress-log-' + automationId);
+    const progressOutputs = document.getElementById('progress-outputs-' + automationId);
+    const statFetched = document.getElementById('stat-fetched-' + automationId);
+    const statDownloaded = document.getElementById('stat-downloaded-' + automationId);
+    const statProcessed = document.getElementById('stat-processed-' + automationId);
+    const statScheduled = document.getElementById('stat-scheduled-' + automationId);
+    const statPosted = document.getElementById('stat-posted-' + automationId);
+    
+    const modal = document.getElementById('liveLogModal');
+    const modalLogContainer = document.getElementById('liveLogContainer');
+    const modalProgressBar = document.getElementById('liveProgressBar');
+    const modalProgressText = document.getElementById('liveProgressText');
+    
+    if (!progressSection || !modal) {
+        alert('Error: UI elements not found');
+        return;
+    }
+    
+    progressSection.style.display = 'block';
+    modal.style.display = 'flex';
+    modalLogContainer.innerHTML = '';
+    
+    if (progressLog) progressLog.innerHTML = '';
+    
+    addLogEntry(modalLogContainer, 'init', 'info', '🔄 Connecting to monitor running automation (ID: ' + automationId + ')...');
+    
+    const eventSource = new EventSource('api/run-sync.php?id=' + automationId);
+    let processComplete = false;
+    
+    eventSource.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            
+            const progress = data.progress || 0;
+            progressBar.style.width = progress + '%';
+            progressPercent.textContent = progress + '%';
+            modalProgressBar.style.width = progress + '%';
+            modalProgressText.textContent = progress + '%';
+            
+            if (data.stats) {
+                statFetched.textContent = data.stats.fetched || 0;
+                statDownloaded.textContent = data.stats.downloaded || 0;
+                statProcessed.textContent = data.stats.processed || 0;
+                if (statScheduled) statScheduled.textContent = data.stats.scheduled || 0;
+                statPosted.textContent = data.stats.posted || 0;
+            }
+            if (Array.isArray(data.outputs)) {
+                renderCardOutputs(automationId, data.outputs);
+            }
+            
+            if (data.message) {
+                const statusIcon = data.status === 'success' ? '✓' : 
+                                   data.status === 'error' ? '✗' : 
+                                   data.status === 'warning' ? '⚠' : '→';
+                addLogEntry(modalLogContainer, data.step, data.status, `[${data.time}] ${statusIcon} ${data.message}`);
+                addCardLog(progressLog, data.message, data.status);
+            }
+            
+            if (data.done) {
+                processComplete = true;
+                eventSource.close();
+                
+                releaseAutomationLock(automationId);
+                
+                if (data.success) {
+                    setCardStatus(automationId, 'completed');
+                    if (typeof loadOutputVideoCount === 'function') {
+                        loadOutputVideoCount();
+                    }
+                    addLogEntry(modalLogContainer, 'complete', 'success', '✅ ' + data.message);
+                    addCardLog(progressLog, '✅ Complete!', 'success');
+                } else {
+                    setCardStatus(automationId, 'error');
+                    addLogEntry(modalLogContainer, 'error', 'error', '❌ ' + data.message);
+                    addCardLog(progressLog, data.message, 'error');
+                }
+            }
+        } catch (e) {
+            console.error('Parse error:', e, event.data);
+        }
+    };
+    
+    eventSource.onerror = function(error) {
+        console.error('SSE Error:', error);
+        eventSource.close();
+        
+        if (!processComplete) {
+            addLogEntry(modalLogContainer, 'warn', 'warning', '⚠ Connection interrupted - checking progress from database...');
+            
+            pollDatabaseProgress(automationId, modalLogContainer, modalProgressBar, modalProgressText, 
+                                 progressBar, progressPercent, progressLog, 
+                                 statFetched, statDownloaded, statProcessed, statPosted);
+        }
+    };
+    
+    window.currentEventSource = eventSource;
+}
 
 function runAutomationLive(automationId) {
     console.log('Starting automation with SSE:', automationId);
@@ -4735,12 +5561,72 @@ document.addEventListener('DOMContentLoaded', function () {
           btn.classList.add('opacity-50', 'cursor-not-allowed');
         });
         
+        // Add a stop button for stuck automation
+        const stopBtn = document.createElement('button');
+        stopBtn.id = 'stopStuckAutomation';
+        stopBtn.className = 'px-3 py-1 bg-red-500 text-white rounded text-sm ml-2';
+        stopBtn.textContent = 'Stop Stuck Automation';
+        stopBtn.onclick = function() {
+          if (confirm('Are you sure you want to stop this stuck automation?')) {
+            fetch('api/stop-automation.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: 'automation_id=' + data.automation_id
+            })
+            .then(r => r.json())
+            .then(result => {
+              if (result.success) {
+                alert('Automation stopped. You can now run it again.');
+                location.reload();
+              } else {
+                alert('Error: ' + result.message);
+              }
+            })
+            .catch(e => alert('Error stopping automation: ' + e));
+          }
+        };
+        
         // Start monitoring the running automation
-        if (confirm('An automation is already running (ID: ' + data.automation_id + '). Would you like to view its progress?')) {
-          runAutomationLive(data.automation_id);
+        if (confirm('An automation is already running (ID: ' + data.automation_id + '). Would you like to view its progress?\n\nClick Cancel, then use "Stop Stuck Automation" button if the automation is stuck.')) {
+          viewAutomationProgress(data.automation_id);
+        } else {
+          // Show stop button in a visible location
+          document.body.appendChild(stopBtn);
         }
       }
     })
     .catch(e => console.error('Error checking running automation:', e));
-});
+
+  function showUsedTaglines(automationId) {
+    fetch('api/used-taglines.php?automation_id=' + automationId)
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          let msg = `Used Taglines:\nTop: ${data.total_top}\nBottom: ${data.total_bottom}\n\n`;
+          if (data.taglines.length > 0) {
+            msg += 'Recent:\n';
+            data.taglines.slice(0, 10).forEach(t => {
+              msg += `${t.tagline_type.toUpperCase()}: ${t.tagline_text.substring(0, 40)}...\n`;
+            });
+          }
+          msg += '\nClick OK to RESET all used taglines (allow reuse)';
+          if (confirm(msg)) {
+            fetch('api/reset-taglines.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: 'automation_id=' + automationId
+            })
+            .then(r => r.json())
+            .then(result => {
+              if (result.success) {
+                alert('Taglines have been reset! They can now be reused.');
+              } else {
+                alert('Error: ' + result.message);
+              }
+            });
+          }
+        }
+      })
+      .catch(e => console.error('Error:', e));
+  }
 </script>

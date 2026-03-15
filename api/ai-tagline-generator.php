@@ -484,11 +484,12 @@ function generateBulkWithGemini($apiKey, $topPrompt, $bottomPrompt, $count, $mod
     foreach ($fallbackModels as $testModel) {
         $url = "https://generativelanguage.googleapis.com/v1beta/models/{$testModel}:generateContent?key=" . $apiKey;
         
-        $instructions = "Generate {$count} UNIQUE pairs of video taglines.\n\n";
-        $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
-        $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
-        $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
-        $instructions .= "Respond ONLY in JSON array: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. Do NOT generate fewer. Output MUST be an array with {$count} items.\n\n";
+    $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
+    $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
+    $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
+    $instructions .= "IMPORTANT: You MUST generate exactly {$count} tagline pairs. Do not stop early.\n";
+    $instructions .= "Respond ONLY in JSON array format: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
         
         $data = [
             'contents' => [['parts' => [['text' => $instructions]]]],
@@ -636,11 +637,12 @@ function generateBulkWithOpenAI($apiKey, $topPrompt, $bottomPrompt, $count) {
 }
 
 function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) {
-    $instructions = "Generate {$count} UNIQUE pairs of video taglines.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. Do NOT generate fewer. Output MUST be an array with {$count} items.\n\n";
     $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
     $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
     $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
-    $instructions .= "Respond ONLY in JSON array: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    $instructions .= "IMPORTANT: You MUST generate exactly {$count} tagline pairs. Do not stop early.\n";
+    $instructions .= "Respond ONLY in JSON array format: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
     
     $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
     curl_setopt_array($ch, [
@@ -658,7 +660,7 @@ function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) 
                 ['role' => 'user', 'content' => $instructions]
             ],
             'temperature' => 0.95,
-            'max_tokens' => min($count * 50, 2000)
+            'max_tokens' => min($count * 60, 3000)
         ]),
         CURLOPT_TIMEOUT => 90
     ]);
@@ -1130,13 +1132,14 @@ function generateBulkTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $cou
     
     $model = $cohereModels[$model] ?? 'command-a-03-2025';
     
-    $instructions = "Generate {$count} UNIQUE pairs of video taglines.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. Do NOT generate fewer. Output MUST be an array with {$count} items.\n\n";
     $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
     $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
     $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
-    $instructions .= "Respond ONLY in JSON array: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    $instructions .= "IMPORTANT: You MUST generate exactly {$count} tagline pairs. Do not stop early.\n";
+    $instructions .= "Respond ONLY in JSON array format: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
     
-    $result = callCohereAPI($apiKey, $instructions, $model, min($count * 50, 2000), true);
+    $result = callCohereAPI($apiKey, $instructions, $model, min($count * 60, 3000), true, 3, 2, 0.95);
     
     if (!$result['success']) {
         return $result;
@@ -1296,7 +1299,7 @@ function generateSocialContentWithCohere($apiKey, $topic, $platform, $count, $mo
     ];
 }
 
-function callCohereAPI($apiKey, $prompt, $model = 'command-a-03-2025', $maxTokens = 2000, $jsonResponse = false, $maxRetries = 3, $retryDelay = 2) {
+function callCohereAPI($apiKey, $prompt, $model = 'command-a-03-2025', $maxTokens = 2000, $jsonResponse = false, $maxRetries = 3, $retryDelay = 2, $temperature = 0.95) {
     $url = 'https://api.cohere.com/v2/chat';
     
     $data = [
@@ -1304,7 +1307,8 @@ function callCohereAPI($apiKey, $prompt, $model = 'command-a-03-2025', $maxToken
         'messages' => [
             ['role' => 'user', 'content' => $prompt]
         ],
-        'max_tokens' => $maxTokens
+        'max_tokens' => $maxTokens,
+        'temperature' => $temperature
     ];
     
     if ($jsonResponse) {

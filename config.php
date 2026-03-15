@@ -180,6 +180,23 @@ try {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1");
         }
         
+        // Social Media Content columns (titles, descriptions, hashtags)
+        if (!in_array('social_titles_json', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN social_titles_json TEXT");
+        }
+        if (!in_array('social_descriptions_json', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN social_descriptions_json TEXT");
+        }
+        if (!in_array('social_hashtags_json', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN social_hashtags_json TEXT");
+        }
+        if (!in_array('social_rotation_mode', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN social_rotation_mode ENUM('sequential', 'random') DEFAULT 'sequential'");
+        }
+        if (!in_array('current_social_index', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN current_social_index INT DEFAULT 0");
+        }
+        
         // Add progress tracking columns
         if (!in_array('progress_percent', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN progress_percent INT DEFAULT 0");
@@ -280,6 +297,30 @@ try {
                 posted_at TIMESTAMP NULL,
                 FOREIGN KEY (automation_id) REFERENCES automation_settings(id) ON DELETE CASCADE,
                 UNIQUE KEY unique_video_per_cycle (automation_id, video_identifier, cycle_number)
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS used_taglines (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tagline_text VARCHAR(1000) NOT NULL,
+                tagline_type ENUM('top', 'bottom') NOT NULL,
+                automation_id INT,
+                video_identifier VARCHAR(500),
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_tagline (tagline_text(500))
+            )
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS used_social_content (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                content_type ENUM('title', 'description', 'hashtag') NOT NULL,
+                content_text VARCHAR(2000) NOT NULL,
+                automation_id INT,
+                video_identifier VARCHAR(500),
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_social_content (content_text(1000))
             )
         ");
 
@@ -761,6 +802,7 @@ if (isset($pdo)) {
     try {
         $defaultSettings = [
             'openai_api_key' => '',
+            'cohere_api_key' => '',
             'ffmpeg_path' => 'ffmpeg',
             'ffprobe_path' => '',
             'default_language' => 'en',
