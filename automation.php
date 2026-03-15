@@ -325,7 +325,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     // Save/Update automation - run migrations first
-    if ($action === 'save') {
+    // Handle both 'save' and 'update' actions (form uses 'update' but code uses 'save')
+    if ($action === 'save' || $action === 'update') {
         try {
             $existingColumns = [];
             try {
