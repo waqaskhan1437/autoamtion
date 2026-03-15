@@ -95,6 +95,11 @@ try {
     $pdo->exec("DELETE FROM automation_settings");
     $pdo->exec("DELETE FROM api_keys");
 
+    $userCount = $pdo->query("SELECT COUNT(*) FROM app_users")->fetchColumn();
+    if ($userCount == 0) {
+        $pdo->exec("INSERT INTO app_users (username, email, password_hash, role, created_at) VALUES ('runner', 'runner@local', '\$2y\$10\$placeholder', 'admin', NOW())");
+    }
+
     $pdo->prepare("DELETE FROM settings WHERE setting_key NOT IN ('openai_api_key','ffmpeg_path','default_language')")->execute();
     $stmtSetting = $pdo->prepare("
         INSERT INTO settings (setting_key, setting_value)
@@ -154,6 +159,14 @@ try {
     $automation['last_run_at'] = null;
     $automation['next_run_at'] = null;
     $automation['process_id'] = null;
+
+    if (isset($automation['owner_user_id']) && $automation['owner_user_id'] !== null) {
+        $stmtCheck = $pdo->prepare("SELECT id FROM app_users WHERE id = ?");
+        $stmtCheck->execute([$automation['owner_user_id']]);
+        if (!$stmtCheck->fetch()) {
+            $automation['owner_user_id'] = null;
+        }
+    }
 
     $automation = $filterPayload($automation, $fetchCols($pdo, 'automation_settings'));
     $autoCols = array_keys($automation);
