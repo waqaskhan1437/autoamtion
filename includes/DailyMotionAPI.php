@@ -2,66 +2,144 @@
 /**
  * DailyMotion API Integration
  * Handles OAuth authentication and video posting to DailyMotion
+ * Supports automatic token refresh using client_credentials or stored token
  */
 
 class DailyMotionAPI {
     private $apiKey;
     private $apiSecret;
     private $baseUrl = 'https://api.dailymotion.com';
+    private $pdo;
+    private $cachedToken;
+    private $tokenExpiry;
     
-    public function __construct($apiKey, $apiSecret) {
+    public function __construct($apiKey = null, $apiSecret = null, $pdo = null) {
+        $this->apiKey = $apiKey;
+        $this->apiSecret = $apiSecret;
+        $this->pdo = $pdo;
+    }
+    
+    public function setPDO($pdo) {
+        $this->pdo = $pdo;
+    }
+    
+    public function setCredentials($apiKey, $apiSecret) {
         $this->apiKey = $apiKey;
         $this->apiSecret = $apiSecret;
     }
     
     /**
-     * Get OAuth authorization URL
+     * Get new access token using client_credentials grant
      */
-    public function getAuthUrl($redirectUrl) {
-        $url = $this->baseUrl . '/oauth/authorize?client_id=' . urlencode($this->apiKey) 
-              . '&redirect_uri=' . urlencode($redirectUrl) 
-              . '&response_type=code';
-        return $url;
-    }
-    
-    /**
-     * Exchange authorization code for access token
-     */
-    public function getAccessToken($code, $redirectUrl) {
+    private function getNewToken() {
+        if (empty($this->apiKey) || empty($this->apiSecret)) {
+            return ['success' => false, 'error' => 'Missing API credentials'];
+        }
+        
         $ch = curl_init($this->baseUrl . '/oauth/token');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
             CURLOPT_POSTFIELDS => http_build_query([
-                'grant_type' => 'authorization_code',
+                'grant_type' => 'client_credentials',
                 'client_id' => $this->apiKey,
                 'client_secret' => $this->apiSecret,
-                'code' => $code,
-                'redirect_uri' => $redirectUrl
+                'scope' => 'read write delete manage_videos'
             ]),
             CURLOPT_TIMEOUT => 30
         ]);
         
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
         curl_close($ch);
         
-        if ($httpCode === 200) {
-            return json_decode($response, true);
+        if ($error) {
+            return ['success' => false, 'error' => 'cURL error: ' . $error];
         }
         
-        return ['success' => false, 'error' => 'Failed to get access token'];
+        $data = json_decode($response, true);
+        
+        if ($httpCode === 200 && isset($data['access_token'])) {
+            $this->cachedToken = $data['access_token'];
+            $this->tokenExpiry = time() + ($data['expires_in'] ?? 3600);
+            
+            return [
+                'success' => true,
+                'access_token' => $data['access_token'],
+                'expires_in' => $data['expires_in'] ?? 3600
+            ];
+        }
+        
+        return [
+            'success' => false,
+            'error' => $data['error_description'] ?? $data['error'] ?? 'Authentication failed',
+            'details' => $data
+        ];
+    }
+    
+    /**
+     * Get valid access token - tries to get new token if needed
+     */
+    public function getValidToken() {
+        // Check if we have a valid cached token
+        if ($this->cachedToken && $this->tokenExpiry && time() < ($this->tokenExpiry - 60)) {
+            return $this->cachedToken;
+        }
+        
+        // Try to get new token using client_credentials
+        $result = $this->getNewToken();
+        
+        if ($result['success']) {
+            return $result['access_token'];
+        }
+        
+        // If client_credentials fails, try to get from database (fallback)
+        if ($this->pdo) {
+            try {
+                $stmt = $this->pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_access_token'");
+                $storedToken = $stmt->fetchColumn();
+                
+                if ($storedToken) {
+                    // Verify token works
+                    $ch = curl_init($this->baseUrl . '/me?fields=id,username');
+                    curl_setopt_array($ch, [
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $storedToken],
+                        CURLOPT_TIMEOUT => 10
+                    ]);
+                    curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    
+                    if ($httpCode === 200) {
+                        $this->cachedToken = $storedToken;
+                        $this->tokenExpiry = time() + 3600; // Assume 1 hour
+                        return $storedToken;
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("Error getting stored token: " . $e->getMessage());
+            }
+        }
+        
+        return null;
     }
     
     /**
      * Get current user info
      */
-    public function getUser($accessToken) {
+    public function getUser() {
+        $token = $this->getValidToken();
+        if (!$token) {
+            return ['success' => false, 'error' => 'No valid token available'];
+        }
+        
         $ch = curl_init($this->baseUrl . '/me?fields=id,username,email');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken],
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
             CURLOPT_TIMEOUT => 30
         ]);
         
@@ -79,13 +157,18 @@ class DailyMotionAPI {
     /**
      * Upload video to DailyMotion
      */
-    public function uploadVideo($accessToken, $videoPath, $title, $description = '', $tags = [], $isPrivate = false) {
+    public function uploadVideo($videoPath, $title, $description = '', $tags = [], $isPrivate = false) {
+        $token = $this->getValidToken();
+        if (!$token) {
+            return ['success' => false, 'error' => 'Failed to get valid access token. Check API Key and Secret.'];
+        }
+        
         // First, get upload URL
         $ch = curl_init($this->baseUrl . '/file/upload');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken],
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
             CURLOPT_TIMEOUT => 60
         ]);
         
@@ -94,7 +177,7 @@ class DailyMotionAPI {
         curl_close($ch);
         
         if ($httpCode !== 200) {
-            return ['success' => false, 'error' => 'Failed to get upload URL'];
+            return ['success' => false, 'error' => 'Failed to get upload URL: ' . $response];
         }
         
         $uploadData = json_decode($response, true);
@@ -102,7 +185,7 @@ class DailyMotionAPI {
         
         // Upload the video file
         if (!file_exists($videoPath)) {
-            return ['success' => false, 'error' => 'Video file not found'];
+            return ['success' => false, 'error' => 'Video file not found: ' . $videoPath];
         }
         
         $fileSize = filesize($videoPath);
@@ -116,7 +199,7 @@ class DailyMotionAPI {
             CURLOPT_INFILESIZE => $fileSize,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: video/mp4',
-                'Authorization: Bearer ' . $accessToken
+                'Authorization: Bearer ' . $token
             ],
             CURLOPT_TIMEOUT => 3600 // 1 hour for large uploads
         ]);
@@ -148,7 +231,7 @@ class DailyMotionAPI {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer ' . $accessToken,
+                'Authorization: Bearer ' . $token,
                 'Content-Type: application/x-www-form-urlencoded'
             ],
             CURLOPT_POSTFIELDS => http_build_query($videoData),
@@ -174,12 +257,25 @@ class DailyMotionAPI {
     /**
      * Post video (simplified method)
      */
-    public function postVideo($videoPath, $title, $description = '', $tags = [], $isPrivate = false, $accessToken = null) {
-        if (!$accessToken) {
-            // Try to get stored token from database
-            return ['success' => false, 'error' => 'No access token available'];
-        }
+    public function postVideo($videoPath, $title, $description = '', $tags = [], $isPrivate = false) {
+        return $this->uploadVideo($videoPath, $title, $description, $tags, $isPrivate);
+    }
+    
+    /**
+     * Test authentication with API Key and Secret
+     */
+    public function testCredentials($apiKey, $apiSecret) {
+        $oldKey = $this->apiKey;
+        $oldSecret = $this->apiSecret;
         
-        return $this->uploadVideo($accessToken, $videoPath, $title, $description, $tags, $isPrivate);
+        $this->apiKey = $apiKey;
+        $this->apiSecret = $apiSecret;
+        
+        $result = $this->getNewToken();
+        
+        $this->apiKey = $oldKey;
+        $this->apiSecret = $oldSecret;
+        
+        return $result;
     }
 }

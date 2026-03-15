@@ -428,6 +428,28 @@ try {
         if (!in_array('postforme_schedule_spread_minutes', $columns)) {
             $pdo->exec("ALTER TABLE automation_settings ADD COLUMN postforme_schedule_spread_minutes INT DEFAULT 0");
         }
+        if (!in_array('dailymotion_enabled', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+        }
+        if (!in_array('dailymotion_account_id', $columns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_account_id VARCHAR(255) DEFAULT NULL");
+        }
+        
+        // Create dailymotion_accounts table if not exists
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS dailymotion_accounts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                account_id VARCHAR(255) NOT NULL UNIQUE,
+                username VARCHAR(255) NOT NULL,
+                email VARCHAR(255),
+                access_token TEXT,
+                refresh_token TEXT,
+                token_expires_at DATETIME,
+                is_active TINYINT(1) DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
         
         // Create postforme_accounts table if not exists
         $pdo->exec("

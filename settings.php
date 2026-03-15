@@ -131,37 +131,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute(['dailymotion_api_secret', $_POST['dailymotion_api_secret'] ?? '']);
         $message = 'AI settings saved';
         
-    } elseif ($action === 'add_dailymotion_account') {
-        $username = $_POST['dailymotion_username'] ?? '';
-        $accessToken = $_POST['dailymotion_access_token'] ?? '';
-        
-        if ($username && $accessToken) {
-            try {
-                $stmt = $pdo->prepare("INSERT INTO dailymotion_accounts (account_id, username, access_token, is_active) VALUES (?, ?, ?, 1)");
-                $stmt->execute([md5($username . time()), $username, $accessToken]);
-                $message = 'DailyMotion account added successfully!';
-            } catch (Exception $e) {
-                $message = 'Failed to add account: ' . $e->getMessage();
-                $messageType = 'error';
-            }
-        } else {
-            $message = 'Please enter username and access token';
-            $messageType = 'error';
-        }
-        
-    } elseif ($action === 'delete_dailymotion_account') {
-        $accountId = intval($_GET['id'] ?? 0);
-        if ($accountId) {
-            try {
-                $stmt = $pdo->prepare("UPDATE dailymotion_accounts SET is_active = 0 WHERE id = ?");
-                $stmt->execute([$accountId]);
-                $message = 'DailyMotion account removed';
-            } catch (Exception $e) {
-                $message = 'Failed to remove account: ' . $e->getMessage();
-                $messageType = 'error';
-            }
-        }
-        
     } elseif ($action === 'save_ffmpeg') {
         $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
         $stmt->execute(['ffmpeg_path', $_POST['ffmpeg_path'] ?? 'ffmpeg']);
@@ -836,43 +805,29 @@ include 'includes/header.php';
                 <input type="password" name="dailymotion_api_secret" value="<?= htmlspecialchars($settings['dailymotion_api_secret'] ?? '') ?>" placeholder="Enter DailyMotion API Secret" class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg">
             </div>
 
-            <!-- DailyMotion Account Management -->
+            <!-- Test DailyMotion Connection -->
             <?php
-            // Get connected DailyMotion accounts
-            $dailymotionAccounts = [];
-            try {
-                $stmt = $pdo->query("SELECT * FROM dailymotion_accounts WHERE is_active = 1 ORDER BY username");
-                $dailymotionAccounts = $stmt->fetchAll();
-            } catch (Exception $e) {}
+            if (!empty($settings['dailymotion_api_key']) && !empty($settings['dailymotion_api_secret'])): 
             ?>
-            <div class="p-4 bg-cyan-900/30 border border-cyan-500/30 rounded-lg mt-4">
-                <h4 class="font-medium mb-3 flex items-center gap-2">
-                    <svg class="w-4 h-4 text-cyan-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-                    DailyMotion Accounts
-                </h4>
-                
-                <?php if (!empty($dailymotionAccounts)): ?>
-                    <div class="space-y-2 mb-3">
-                        <?php foreach ($dailymotionAccounts as $acc): ?>
-                            <div class="flex items-center justify-between p-2 bg-gray-800/50 rounded">
-                                <span class="text-sm"><?= htmlspecialchars($acc['username']) ?></span>
-                                <a href="?action=delete_dailymotion_account&id=<?= $acc['id'] ?>" class="text-red-400 text-xs hover:underline">Remove</a>
-                            </div>
-                        <?php endforeach; ?>
+                <?php
+                require_once 'includes/DailyMotionAPI.php';
+                $dmAPI = new DailyMotionAPI($settings['dailymotion_api_key'], $settings['dailymotion_api_secret']);
+                $dmAPI->setPDO($pdo);
+                $testResult = $dmAPI->testCredentials($settings['dailymotion_api_key'], $settings['dailymotion_api_secret']);
+                ?>
+                <?php if ($testResult['success']): ?>
+                    <div class="p-3 bg-green-900/30 border border-green-500/30 rounded-lg">
+                        <p class="text-green-400 text-sm flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                            Connected! API credentials verified.
+                        </p>
+                    </div>
+                <?php else: ?>
+                    <div class="p-3 bg-red-900/30 border border-red-500/30 rounded-lg">
+                        <p class="text-red-400 text-sm">Connection failed: <?= htmlspecialchars($testResult['error'] ?? 'Unknown error') ?></p>
                     </div>
                 <?php endif; ?>
-                
-                <!-- Add DailyMotion Account Form -->
-                <form method="POST" class="space-y-2">
-                    <input type="hidden" name="action" value="add_dailymotion_account">
-                    <div class="flex gap-2">
-                        <input type="text" name="dailymotion_username" placeholder="DailyMotion Username" class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm" required>
-                        <input type="text" name="dailymotion_access_token" placeholder="Access Token" class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm" required>
-                    </div>
-                    <button type="submit" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg text-sm">Add Account</button>
-                </form>
-                <p class="text-xs text-gray-500 mt-2">Get access token from <a href="https://www.dailymotion.com/settings/integrations" target="_blank" class="text-cyan-400 hover:underline">dailymotion.com/settings/integrations</a></p>
-            </div>
+            <?php endif; ?>
 
             <div>
                 <label class="block text-sm text-gray-400 mb-1">Default Transcription Language</label>

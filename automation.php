@@ -234,7 +234,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'postforme_schedule_offset_minutes' => intval($_POST['postforme_schedule_offset_minutes'] ?? 0),
             'postforme_schedule_spread_minutes' => intval($_POST['postforme_schedule_spread_minutes'] ?? 0),
             'dailymotion_enabled' => isset($_POST['dailymotion_enabled']) ? 1 : 0,
-            'dailymotion_account_id' => $_POST['dailymotion_account_id'] ?? null,
+            'dailymotion_account_id' => $_POST['dailymotion_account_id'] ?? 'default',
             'rotation_enabled' => isset($_POST['rotation_enabled']) ? 1 : 0,
             'rotation_shuffle' => isset($_POST['rotation_shuffle']) ? 1 : 0,
             'rotation_auto_reset' => isset($_POST['rotation_auto_reset']) ? 1 : 0,
@@ -1822,7 +1822,7 @@ refreshOutputVideoCount();
                 <!-- DailyMotion Integration -->
                 <div class="p-4 bg-gradient-to-r from-cyan-900/30 to-blue-900/30 border border-cyan-500/30 rounded-xl">
                     <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" name="dailymotion_enabled" id="dailymotion_enabled" class="w-6 h-6 accent-cyan-500" onchange="toggleDailyMotion(this)">
+                        <input type="checkbox" name="dailymotion_enabled" id="dailymotion_enabled" class="w-6 h-6 accent-cyan-500">
                         <div class="flex-1">
                             <div class="font-bold text-white flex items-center gap-2">
                                 <svg class="w-5 h-5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
@@ -1839,34 +1839,37 @@ refreshOutputVideoCount();
                             <a href="settings.php?tab=openai" class="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs hover:bg-yellow-500/30">Setup →</a>
                         <?php endif; ?>
                     </label>
+                </div>
+
+                <!-- Legacy Individual Platform Options -->
+                <div id="legacy_platforms_section" class="space-y-3">
+                    <label class="flex items-center gap-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="youtube_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
+                        <span>YouTube Shorts</span>
+                        <span class="ml-auto text-xs text-gray-500">Requires Google API</span>
+                    </label>
                     
-                    <!-- DailyMotion Account Selection -->
-                    <div id="dailymotion_accounts_section" class="hidden mt-4 space-y-3">
-                        <?php
-                        $dailymotionAccounts = [];
-                        try {
-                            $dailymotionAccounts = $pdo->query("SELECT * FROM dailymotion_accounts WHERE is_active = 1 ORDER BY username")->fetchAll();
-                        } catch (Exception $e) {}
-                        
-                        if (empty($dailymotionAccounts)): ?>
-                            <div class="p-3 bg-gray-800/50 rounded-lg text-center">
-                                <p class="text-gray-400 text-sm">No DailyMotion accounts connected</p>
-                                <a href="settings.php?tab=openai" class="text-cyan-400 text-xs hover:underline">Add API keys in Settings →</a>
-                            </div>
-                        <?php else: ?>
-                            <p class="text-xs text-gray-400">Select DailyMotion account to post to:</p>
-                            <div class="grid grid-cols-1 gap-2">
-                                <?php foreach ($dailymotionAccounts as $acc): ?>
-                                    <label class="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg cursor-pointer hover:bg-gray-800 border border-transparent hover:border-cyan-500/30">
-                                        <input type="radio" name="dailymotion_account_id" value="<?= htmlspecialchars($acc['account_id']) ?>" class="w-4 h-4 accent-cyan-500">
-                                        <div class="flex-1 min-w-0">
-                                            <div class="text-sm truncate"><?= htmlspecialchars($acc['username']) ?></div>
-                                        </div>
-                                    </label>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                    </div>
+                    <label class="flex items-center gap-3 p-3 bg-gray-500/10 border border-gray-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="tiktok_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-5.2 1.74 2.89 2.89 0 012.31-4.64 2.93 2.93 0 01.88.13V9.4a6.84 6.84 0 00-1-.05A6.33 6.33 0 005 20.1a6.34 6.34 0 0010.86-4.43v-7a8.16 8.16 0 004.77 1.52v-3.4a4.85 4.85 0 01-1-.1z"/></svg>
+                        <span>TikTok</span>
+                        <span class="ml-auto text-xs text-gray-500">Requires TikTok App</span>
+                    </label>
+                    
+                    <label class="flex items-center gap-3 p-3 bg-pink-500/10 border border-pink-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="instagram_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5 text-pink-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069z"/></svg>
+                        <span>Instagram Reels</span>
+                        <span class="ml-auto text-xs text-gray-500">Requires Meta App</span>
+                    </label>
+                    
+                    <label class="flex items-center gap-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="facebook_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 24 24"><path d="M9 8h-3v4h3v12h5v-12h3.642l.358-4h-4v-1.667c0-.955.192-1.333 1.115-1.333h2.885v-5h-3.808c-3.596 0-5.192 1.583-5.192 4.615v3.385z"/></svg>
+                        <span>Facebook Reels</span>
+                        <span class="ml-auto text-xs text-gray-500">Requires Meta App</span>
+                    </label>
                 </div>
                 
                 <!-- Divider -->
@@ -2649,6 +2652,28 @@ refreshOutputVideoCount();
                     <div class="flex-1 border-t border-gray-700"></div>
                 </div>
                 
+                <!-- DailyMotion Integration (Edit Form) -->
+                <div class="p-4 bg-gradient-to-r from-cyan-900/30 to-blue-900/30 border border-cyan-500/30 rounded-xl mt-4">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" name="dailymotion_enabled" id="edit_dailymotion_enabled" class="w-6 h-6 accent-cyan-500">
+                        <div class="flex-1">
+                            <div class="font-bold text-white flex items-center gap-2">
+                                <svg class="w-5 h-5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                DailyMotion
+                            </div>
+                            <div class="text-gray-400 text-sm">Post directly to DailyMotion</div>
+                        </div>
+                        <?php 
+                        $dailymotionKey = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_key'")->fetchColumn();
+                        $dailymotionSecret = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_secret'")->fetchColumn();
+                        if ($dailymotionKey && $dailymotionSecret): ?>
+                            <span class="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">API Set</span>
+                        <?php else: ?>
+                            <a href="settings.php?tab=openai" class="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs hover:bg-yellow-500/30">Setup →</a>
+                        <?php endif; ?>
+                    </label>
+                </div>
+
                 <!-- Legacy Individual Platform Options -->
                 <div id="edit_legacy_platforms_section" class="space-y-3">
                     <label class="flex items-center gap-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
@@ -2928,16 +2953,6 @@ function togglePostForMe(checkbox) {
     } else {
         accountsSection.classList.add('hidden');
         legacySection.classList.remove('opacity-40');
-    }
-}
-
-function toggleDailyMotion(checkbox) {
-    const accountsSection = document.getElementById('dailymotion_accounts_section');
-    
-    if (checkbox.checked) {
-        accountsSection.classList.remove('hidden');
-    } else {
-        accountsSection.classList.add('hidden');
     }
 }
 
@@ -3902,6 +3917,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
     document.getElementById('edit_instagram_enabled').checked = automationData.instagram_enabled == 1;
     document.getElementById('edit_facebook_enabled').checked = automationData.facebook_enabled == 1;
+    document.getElementById('edit_dailymotion_enabled').checked = automationData.dailymotion_enabled == 1;
     document.getElementById('edit_postforme_schedule_mode').value = automationData.postforme_schedule_mode || 'immediate';
     
     // Handle PostForMe account selections

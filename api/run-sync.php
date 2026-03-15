@@ -441,10 +441,44 @@ if ($pfEnabled) {
         $missing = [];
         if (empty($pfAccounts)) $missing[] = 'no accounts selected';
         if (empty($postformeApiKey)) $missing[] = 'API key not set';
-        sendProgress('postforme', 'warning', "├ó┼í┬á Post for Me enabled but: " . implode(', ', $missing), 11, $stats);
+        sendProgress('postforme', 'warning', "Post for Me enabled but: " . implode(', ', $missing), 11, $stats);
     }
 } else {
     sendProgress('postforme', 'info', "→ Post for Me: Not enabled for this automation", 11, $stats);
+}
+
+// =====================================================
+// DAILYMOTION CONFIGURATION CHECK
+// =====================================================
+$dmEnabled = !empty($automation['dailymotion_enabled']) && $automation['dailymotion_enabled'] !== '0';
+
+// Get DailyMotion API credentials
+$dmApiKey = '';
+$dmApiSecret = '';
+try {
+    $dmKeyStmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_key'");
+    $dmKeyStmt->execute();
+    $dmApiKey = $dmKeyStmt->fetchColumn() ?: '';
+    
+    $dmSecretStmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_secret'");
+    $dmSecretStmt->execute();
+    $dmApiSecret = $dmSecretStmt->fetchColumn() ?: '';
+} catch (Exception $e) {}
+
+$willPostDM = $dmEnabled && !empty($dmApiKey) && !empty($dmApiSecret);
+
+// Show DailyMotion status
+if ($dmEnabled) {
+    if ($willPostDM) {
+        sendProgress('dailymotion', 'success', "✓ DailyMotion: ENABLED", 11, $stats);
+    } else {
+        $missing = [];
+        if (empty($dmApiKey)) $missing[] = 'API key not set';
+        if (empty($dmApiSecret)) $missing[] = 'API secret not set';
+        sendProgress('dailymotion', 'warning', "DailyMotion enabled but: " . implode(', ', $missing), 11, $stats);
+    }
+} else {
+    sendProgress('dailymotion', 'info', "→ DailyMotion: Not enabled for this automation", 11, $stats);
 }
 
 // Check FFmpeg
@@ -1540,6 +1574,59 @@ foreach ($videos as $index => $video) {
                 }
             } catch (Exception $e) {
                 sendProgress('posting', 'error', "Posting error for {$clipLabel}: " . $e->getMessage(), $clipProgressBase + ($progressPerVideo * 0.18), $stats);
+            }
+            
+            // =====================================================
+            // DAILYMOTION POSTING
+            // =====================================================
+            if ($willPostDM && $sourceHadSuccess && !empty($preparedVideo['path'])) {
+                try {
+                    require_once __DIR__ . '/../includes/DailyMotionAPI.php';
+                    $dmAPI = new DailyMotionAPI($dmApiKey, $dmApiSecret);
+                    $dmAPI->setPDO($pdo);
+                    
+                    $dmTitle = $title ?? basename($segmentVideoName, '.mp4');
+                    $dmDescription = $caption ?? '';
+                    $dmTags = [];
+                    if (!empty($hashtags)) {
+                        preg_match_all('/#(\w+)/', $hashtags, $matches);
+                        $dmTags = $matches[1] ?? [];
+                    }
+                    
+                    sendProgress('dailymotion', 'info', "Posting to DailyMotion: {$dmTitle}", $clipProgressBase + ($progressPerVideo * 0.19), $stats);
+                    
+                    $dmResult = $dmAPI->uploadVideo(
+                        $preparedVideo['path'],
+                        $dmTitle,
+                        $dmDescription,
+                        $dmTags,
+                        false
+                    );
+                    
+                    if ($dmResult['success']) {
+                        $dmMessage = "Posted to DailyMotion: " . ($dmResult['video_url'] ?? $dmResult['video_id']);
+                        $dmEntry = buildAutomationLogEntry('dailymotion_success', 'success', $dmMessage, $segmentVideoName, 'dailymotion');
+                        appendStructuredResult('automation_log_entries', $dmEntry);
+                        sendProgress('dailymotion', 'success', $dmMessage, $clipProgressBase + ($progressPerVideo * 0.195), $stats);
+                        
+                        try {
+                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                            $stmt->execute([$automationId, 'dailymotion_success', 'success', $dmMessage, $segmentVideoName, 'dailymotion']);
+                        } catch (Exception $e) {}
+                    } else {
+                        $dmError = $dmResult['error'] ?? 'Unknown error';
+                        $dmErrorEntry = buildAutomationLogEntry('dailymotion_error', 'error', $dmError, $segmentVideoName, 'dailymotion');
+                        appendStructuredResult('automation_log_entries', $dmErrorEntry);
+                        sendProgress('dailymotion', 'error', "DailyMotion failed: {$dmError}", $clipProgressBase + ($progressPerVideo * 0.195), $stats);
+                        
+                        try {
+                            $stmt = $pdo->prepare("INSERT INTO automation_logs (automation_id, action, status, message, video_id, platform) VALUES (?, ?, ?, ?, ?, ?)");
+                            $stmt->execute([$automationId, 'dailymotion_error', 'error', $dmError, $segmentVideoName, 'dailymotion']);
+                        } catch (Exception $e) {}
+                    }
+                } catch (Exception $e) {
+                    sendProgress('dailymotion', 'error', "DailyMotion error: " . $e->getMessage(), $clipProgressBase + ($progressPerVideo * 0.195), $stats);
+                }
             }
         }
     }
