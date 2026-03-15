@@ -90,17 +90,28 @@ class AutomationRunner {
      * Run the full automation pipeline
      */
     public function run() {
-        $this->log('run_started', 'info', 'Automation run started');
+        $startTime = microtime(true);
+        $this->log('run_started', 'info', '===========================================');
+        $this->log('run_started', 'info', 'Automation run STARTED at ' . date('Y-m-d H:i:s'));
+        $this->log('run_started', 'info', '===========================================');
         
         // Reload automation settings to get latest values
         $this->loadAutomation();
         
         try {
             // Step 1: Fetch videos from Bunny CDN
+            $fetchStart = microtime(true);
             $videos = $this->fetchVideos();
+            $fetchTime = round(microtime(true) - $fetchStart, 2);
             $totalFetched = count($videos);
             $fetchedForStats = $totalFetched;
-            $this->log('videos_fetched', 'success', "Fetched {$totalFetched} videos from source");
+            $this->log('videos_fetched', 'success', "✅ FETCH COMPLETE: {$totalFetched} videos in {$fetchTime}s");
+            
+            // Log video details for debugging
+            if ($totalFetched > 0) {
+                $source = $this->automation['video_source'] ?? 'unknown';
+                $this->log('fetch_details', 'info', "📥 Source: {$source}, Total: {$totalFetched}, Filter days: " . ($this->automation['video_days_filter'] ?? 30));
+            }
             
             if (empty($videos)) {
                 $this->log('no_videos', 'info', 'No new videos to process');
@@ -154,11 +165,11 @@ class AutomationRunner {
                 $videos = array_slice($videos, 0, $videosPerRun);
             }
             
-            $this->log('batch', 'info', "Batch: processing " . count($videos) . " of {$availableCount} (oldest first)");
+            $this->log('batch', 'info', "📋 Batch: processing " . count($videos) . " of {$availableCount} (oldest first)");
             
             if ($rotationEnabled && !empty($this->automation['rotation_shuffle']) && count($videos) > 1) {
                 shuffle($videos); // Shuffle only within the selected batch
-                $this->log('batch_shuffle', 'info', 'Batch shuffled for random order');
+                $this->log('batch_shuffle', 'info', '🔀 Batch shuffled for random order');
             }
             
             $downloaded = 0;
@@ -167,28 +178,38 @@ class AutomationRunner {
             $posted = 0;
             $randomWords = json_decode($this->automation['random_words'] ?? '[]', true) ?: [];
             
-            foreach ($videos as $video) {
+            $this->log('processing_start', 'info', '🎬 PROCESSING STARTED - Processing ' . count($videos) . ' video(s)');
+            
+            foreach ($videos as $index => $video) {
+                $videoStart = microtime(true);
+                $videoIdStr = is_array($video) ? ($video['guid'] ?? $video['filename'] ?? 'unknown') : $video;
+                $this->log('video_start', 'info', '📹 Video ' . ($index + 1) . '/' . count($videos) . ' START: ' . basename($videoIdStr));
+                
                 try {
                     $result = $this->processVideo($video, $randomWords);
+                    $videoTime = round(microtime(true) - $videoStart, 2);
+                    
                     if ($result['success']) {
                         $downloaded += (int)($result['downloaded'] ?? 1);
                         $processed += (int)($result['processed'] ?? 1);
                         $scheduled += (int)($result['scheduled'] ?? 0);
                         $posted += (int)($result['posted'] ?? 0);
+                        $this->log('video_complete', 'success', '✅ Video COMPLETE in ' . $videoTime . 's | Scheduled: ' . ($result['scheduled'] ?? 0) . ' | Posted: ' . ($result['posted'] ?? 0));
                         // Mark video as processed in rotation tracker
                         if ($rotationEnabled) {
                             $this->markVideoProcessed($video);
                         }
                     }
                 } catch (Exception $e) {
+                    $videoTime = round(microtime(true) - $videoStart, 2);
                     $videoId = is_array($video) ? ($video['guid'] ?? $video['filename'] ?? 'unknown') : $video;
                     $errorMsg = $e->getMessage();
                     
                     // Check if this is a skip video error (unavailable video)
                     if (strpos($errorMsg, 'SKIP_VIDEO') !== false) {
-                        $this->log('video_skipped', 'info', 'Skipped unavailable video: ' . str_replace('SKIP_VIDEO: ', '', $errorMsg), $videoId);
+                        $this->log('video_skipped', 'warning', '⏭️ SKIPPED: ' . str_replace('SKIP_VIDEO: ', '', $errorMsg) . ' (' . $videoTime . 's)', $videoId);
                     } else {
-                        $this->log('video_error', 'error', 'Error processing video: ' . $errorMsg, $videoId);
+                        $this->log('video_error', 'error', '❌ ERROR after ' . $videoTime . 's: ' . $errorMsg, $videoId);
                     }
                 }
             }
@@ -196,7 +217,9 @@ class AutomationRunner {
             // Update last run time
             $this->updateLastRun();
             
-            $this->log('run_completed', 'success', "Processed {$processed} videos successfully (scheduled: {$scheduled}, posted: {$posted})");
+            $totalTime = round(microtime(true) - $startTime, 2);
+            $this->log('run_completed', 'success', "🏁 RUN COMPLETED in {$totalTime}s | Fetched: {$fetchedForStats} | Processed: {$processed} | Scheduled: {$scheduled} | Posted: {$posted}");
+            $this->log('run_completed', 'info', '===========================================');
             
             return [
                 'fetched' => $fetchedForStats,
@@ -1258,7 +1281,34 @@ class AutomationRunner {
         
         // Post for Me Integration (Unified API - Recommended)
         if (!empty($this->automation['postforme_enabled']) && !empty($this->automation['postforme_account_ids'])) {
-            return $this->postViaPostForMe($videoPath, $caption, $videoId, $socialContent, $creativePackage); // Post for Me handles all platforms
+            $stats = $this->postViaPostForMe($videoPath, $caption, $videoId, $socialContent, $creativePackage); // Post for Me handles most platforms
+            
+            // Also post to DailyMotion separately (Post for Me doesn't support it)
+            if ($this->automation['dailymotion_enabled'] && $this->automation['dailymotion_api_key']) {
+                try {
+                    // Check if original video file exists
+                    if (!file_exists($originalVideoPath)) {
+                        $this->log('post_dailymotion', 'error', 'Original video file not found: ' . $originalVideoPath, $videoId, 'dailymotion');
+                    } else {
+                        $result = SocialMediaUploader::uploadToDailyMotion($originalVideoPath, $caption, $caption, [
+                            'api_key' => $this->automation['dailymotion_api_key'],
+                            'api_secret' => $this->automation['dailymotion_api_secret'] ?? '',
+                            'username' => $this->automation['dailymotion_username'] ?? '',
+                            'password' => $this->automation['dailymotion_password'] ?? '',
+                            'access_token' => $this->automation['dailymotion_access_token'] ?? null
+                        ]);
+                        
+                        $status = $result['success'] ? 'success' : 'error';
+                        $message = $result['success'] ? 'Posted to DailyMotion: ' . ($result['url'] ?? '') : ($result['error'] ?? 'Failed');
+                        $this->log('post_dailymotion', $status, $message, $videoId, 'dailymotion');
+                        if (!empty($result['success'])) $stats['posted']++;
+                    }
+                } catch (Exception $e) {
+                    $this->log('post_dailymotion', 'error', 'DailyMotion error: ' . $e->getMessage(), $videoId, 'dailymotion');
+                }
+            }
+            
+            return $stats;
         } else {
             $this->log('social_skip', 'info', 'Post for Me not enabled or no accounts selected, skipping social posting', $videoId, 'debug');
         }

@@ -309,6 +309,11 @@ class SocialMediaUploader {
             return ['error' => 'Missing DailyMotion credentials (api_key, api_secret, username, password)'];
         }
         
+        // Check if video file exists
+        if (!file_exists($videoPath)) {
+            return ['error' => 'Video file not found: ' . $videoPath];
+        }
+        
         $accessToken = $credentials['access_token'] ?? null;
         
         // Step 1: Get access token if not provided
