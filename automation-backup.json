@@ -1,5 +1,5 @@
 {
-    "exported_at": "2026-03-16 03:09:55",
+    "exported_at": "2026-03-16 03:43:20",
     "automation": {
         "id": "12",
         "name": "dslfkdsl",
@@ -27,7 +27,7 @@
         "rotation_shuffle": "1",
         "rotation_auto_reset": "1",
         "enabled": "1",
-        "status": "completed"
+        "status": "running"
     },
     "note": "API keys and passwords not included - configure manually"
 }
