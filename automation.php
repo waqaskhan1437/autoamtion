@@ -233,6 +233,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'postforme_schedule_timezone' => $_POST['postforme_schedule_timezone'] ?? 'UTC',
             'postforme_schedule_offset_minutes' => intval($_POST['postforme_schedule_offset_minutes'] ?? 0),
             'postforme_schedule_spread_minutes' => intval($_POST['postforme_schedule_spread_minutes'] ?? 0),
+            'dailymotion_enabled' => isset($_POST['dailymotion_enabled']) ? 1 : 0,
+            'dailymotion_account_id' => $_POST['dailymotion_account_id'] ?? null,
             'rotation_enabled' => isset($_POST['rotation_enabled']) ? 1 : 0,
             'rotation_shuffle' => isset($_POST['rotation_shuffle']) ? 1 : 0,
             'rotation_auto_reset' => isset($_POST['rotation_auto_reset']) ? 1 : 0,
@@ -562,6 +564,8 @@ $editAutomationFields = [
     'postforme_schedule_timezone',
     'postforme_schedule_offset_minutes',
     'postforme_schedule_spread_minutes',
+    'dailymotion_enabled',
+    'dailymotion_account_id',
     'rotation_enabled',
     'rotation_shuffle',
     'rotation_auto_reset',
@@ -1814,6 +1818,56 @@ refreshOutputVideoCount();
                         </div>
                     </div>
                 </div>
+
+                <!-- DailyMotion Integration -->
+                <div class="p-4 bg-gradient-to-r from-cyan-900/30 to-blue-900/30 border border-cyan-500/30 rounded-xl">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" name="dailymotion_enabled" id="dailymotion_enabled" class="w-6 h-6 accent-cyan-500" onchange="toggleDailyMotion(this)">
+                        <div class="flex-1">
+                            <div class="font-bold text-white flex items-center gap-2">
+                                <svg class="w-5 h-5 text-cyan-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                DailyMotion
+                            </div>
+                            <div class="text-gray-400 text-sm">Post directly to DailyMotion</div>
+                        </div>
+                        <?php 
+                        $dailymotionKey = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_key'")->fetchColumn();
+                        $dailymotionSecret = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'dailymotion_api_secret'")->fetchColumn();
+                        if ($dailymotionKey && $dailymotionSecret): ?>
+                            <span class="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">API Set</span>
+                        <?php else: ?>
+                            <a href="settings.php?tab=openai" class="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs hover:bg-yellow-500/30">Setup →</a>
+                        <?php endif; ?>
+                    </label>
+                    
+                    <!-- DailyMotion Account Selection -->
+                    <div id="dailymotion_accounts_section" class="hidden mt-4 space-y-3">
+                        <?php
+                        $dailymotionAccounts = [];
+                        try {
+                            $dailymotionAccounts = $pdo->query("SELECT * FROM dailymotion_accounts WHERE is_active = 1 ORDER BY username")->fetchAll();
+                        } catch (Exception $e) {}
+                        
+                        if (empty($dailymotionAccounts)): ?>
+                            <div class="p-3 bg-gray-800/50 rounded-lg text-center">
+                                <p class="text-gray-400 text-sm">No DailyMotion accounts connected</p>
+                                <a href="settings.php?tab=openai" class="text-cyan-400 text-xs hover:underline">Add API keys in Settings →</a>
+                            </div>
+                        <?php else: ?>
+                            <p class="text-xs text-gray-400">Select DailyMotion account to post to:</p>
+                            <div class="grid grid-cols-1 gap-2">
+                                <?php foreach ($dailymotionAccounts as $acc): ?>
+                                    <label class="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg cursor-pointer hover:bg-gray-800 border border-transparent hover:border-cyan-500/30">
+                                        <input type="radio" name="dailymotion_account_id" value="<?= htmlspecialchars($acc['account_id']) ?>" class="w-4 h-4 accent-cyan-500">
+                                        <div class="flex-1 min-w-0">
+                                            <div class="text-sm truncate"><?= htmlspecialchars($acc['username']) ?></div>
+                                        </div>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
                 
                 <!-- Divider -->
                 <div class="flex items-center gap-3 py-2">
@@ -2874,6 +2928,16 @@ function togglePostForMe(checkbox) {
     } else {
         accountsSection.classList.add('hidden');
         legacySection.classList.remove('opacity-40');
+    }
+}
+
+function toggleDailyMotion(checkbox) {
+    const accountsSection = document.getElementById('dailymotion_accounts_section');
+    
+    if (checkbox.checked) {
+        accountsSection.classList.remove('hidden');
+    } else {
+        accountsSection.classList.add('hidden');
     }
 }
 
