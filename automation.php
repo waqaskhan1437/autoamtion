@@ -226,6 +226,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'facebook_enabled' => isset($_POST['facebook_enabled']) ? 1 : 0,
             'facebook_access_token' => $_POST['facebook_access_token'] ?? null,
             'facebook_page_id' => $_POST['facebook_page_id'] ?? null,
+            'dailymotion_enabled' => isset($_POST['dailymotion_enabled']) ? 1 : 0,
+            'dailymotion_api_key' => $_POST['dailymotion_api_key'] ?? null,
+            'dailymotion_api_secret' => $_POST['dailymotion_api_secret'] ?? null,
+            'dailymotion_username' => $_POST['dailymotion_username'] ?? null,
+            'dailymotion_password' => $_POST['dailymotion_password'] ?? null,
             'postforme_enabled' => isset($_POST['postforme_enabled']) ? 1 : 0,
             'postforme_account_ids' => isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]',
             'postforme_schedule_mode' => $_POST['postforme_schedule_mode'] ?? 'immediate',
@@ -300,6 +305,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_top_index INT DEFAULT -1 AFTER current_tagline_index");
                 $pdo->exec("ALTER TABLE automation_settings ADD COLUMN last_bottom_index INT DEFAULT -1 AFTER last_top_index");
             }
+            
+            // Migration for DailyMotion columns
+            $dmColumnsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings LIKE 'dailymotion_enabled'");
+            if ($dmColumnsStmt->rowCount() === 0) {
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_secret VARCHAR(255)");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_username VARCHAR(255)");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_password VARCHAR(255)");
+                $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_access_token TEXT");
+            }
         } catch (Exception $e) {
             // Migration failed, continue anyway
         }
@@ -309,7 +325,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Post for Me account IDs (as JSON array)
         $postformeAccountIds = isset($_POST['postforme_account_ids']) ? json_encode($_POST['postforme_account_ids']) : '[]';
         
-        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, top_taglines_json=?, bottom_taglines_json=?, tagline_rotation_mode=?, social_titles_json=?, social_descriptions_json=?, social_hashtags_json=?, social_rotation_mode=?, branding_text_top=?, branding_text_bottom=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
+        $stmt = $pdo->prepare("UPDATE automation_settings SET name=?, video_source=?, manual_video_links=?, youtube_channel_url=?, run_mode=?, api_key_id=?, video_days_filter=?, video_start_date=?, video_end_date=?, videos_per_run=?, short_duration=?, playback_speed=?, source_shorts_mode=?, source_shorts_max_count=?, short_aspect_ratio=?, top_taglines_json=?, bottom_taglines_json=?, tagline_rotation_mode=?, social_titles_json=?, social_descriptions_json=?, social_hashtags_json=?, social_rotation_mode=?, branding_text_top=?, branding_text_bottom=?, whisper_enabled=?, whisper_language=?, schedule_type=?, schedule_hour=?, schedule_every_minutes=?, youtube_enabled=?, youtube_api_key=?, youtube_channel_id=?, tiktok_enabled=?, tiktok_access_token=?, instagram_enabled=?, instagram_access_token=?, facebook_enabled=?, facebook_access_token=?, facebook_page_id=?, dailymotion_enabled=?, dailymotion_api_key=?, dailymotion_api_secret=?, dailymotion_username=?, dailymotion_password=?, postforme_enabled=?, postforme_account_ids=?, postforme_schedule_mode=?, postforme_schedule_datetime=?, postforme_schedule_timezone=?, postforme_schedule_offset_minutes=?, postforme_schedule_spread_minutes=?, rotation_enabled=?, rotation_shuffle=?, rotation_auto_reset=?, status=?, enabled=?, next_run_at=? WHERE id=?");
         
         $enabled = isset($_POST['enabled']) ? 1 : 0;
         $status = $enabled ? 'running' : 'inactive';
@@ -383,6 +399,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             isset($_POST['facebook_enabled']) ? 1 : 0,
             $_POST['facebook_access_token'] ?? null,
             $_POST['facebook_page_id'] ?? null,
+            isset($_POST['dailymotion_enabled']) ? 1 : 0,
+            $_POST['dailymotion_api_key'] ?? null,
+            $_POST['dailymotion_api_secret'] ?? null,
+            $_POST['dailymotion_username'] ?? null,
+            $_POST['dailymotion_password'] ?? null,
             isset($_POST['postforme_enabled']) ? 1 : 0,
             $postformeAccountIds,
             $_POST['postforme_schedule_mode'] ?? 'immediate',
@@ -1870,6 +1891,13 @@ refreshOutputVideoCount();
                         <span>Facebook Reels</span>
                         <span class="ml-auto text-xs text-gray-500">Requires Meta App</span>
                     </label>
+                    
+                    <label class="flex items-center gap-3 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="dailymotion_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5 text-indigo-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+                        <span>DailyMotion</span>
+                        <span class="ml-auto text-xs text-gray-500">API Key Required</span>
+                    </label>
                 </div>
                 
                 <!-- Divider -->
@@ -2702,6 +2730,13 @@ refreshOutputVideoCount();
                         <svg class="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 24 24"><path d="M9 8h-3v4h3v12h5v-12h3.642l.358-4h-4v-1.667c0-.955.192-1.333 1.115-1.333h2.885v-5h-3.808c-3.596 0-5.192 1.583-5.192 4.615v3.385z"/></svg>
                         <span>Facebook Reels</span>
                         <span class="ml-auto text-xs text-gray-500">Requires Meta App</span>
+                    </label>
+                    
+                    <label class="flex items-center gap-3 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg cursor-pointer opacity-60 hover:opacity-100">
+                        <input type="checkbox" name="dailymotion_enabled" id="edit_dailymotion_enabled" class="w-4 h-4">
+                        <svg class="w-5 h-5 text-indigo-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+                        <span>DailyMotion</span>
+                        <span class="ml-auto text-xs text-gray-500">API Key Required</span>
                     </label>
                 </div>
                 

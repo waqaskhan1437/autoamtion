@@ -294,5 +294,152 @@ class SocialMediaUploader {
             'videoId' => $data['id'] ?? null
         ];
     }
+    
+    /**
+     * Upload to DailyMotion
+     * Uses OAuth 2.0 Password Grant flow
+     */
+    public static function uploadToDailyMotion($videoPath, $title, $description, $credentials) {
+        $apiKey = $credentials['api_key'] ?? null;
+        $apiSecret = $credentials['api_secret'] ?? null;
+        $username = $credentials['username'] ?? null;
+        $password = $credentials['password'] ?? null;
+        
+        if (!$apiKey || !$apiSecret || !$username || !$password) {
+            return ['error' => 'Missing DailyMotion credentials (api_key, api_secret, username, password)'];
+        }
+        
+        $accessToken = $credentials['access_token'] ?? null;
+        
+        // Step 1: Get access token if not provided
+        if (!$accessToken) {
+            $tokenUrl = 'https://api.dailymotion.com/oauth/token';
+            
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $tokenUrl,
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POSTFIELDS => http_build_query([
+                    'grant_type' => 'password',
+                    'client_id' => $apiKey,
+                    'client_secret' => $apiSecret,
+                    'username' => $username,
+                    'password' => $password,
+                    'scope' => 'manage_videos'
+                ])
+            ]);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            if ($httpCode !== 200) {
+                return ['error' => 'Failed to get DailyMotion access token', 'response' => $response];
+            }
+            
+            $tokenData = json_decode($response, true);
+            $accessToken = $tokenData['access_token'] ?? null;
+            
+            if (!$accessToken) {
+                return ['error' => 'No access token received from DailyMotion', 'response' => $response];
+            }
+        }
+        
+        // Step 2: Get upload URL
+        $uploadUrl = 'https://api.dailymotion.com/file/upload';
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $uploadUrl,
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $accessToken
+            ]
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            return ['error' => 'Failed to get DailyMotion upload URL', 'response' => $response];
+        }
+        
+        $uploadData = json_decode($response, true);
+        $uploadEndpoint = $uploadData['upload_url'] ?? null;
+        
+        if (!$uploadEndpoint) {
+            return ['error' => 'No upload endpoint received from DailyMotion'];
+        }
+        
+        // Step 3: Upload video file
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $uploadEndpoint,
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POSTFIELDS => [
+                'file' => new CURLFile($videoPath, 'video/mp4')
+            ],
+            CURLOPT_TIMEOUT => 3600
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            return ['error' => 'DailyMotion file upload failed', 'response' => $response];
+        }
+        
+        $fileData = json_decode($response, true);
+        $fileUrl = $fileData['url'] ?? null;
+        
+        if (!$fileUrl) {
+            return ['error' => 'No file URL returned from DailyMotion upload', 'response' => $response];
+        }
+        
+        // Step 4: Create video object
+        $createUrl = 'https://api.dailymotion.com/me/videos';
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $createUrl,
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/x-www-form-urlencoded'
+            ],
+            CURLOPT_POSTFIELDS => http_build_query([
+                'url' => $fileUrl,
+                'title' => $title,
+                'description' => $description,
+                'published' => true
+            ])
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        $videoData = json_decode($response, true);
+        
+        if ($httpCode !== 200 || isset($videoData['error'])) {
+            return ['error' => 'Failed to create DailyMotion video', 'response' => $response];
+        }
+        
+        $videoId = $videoData['id'] ?? null;
+        
+        return [
+            'success' => true,
+            'platform' => 'dailymotion',
+            'videoId' => $videoId,
+            'url' => 'https://www.dailymotion.com/video/' . $videoId,
+            'access_token' => $accessToken
+        ];
+    }
 }
 ?>

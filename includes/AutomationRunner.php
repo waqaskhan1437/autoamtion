@@ -1325,6 +1325,26 @@ class AutomationRunner {
                 $this->log('post_facebook', 'error', 'Facebook error: ' . $e->getMessage(), $videoId, 'facebook');
             }
         }
+        
+        // DailyMotion
+        if ($this->automation['dailymotion_enabled'] && $this->automation['dailymotion_api_key']) {
+            try {
+                $result = SocialMediaUploader::uploadToDailyMotion($videoPath, $caption, $caption, [
+                    'api_key' => $this->automation['dailymotion_api_key'],
+                    'api_secret' => $this->automation['dailymotion_api_secret'],
+                    'username' => $this->automation['dailymotion_username'],
+                    'password' => $this->automation['dailymotion_password'],
+                    'access_token' => $this->automation['dailymotion_access_token'] ?? null
+                ]);
+                
+                $status = $result['success'] ? 'success' : 'error';
+                $message = $result['success'] ? 'Posted to DailyMotion: ' . ($result['url'] ?? '') : ($result['error'] ?? 'Failed');
+                $this->log('post_dailymotion', $status, $message, $videoId, 'dailymotion');
+                if (!empty($result['success'])) $stats['posted']++;
+            } catch (Exception $e) {
+                $this->log('post_dailymotion', 'error', 'DailyMotion error: ' . $e->getMessage(), $videoId, 'dailymotion');
+            }
+        }
 
         return $stats;
     }
