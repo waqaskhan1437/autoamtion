@@ -140,6 +140,36 @@ function normalizeScheduleHourInput($rawInput) {
 // Handle POST requests and redirect to prevent form resubmission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+    
+    // Run migrations for new columns before processing
+    try {
+        $existingColumns = [];
+        try {
+            $colsStmt = $pdo->query("SHOW COLUMNS FROM automation_settings");
+            $existingColumns = $colsStmt->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Exception $e) {}
+        
+        // DailyMotion columns migration
+        if (!in_array('dailymotion_enabled', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+        }
+        if (!in_array('dailymotion_api_key', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_api_secret', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_secret VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_username', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_username VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_password', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_password VARCHAR(255)");
+        }
+        if (!in_array('dailymotion_access_token', $existingColumns)) {
+            $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_access_token TEXT");
+        }
+    } catch (Exception $e) {}
+    
     $redirectMsg = '';
     
     if ($action === 'create') {
@@ -238,8 +268,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'postforme_schedule_timezone' => $_POST['postforme_schedule_timezone'] ?? 'UTC',
             'postforme_schedule_offset_minutes' => intval($_POST['postforme_schedule_offset_minutes'] ?? 0),
             'postforme_schedule_spread_minutes' => intval($_POST['postforme_schedule_spread_minutes'] ?? 0),
-            'dailymotion_enabled' => isset($_POST['dailymotion_enabled']) ? 1 : 0,
-            'dailymotion_account_id' => $_POST['dailymotion_account_id'] ?? 'default',
             'rotation_enabled' => isset($_POST['rotation_enabled']) ? 1 : 0,
             'rotation_shuffle' => isset($_POST['rotation_shuffle']) ? 1 : 0,
             'rotation_auto_reset' => isset($_POST['rotation_auto_reset']) ? 1 : 0,
