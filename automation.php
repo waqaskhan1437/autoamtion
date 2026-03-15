@@ -356,6 +356,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // DailyMotion columns migration
             if (!in_array('dailymotion_enabled', $existingColumns)) {
                 $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_enabled TINYINT(1) DEFAULT 0");
+            } else {
+                // Fix old records that might have NULL
+                $pdo->exec("UPDATE automation_settings SET dailymotion_enabled = 0 WHERE dailymotion_enabled IS NULL");
             }
             if (!in_array('dailymotion_api_key', $existingColumns)) {
                 $pdo->exec("ALTER TABLE automation_settings ADD COLUMN dailymotion_api_key VARCHAR(255)");
@@ -4015,9 +4018,10 @@ function openEditModal(automationData) {
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
     document.getElementById('edit_instagram_enabled').checked = automationData.instagram_enabled == 1;
     document.getElementById('edit_facebook_enabled').checked = automationData.facebook_enabled == 1;
-    // Fix: check for both string "1" and number 1
+    // Fix: handle both old (null/undefined) and new data
     const dmValue = automationData.dailymotion_enabled;
-    document.getElementById('edit_dailymotion_enabled').checked = (dmValue == '1' || dmValue == 1 || dmValue === true);
+    const dmChecked = dmValue == '1' || dmValue == 1 || dmValue === true || dmValue === 'true';
+    document.getElementById('edit_dailymotion_enabled').checked = dmChecked;
     document.getElementById('edit_postforme_schedule_mode').value = automationData.postforme_schedule_mode || 'immediate';
     
     // Handle PostForMe account selections
