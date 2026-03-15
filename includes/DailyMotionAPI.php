@@ -163,6 +163,16 @@ class DailyMotionAPI {
             return ['success' => false, 'error' => 'Failed to get valid access token. Check API Key and Secret.'];
         }
         
+        // Validate video file
+        if (!file_exists($videoPath)) {
+            return ['success' => false, 'error' => 'Video file not found: ' . $videoPath];
+        }
+        
+        $fileSize = filesize($videoPath);
+        if ($fileSize === 0) {
+            return ['success' => false, 'error' => 'Video file is empty'];
+        }
+        
         // First, get upload URL
         $ch = curl_init($this->baseUrl . '/file/upload');
         curl_setopt_array($ch, [
@@ -177,41 +187,44 @@ class DailyMotionAPI {
         curl_close($ch);
         
         if ($httpCode !== 200) {
-            return ['success' => false, 'error' => 'Failed to get upload URL: ' . $response];
+            return ['success' => false, 'error' => 'Failed to get upload URL (HTTP ' . $httpCode . '): ' . $response];
         }
         
         $uploadData = json_decode($response, true);
         $uploadUrl = $uploadData['upload_url'];
         
-        // Upload the video file
-        if (!file_exists($videoPath)) {
-            return ['success' => false, 'error' => 'Video file not found: ' . $videoPath];
+        if (empty($uploadUrl)) {
+            return ['success' => false, 'error' => 'No upload URL returned from DailyMotion'];
         }
         
-        $fileSize = filesize($videoPath);
-        $fileHandle = fopen($videoPath, 'r');
+        // Upload using POST with file contents - more reliable than PUT
+        $fileContent = file_get_contents($videoPath);
+        if ($fileContent === false) {
+            return ['success' => false, 'error' => 'Failed to read video file'];
+        }
         
         $ch = curl_init($uploadUrl);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_PUT => true,
-            CURLOPT_INFILE => $fileHandle,
-            CURLOPT_INFILESIZE => $fileSize,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $fileContent,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: video/mp4',
-                'Authorization: Bearer ' . $token
+                'Content-Length: ' . strlen($fileContent),
+                'Authorization: Bearer ' . $token,
+                'Accept: application/json'
             ],
-            CURLOPT_TIMEOUT => 3600 // 1 hour for large uploads
+            CURLOPT_TIMEOUT => 3600,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1 // Force HTTP/1.1 to avoid HTTP/2 issues
         ]);
         
         $uploadResponse = curl_exec($ch);
         $uploadHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
         curl_close($ch);
-        fclose($fileHandle);
         
         if ($uploadHttpCode !== 200 || $error) {
-            return ['success' => false, 'error' => 'Upload failed: ' . $error];
+            return ['success' => false, 'error' => 'Upload failed: ' . ($error ? $error : 'HTTP ' . $uploadHttpCode)];
         }
         
         $uploadResult = json_decode($uploadResponse, true);
