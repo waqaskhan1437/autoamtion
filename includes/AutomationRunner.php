@@ -1249,6 +1249,7 @@ class AutomationRunner {
      */
     private function postToSocialMedia($videoPath, $caption, $videoId, $socialContent = [], $creativePackage = null) {
         $stats = ['scheduled' => 0, 'posted' => 0];
+        $originalVideoPath = $videoPath; // Save original before any modifications
 
         // Debug: Log Post for Me settings
         $pfEnabled = $this->automation['postforme_enabled'] ?? 'not_set';
@@ -1326,10 +1327,10 @@ class AutomationRunner {
             }
         }
         
-        // DailyMotion
+        // DailyMotion - use original video path (not the transcoded one)
         if ($this->automation['dailymotion_enabled'] && $this->automation['dailymotion_api_key']) {
             try {
-                $result = SocialMediaUploader::uploadToDailyMotion($videoPath, $caption, $caption, [
+                $result = SocialMediaUploader::uploadToDailyMotion($originalVideoPath, $caption, $caption, [
                     'api_key' => $this->automation['dailymotion_api_key'],
                     'api_secret' => $this->automation['dailymotion_api_secret'],
                     'username' => $this->automation['dailymotion_username'],
