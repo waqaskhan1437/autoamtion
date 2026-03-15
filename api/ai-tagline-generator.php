@@ -22,6 +22,8 @@ if ($action === 'test_api_key') {
         $result = testOpenAIKey($apiKey);
     } elseif ($provider === 'openrouter') {
         $result = testOpenRouterKey($apiKey);
+    } elseif ($provider === 'cohere') {
+        $result = testCohereKey($apiKey, $model);
     } else {
         $result = ['success' => false, 'error' => 'Unsupported provider: ' . $provider];
     }
@@ -48,6 +50,8 @@ if ($action === 'generate_taglines') {
         $result = generateWithOpenAI($apiKey, $topPrompt, $bottomPrompt);
     } elseif ($provider === 'openrouter') {
         $result = generateWithOpenRouter($apiKey, $topPrompt, $bottomPrompt);
+    } elseif ($provider === 'cohere') {
+        $result = generateTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $model);
     } else {
         $result = ['success' => false, 'error' => 'Unsupported provider: ' . $provider];
     }
@@ -75,6 +79,37 @@ if ($action === 'generate_bulk_taglines') {
         $result = generateBulkWithOpenAI($apiKey, $topPrompt, $bottomPrompt, $count);
     } elseif ($provider === 'openrouter') {
         $result = generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count);
+    } elseif ($provider === 'cohere') {
+        $result = generateBulkTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $count, $model);
+    } else {
+        $result = ['success' => false, 'error' => 'Unsupported provider: ' . $provider];
+    }
+    
+    echo json_encode($result);
+    exit;
+}
+
+if ($action === 'generate_social_content') {
+    $apiKey = $_POST['api_key'] ?? '';
+    $provider = $_POST['provider'] ?? 'gemini';
+    $model = $_POST['model'] ?? 'gemini-2.5-flash';
+    $topic = $_POST['topic'] ?? '';
+    $platform = $_POST['platform'] ?? 'youtube';
+    $count = min(max(intval($_POST['count'] ?? 5), 1), 100);
+    
+    if (empty($apiKey)) {
+        echo json_encode(['success' => false, 'error' => 'API key is required']);
+        exit;
+    }
+    
+    if ($provider === 'gemini') {
+        $result = generateSocialContentWithGemini($apiKey, $topic, $platform, $count, $model);
+    } elseif ($provider === 'openai') {
+        $result = generateSocialContentWithOpenAI($apiKey, $topic, $platform, $count);
+    } elseif ($provider === 'openrouter') {
+        $result = generateSocialContentWithOpenRouter($apiKey, $topic, $platform, $count);
+    } elseif ($provider === 'cohere') {
+        $result = generateSocialContentWithCohere($apiKey, $topic, $platform, $count, $model);
     } else {
         $result = ['success' => false, 'error' => 'Unsupported provider: ' . $provider];
     }
@@ -649,8 +684,24 @@ function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) 
     $content = trim($content);
     $content = preg_replace('/^```json\s*/i', '', $content);
     $content = preg_replace('/\s*```$/i', '', $content);
+    $content = str_replace(["\\n", "\\r", "\\t"], '', $content);
+    $content = preg_replace('/\s+/', ' ', $content);
     
     $taglines = json_decode($content, true);
+    
+    // Handle various response formats
+    if (isset($taglines['top']) && isset($taglines['bottom'])) {
+        $taglines = [$taglines];
+    }
+    if (isset($taglines['taglines']) && is_array($taglines['taglines'])) {
+        $taglines = $taglines['taglines'];
+    }
+    if (isset($taglines['items']) && is_array($taglines['items'])) {
+        $taglines = $taglines['items'];
+    }
+    if (isset($taglines['results']) && is_array($taglines['results'])) {
+        $taglines = $taglines['results'];
+    }
     
     if (!is_array($taglines)) {
         return ['success' => false, 'error' => 'Failed to parse AI response'];
@@ -672,4 +723,650 @@ function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) 
         'taglines' => $valid,
         'count' => count($valid)
     ];
+}
+
+function generateSocialContentWithGemini($apiKey, $topic, $platform, $count, $model = 'gemini-2.5-flash') {
+    $fallbackModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    if (!in_array($model, $fallbackModels)) {
+        $fallbackModels = array_merge([$model], $fallbackModels);
+    }
+    
+    $platformInfo = getPlatformInfo($platform);
+    
+    $lastError = '';
+    foreach ($fallbackModels as $testModel) {
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$testModel}:generateContent?key=" . $apiKey;
+        
+        $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+        $instructions .= "Each set must have 3 parts:\n";
+        $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
+        $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
+        $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
+        $instructions .= "Topic: {$topic}\n\n";
+        $instructions .= "IMPORTANT:\n";
+        $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
+        $instructions .= "- Title must be under 60 characters\n";
+        $instructions .= "- Description must be under 500 characters\n";
+        $instructions .= "- Hashtags must be under 500 characters\n";
+        $instructions .= "- No duplicate content across all sets\n\n";
+        $instructions .= "Respond ONLY in JSON array format:\n";
+        $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+        
+        $data = [
+            'contents' => [['parts' => [['text' => $instructions]]]],
+            'generationConfig' => [
+                'temperature' => 0.95,
+                'maxOutputTokens' => min($count * 300, 4000),
+                'responseMimeType' => 'application/json'
+            ]
+        ];
+        
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode($data),
+            CURLOPT_TIMEOUT => 90
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            $lastError = 'Connection error: ' . $error;
+            continue;
+        }
+        
+        if ($httpCode !== 200) {
+            $respData = json_decode($response, true);
+            $errorMsg = $respData['error']['message'] ?? 'API error';
+            if (strpos($errorMsg, 'quota') !== false || strpos($errorMsg, 'rate limit') !== false || $httpCode === 429) {
+                $lastError = 'Rate limit for ' . $testModel;
+                continue;
+            }
+            return ['success' => false, 'error' => $errorMsg . ' (Model: ' . $testModel . ')'];
+        }
+        
+        $result = json_decode($response, true);
+        $content = $result['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        
+        $content = trim($content);
+        $content = preg_replace('/^```json\s*/i', '', $content);
+        $content = preg_replace('/\s*```$/i', '', $content);
+        
+        $items = json_decode($content, true);
+        
+        if (!is_array($items)) {
+            continue;
+        }
+        
+        $valid = [];
+        $seen = [];
+        foreach ($items as $item) {
+            if (!isset($item['title']) || !isset($item['description']) || !isset($item['hashtags'])) {
+                continue;
+            }
+            
+            $title = trim($item['title']);
+            $desc = trim($item['description']);
+            $hash = trim($item['hashtags']);
+            
+            if (strlen($title) > 60 || strlen($desc) > 500 || strlen($hash) > 500) {
+                continue;
+            }
+            
+            $hashKey = md5(strtolower($title . $desc . $hash));
+            if (isset($seen[$hashKey])) {
+                continue;
+            }
+            $seen[$hashKey] = true;
+            
+            $valid[] = [
+                'title' => $title,
+                'description' => $desc,
+                'hashtags' => $hash
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'provider' => 'gemini',
+            'model' => $testModel,
+            'items' => $valid,
+            'count' => count($valid)
+        ];
+    }
+    
+    return ['success' => false, 'error' => 'All Gemini models failed. ' . $lastError];
+}
+
+function generateSocialContentWithOpenAI($apiKey, $topic, $platform, $count) {
+    $platformInfo = getPlatformInfo($platform);
+    
+    $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+    $instructions .= "Each set must have 3 parts:\n";
+    $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
+    $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
+    $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
+    $instructions .= "Topic: {$topic}\n\n";
+    $instructions .= "IMPORTANT:\n";
+    $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
+    $instructions .= "- Title must be under 60 characters\n";
+    $instructions .= "- Description must be under 500 characters\n";
+    $instructions .= "- Hashtags must be under 500 characters\n";
+    $instructions .= "- No duplicate content across all sets\n\n";
+    $instructions .= "Respond ONLY in JSON array format:\n";
+    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+    
+    $ch = curl_init('https://api.openai.com/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey
+        ],
+        CURLOPT_POSTFIELDS => json_encode([
+            'model' => 'gpt-4o-mini',
+            'messages' => [
+                ['role' => 'user', 'content' => $instructions]
+            ],
+            'temperature' => 0.95,
+            'max_tokens' => min($count * 300, 4000)
+        ]),
+        CURLOPT_TIMEOUT => 90
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        return ['success' => false, 'error' => 'Connection error: ' . $error];
+    }
+    
+    if ($httpCode !== 200) {
+        $data = json_decode($response, true);
+        $errorMsg = $data['error']['message'] ?? 'API error';
+        return ['success' => false, 'error' => $errorMsg];
+    }
+    
+    $data = json_decode($response, true);
+    $content = $data['choices'][0]['message']['content'] ?? '';
+    
+    $content = trim($content);
+    $content = preg_replace('/^```json\s*/i', '', $content);
+    $content = preg_replace('/\s*```$/i', '', $content);
+    
+    $items = json_decode($content, true);
+    
+    if (!is_array($items)) {
+        return ['success' => false, 'error' => 'Failed to parse AI response'];
+    }
+    
+    $valid = [];
+    $seen = [];
+    foreach ($items as $item) {
+        if (!isset($item['title']) || !isset($item['description']) || !isset($item['hashtags'])) {
+            continue;
+        }
+        
+        $title = trim($item['title']);
+        $desc = trim($item['description']);
+        $hash = trim($item['hashtags']);
+        
+        if (strlen($title) > 60 || strlen($desc) > 500 || strlen($hash) > 500) {
+            continue;
+        }
+        
+        $hashKey = md5(strtolower($title . $desc . $hash));
+        if (isset($seen[$hashKey])) {
+            continue;
+        }
+        $seen[$hashKey] = true;
+        
+        $valid[] = [
+            'title' => $title,
+            'description' => $desc,
+            'hashtags' => $hash
+        ];
+    }
+    
+    return [
+        'success' => true,
+        'provider' => 'openai',
+        'items' => $valid,
+        'count' => count($valid)
+    ];
+}
+
+function generateSocialContentWithOpenRouter($apiKey, $topic, $platform, $count) {
+    $platformInfo = getPlatformInfo($platform);
+    
+    $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+    $instructions .= "Each set must have 3 parts:\n";
+    $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
+    $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
+    $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
+    $instructions .= "Topic: {$topic}\n\n";
+    $instructions .= "IMPORTANT:\n";
+    $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
+    $instructions .= "- Title must be under 60 characters\n";
+    $instructions .= "- Description must be under 500 characters\n";
+    $instructions .= "- Hashtags must be under 500 characters\n";
+    $instructions .= "- No duplicate content across all sets\n\n";
+    $instructions .= "Respond ONLY in JSON array format:\n";
+    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+    
+    $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+            'HTTP-Referer: http://localhost',
+            'X-Title: AI Social Content Generator'
+        ],
+        CURLOPT_POSTFIELDS => json_encode([
+            'model' => 'openrouter/free',
+            'messages' => [
+                ['role' => 'user', 'content' => $instructions]
+            ],
+            'temperature' => 0.95,
+            'max_tokens' => min($count * 300, 4000)
+        ]),
+        CURLOPT_TIMEOUT => 120
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        return ['success' => false, 'error' => 'Connection error: ' . $error];
+    }
+    
+    if ($httpCode !== 200) {
+        $data = json_decode($response, true);
+        $errorMsg = $data['error']['message'] ?? 'API error';
+        return ['success' => false, 'error' => $errorMsg];
+    }
+    
+    $data = json_decode($response, true);
+    $content = $data['choices'][0]['message']['content'] ?? '';
+    
+    $content = trim($content);
+    $content = preg_replace('/^```json\s*/i', '', $content);
+    $content = preg_replace('/\s*```$/i', '', $content);
+    
+    $items = json_decode($content, true);
+    
+    if (!is_array($items)) {
+        return ['success' => false, 'error' => 'Failed to parse AI response'];
+    }
+    
+    $valid = [];
+    $seen = [];
+    foreach ($items as $item) {
+        if (!isset($item['title']) || !isset($item['description']) || !isset($item['hashtags'])) {
+            continue;
+        }
+        
+        $title = trim($item['title']);
+        $desc = trim($item['description']);
+        $hash = trim($item['hashtags']);
+        
+        if (strlen($title) > 60 || strlen($desc) > 500 || strlen($hash) > 500) {
+            continue;
+        }
+        
+        $hashKey = md5(strtolower($title . $desc . $hash));
+        if (isset($seen[$hashKey])) {
+            continue;
+        }
+        $seen[$hashKey] = true;
+        
+        $valid[] = [
+            'title' => $title,
+            'description' => $desc,
+            'hashtags' => $hash
+        ];
+    }
+    
+    return [
+        'success' => true,
+        'provider' => 'openrouter',
+        'items' => $valid,
+        'count' => count($valid)
+    ];
+}
+
+function getPlatformInfo($platform) {
+    $platforms = [
+        'youtube' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars'],
+        'tiktok' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars'],
+        'instagram' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars'],
+        'facebook' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars'],
+        'twitter' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars'],
+        'linkedin' => ['title_limit' => 'max 60 chars', 'desc_limit' => 'max 500 chars', 'hashtag_limit' => 'max 500 chars']
+    ];
+    return $platforms[$platform] ?? $platforms['youtube'];
+}
+
+function testCohereKey($apiKey, $model = 'command-a-03-2025') {
+    $cohereModels = [
+        'command-a-03-2025' => 'command-a-03-2025',
+        'command-a-02-2025' => 'command-a-02-2025',
+        'command-r-08-2025' => 'command-r-08-2025',
+        'command-r7b-01-2025' => 'command-r7b-01-2025'
+    ];
+    
+    $model = $cohereModels[$model] ?? 'command-a-03-2025';
+    
+    return callCohereAPI($apiKey, 'Say "OK" if you can read this.', $model, 10, false);
+}
+
+function generateTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $model = 'command-a-03-2025') {
+    $cohereModels = [
+        'command-a-03-2025' => 'command-a-03-2025',
+        'command-a-02-2025' => 'command-a-02-2025',
+        'command-r-08-2025' => 'command-r-08-2025',
+        'command-r7b-01-2025' => 'command-r7b-01-2025'
+    ];
+    
+    $model = $cohereModels[$model] ?? 'command-a-03-2025';
+    
+    $instructions = "Generate taglines for video text overlays.\n";
+    $instructions .= "TOP (LARGE at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
+    $instructions .= "BOTTOM (SMALL at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
+    $instructions .= "Respond ONLY in JSON: {\"top\": \"...\", \"bottom\": \"...\"}\n\n";
+    
+    if (!empty($topPrompt)) {
+        $instructions .= "TOP theme: {$topPrompt}\n";
+    }
+    if (!empty($bottomPrompt)) {
+        $instructions .= "BOTTOM theme: {$bottomPrompt}\n";
+    }
+    
+    $result = callCohereAPI($apiKey, $instructions, $model, 200, true);
+    
+    if (!$result['success']) {
+        return $result;
+    }
+    
+    $content = $result['text'];
+    $content = trim($content);
+    $content = preg_replace('/^```json\s*/i', '', $content);
+    $content = preg_replace('/\s*```$/i', '', $content);
+    
+    $taglines = json_decode($content, true);
+    
+    if (!$taglines || !isset($taglines['top']) || !isset($taglines['bottom'])) {
+        return ['success' => false, 'error' => 'Failed to parse AI response'];
+    }
+    
+    return [
+        'success' => true,
+        'provider' => 'cohere',
+        'model' => $model,
+        'top' => $taglines['top'],
+        'bottom' => $taglines['bottom']
+    ];
+}
+
+function generateBulkTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $count, $model = 'command-a-03-2025') {
+    $cohereModels = [
+        'command-a-03-2025' => 'command-a-03-2025',
+        'command-a-02-2025' => 'command-a-02-2025',
+        'command-r-08-2025' => 'command-r-08-2025',
+        'command-r7b-01-2025' => 'command-r7b-01-2025'
+    ];
+    
+    $model = $cohereModels[$model] ?? 'command-a-03-2025';
+    
+    $instructions = "Generate {$count} UNIQUE pairs of video taglines.\n\n";
+    $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
+    $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
+    $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
+    $instructions .= "Respond ONLY in JSON array: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    
+    $result = callCohereAPI($apiKey, $instructions, $model, min($count * 50, 2000), true);
+    
+    if (!$result['success']) {
+        return $result;
+    }
+    
+    $content = $result['text'];
+    $content = trim($content);
+    $content = preg_replace('/^```json\s*/i', '', $content);
+    $content = preg_replace('/\s*```$/i', '', $content);
+    $content = str_replace(["\\n", "\\r", "\\t"], '', $content);
+    $content = preg_replace('/\s+/', ' ', $content);
+    
+    $taglines = json_decode($content, true);
+    
+    // Handle various response formats
+    if (isset($taglines['top']) && isset($taglines['bottom'])) {
+        $taglines = [$taglines];
+    }
+    if (isset($taglines['taglines']) && is_array($taglines['taglines'])) {
+        $taglines = $taglines['taglines'];
+    }
+    if (isset($taglines['items']) && is_array($taglines['items'])) {
+        $taglines = $taglines['items'];
+    }
+    if (isset($taglines['results']) && is_array($taglines['results'])) {
+        $taglines = $taglines['results'];
+    }
+    
+    if (!is_array($taglines)) {
+        return ['success' => false, 'error' => 'Failed to parse AI response'];
+    }
+    
+    $valid = [];
+    foreach ($taglines as $t) {
+        if (isset($t['top']) && isset($t['bottom'])) {
+            $valid[] = [
+                'top' => trim($t['top']),
+                'bottom' => trim($t['bottom'])
+            ];
+        }
+    }
+    
+    return [
+        'success' => true,
+        'provider' => 'cohere',
+        'model' => $model,
+        'taglines' => $valid,
+        'count' => count($valid)
+    ];
+}
+
+function generateSocialContentWithCohere($apiKey, $topic, $platform, $count, $model = 'command-a-03-2025') {
+    $cohereModels = [
+        'command-a-03-2025' => 'command-a-03-2025',
+        'command-a-02-2025' => 'command-a-02-2025',
+        'command-r-08-2025' => 'command-r-08-2025',
+        'command-r7b-01-2025' => 'command-r7b-01-2025'
+    ];
+    
+    $model = $cohereModels[$model] ?? 'command-a-03-2025';
+    $platformInfo = getPlatformInfo($platform);
+    
+    $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+    $instructions .= "Each set must have 3 parts:\n";
+    $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
+    $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
+    $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
+    $instructions .= "Topic: {$topic}\n\n";
+    $instructions .= "IMPORTANT:\n";
+    $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
+    $instructions .= "- Title must be under 60 characters\n";
+    $instructions .= "- Description must be under 500 characters\n";
+    $instructions .= "- Hashtags must be under 500 characters\n";
+    $instructions .= "- No duplicate content across all sets\n\n";
+    $instructions .= "Respond ONLY in JSON array format:\n";
+    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+    
+    $result = callCohereAPI($apiKey, $instructions, $model, min($count * 300, 4000), true);
+    
+    if (!$result['success']) {
+        return $result;
+    }
+    
+    $content = $result['text'];
+    $content = trim($content);
+    $content = preg_replace('/^```json\s*/i', '', $content);
+    $content = preg_replace('/\s*```$/i', '', $content);
+    
+    $items = json_decode($content, true);
+    
+    // Handle if Cohere returns single object instead of array
+    if (isset($items['title']) && isset($items['description']) && isset($items['hashtags'])) {
+        $items = [$items];
+    }
+    
+    // Handle nested content_sets or similar wrappers
+    if (isset($items['content_sets']) && is_array($items['content_sets'])) {
+        $items = $items['content_sets'];
+    }
+    if (isset($items['items']) && is_array($items['items'])) {
+        $items = $items['items'];
+    }
+    if (isset($items['results']) && is_array($items['results'])) {
+        $items = $items['results'];
+    }
+    
+    if (!is_array($items)) {
+        return ['success' => false, 'error' => 'Failed to parse AI response'];
+    }
+    
+    $valid = [];
+    $seen = [];
+    $debugInfo = [];
+    foreach ($items as $idx => $item) {
+        $debugInfo[] = "Item $idx: " . json_encode($item);
+        
+        if (!isset($item['title']) || !isset($item['description']) || !isset($item['hashtags'])) {
+            continue;
+        }
+        
+        $title = trim($item['title']);
+        $desc = trim($item['description']);
+        $hash = trim($item['hashtags']);
+        
+        if (strlen($title) > 60 || strlen($desc) > 500 || strlen($hash) > 500) {
+            $debugInfo[] = "Skipped $idx: length issue - title=".strlen($title).", desc=".strlen($desc).", hash=".strlen($hash);
+            continue;
+        }
+        
+        $hashKey = md5(strtolower($title . $desc . $hash));
+        if (isset($seen[$hashKey])) {
+            continue;
+        }
+        $seen[$hashKey] = true;
+        
+        $valid[] = [
+            'title' => $title,
+            'description' => $desc,
+            'hashtags' => $hash
+        ];
+    }
+    
+    if (count($valid) === 0 && count($items) > 0) {
+        return ['success' => false, 'error' => 'All items failed validation (check character limits)'];
+    }
+    
+    if (count($items) === 0) {
+        return ['success' => false, 'error' => 'No items generated'];
+    }
+    
+    return [
+        'success' => true,
+        'provider' => 'cohere',
+        'model' => $model,
+        'items' => $valid,
+        'count' => count($valid)
+    ];
+}
+
+function callCohereAPI($apiKey, $prompt, $model = 'command-a-03-2025', $maxTokens = 2000, $jsonResponse = false, $maxRetries = 3, $retryDelay = 2) {
+    $url = 'https://api.cohere.com/v2/chat';
+    
+    $data = [
+        'model' => $model,
+        'messages' => [
+            ['role' => 'user', 'content' => $prompt]
+        ],
+        'max_tokens' => $maxTokens
+    ];
+    
+    if ($jsonResponse) {
+        $data['response_format'] = ['type' => 'json_object'];
+    }
+    
+    $lastError = '';
+    
+    for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKey
+            ],
+            CURLOPT_POSTFIELDS => json_encode($data),
+            CURLOPT_TIMEOUT => 120
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            $lastError = 'Connection error: ' . $error;
+            continue;
+        }
+        
+        if ($httpCode === 200) {
+            $result = json_decode($response, true);
+            $text = $result['message']['content'][0]['text'] ?? '';
+            return [
+                'success' => true,
+                'text' => $text,
+                'http_code' => $httpCode
+            ];
+        } elseif ($httpCode === 429) {
+            $lastError = 'Rate limit exceeded (429)';
+            if ($attempt < $maxRetries) {
+                sleep($retryDelay * $attempt);
+                continue;
+            }
+        } elseif ($httpCode === 401) {
+            return ['success' => false, 'error' => 'Invalid API key', 'http_code' => $httpCode];
+        } else {
+            $respData = json_decode($response, true);
+            $errorMsg = $respData['message'] ?? 'API error (HTTP ' . $httpCode . ')';
+            
+            if (strpos($errorMsg, 'rate limit') !== false || strpos($errorMsg, '429') !== false) {
+                $lastError = 'Rate limit exceeded';
+                if ($attempt < $maxRetries) {
+                    sleep($retryDelay * $attempt);
+                    continue;
+                }
+            }
+            
+            return ['success' => false, 'error' => $errorMsg, 'http_code' => $httpCode];
+        }
+    }
+    
+    return ['success' => false, 'error' => 'Failed after ' . $maxRetries . ' attempts. ' . $lastError];
 }
