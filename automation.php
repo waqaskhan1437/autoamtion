@@ -3985,7 +3985,7 @@ function openEditModal(automationData) {
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
     document.getElementById('edit_instagram_enabled').checked = automationData.instagram_enabled == 1;
     document.getElementById('edit_facebook_enabled').checked = automationData.facebook_enabled == 1;
-    document.getElementById('edit_dailymotion_enabled').checked = automationData.dailymotion_enabled == 1;
+    document.getElementById('edit_dailymotion_enabled').checked = (automationData.dailymotion_enabled ?? 0) == 1;
     document.getElementById('edit_postforme_schedule_mode').value = automationData.postforme_schedule_mode || 'immediate';
     
     // Handle PostForMe account selections
