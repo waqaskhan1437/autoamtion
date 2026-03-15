@@ -4018,10 +4018,16 @@ function openEditModal(automationData) {
     document.getElementById('edit_tiktok_enabled').checked = automationData.tiktok_enabled == 1;
     document.getElementById('edit_instagram_enabled').checked = automationData.instagram_enabled == 1;
     document.getElementById('edit_facebook_enabled').checked = automationData.facebook_enabled == 1;
-    // Fix: handle both old (null/undefined) and new data
-    const dmValue = automationData.dailymotion_enabled;
-    const dmChecked = dmValue == '1' || dmValue == 1 || dmValue === true || dmValue === 'true';
-    document.getElementById('edit_dailymotion_enabled').checked = dmChecked;
+    // Debug
+    console.log('Setting DailyMotion checkbox:', 'value:', automationData.dailymotion_enabled, 'type:', typeof automationData.dailymotion_enabled);
+    const dmEl = document.getElementById('edit_dailymotion_enabled');
+    if (dmEl) {
+        const dmValue = automationData.dailymotion_enabled;
+        dmEl.checked = (dmValue == '1' || dmValue == 1 || dmValue === true || dmValue === 'true');
+        console.log('DailyMotion checkbox now checked:', dmEl.checked);
+    } else {
+        console.log('ERROR: DailyMotion checkbox element not found!');
+    }
     document.getElementById('edit_postforme_schedule_mode').value = automationData.postforme_schedule_mode || 'immediate';
     
     // Handle PostForMe account selections
