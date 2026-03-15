@@ -637,12 +637,18 @@ function generateBulkWithOpenAI($apiKey, $topPrompt, $bottomPrompt, $count) {
 }
 
 function generateBulkWithOpenRouter($apiKey, $topPrompt, $bottomPrompt, $count) {
-    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. Do NOT generate fewer. Output MUST be an array with {$count} items.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. This is CRITICAL - you MUST output exactly {$count} items in the array.\n\n";
     $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
     $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
     $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
-    $instructions .= "IMPORTANT: You MUST generate exactly {$count} tagline pairs. Do not stop early.\n";
-    $instructions .= "Respond ONLY in JSON array format: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    $instructions .= "STRICT REQUIREMENTS:\n";
+    $instructions .= "- Output EXACTLY {$count} items in a JSON array\n";
+    $instructions .= "- Each item must be: {\"top\": \"...\", \"bottom\": \"...\"}\n";
+    $instructions .= "- Do NOT output anything else - only the JSON array\n";
+    $instructions .= "- Do NOT wrap in code blocks\n\n";
+    $instructions .= "Example output format:\n";
+    $instructions .= "[{\"top\": \"Birthday Bash\", \"bottom\": \"Order Now\"}, {\"top\": \"Celebrate Today\", \"bottom\": \"Shop Here\"}, ...]\n\n";
+    $instructions .= "Remember: Output exactly {$count} tagline pairs!";
     
     $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
     curl_setopt_array($ch, [
@@ -949,20 +955,21 @@ function generateSocialContentWithOpenAI($apiKey, $topic, $platform, $count) {
 function generateSocialContentWithOpenRouter($apiKey, $topic, $platform, $count) {
     $platformInfo = getPlatformInfo($platform);
     
-    $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE social media content sets for {$platform}. This is CRITICAL - you MUST output exactly {$count} items in the array.\n\n";
     $instructions .= "Each set must have 3 parts:\n";
     $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
     $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
     $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
     $instructions .= "Topic: {$topic}\n\n";
-    $instructions .= "IMPORTANT:\n";
+    $instructions .= "STRICT REQUIREMENTS:\n";
+    $instructions .= "- Output EXACTLY {$count} items in a JSON array\n";
+    $instructions .= "- Each item must be: {\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}\n";
     $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
-    $instructions .= "- Title must be under 60 characters\n";
-    $instructions .= "- Description must be under 500 characters\n";
-    $instructions .= "- Hashtags must be under 500 characters\n";
-    $instructions .= "- No duplicate content across all sets\n\n";
-    $instructions .= "Respond ONLY in JSON array format:\n";
-    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+    $instructions .= "- Do NOT output anything else - only the JSON array\n";
+    $instructions .= "- Do NOT wrap in code blocks\n\n";
+    $instructions .= "Example output format:\n";
+    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, {\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]\n\n";
+    $instructions .= "Remember: Output exactly {$count} content sets!";
     
     $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
     curl_setopt_array($ch, [
@@ -1132,12 +1139,18 @@ function generateBulkTaglinesWithCohere($apiKey, $topPrompt, $bottomPrompt, $cou
     
     $model = $cohereModels[$model] ?? 'command-a-03-2025';
     
-    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. Do NOT generate fewer. Output MUST be an array with {$count} items.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE pairs of video taglines. This is CRITICAL - you MUST output exactly {$count} items in the array.\n\n";
     $instructions .= "TOP (LARGE text at top): Short catchy hook (2-4 words). Examples: Birthday Bash, Love You, Congratulations\n";
     $instructions .= "BOTTOM (SMALL text at bottom): Very short CTA (1-3 words). Examples: Order now, Visit us, Prankwish.com\n";
     $instructions .= "Theme - TOP: " . (!empty($topPrompt) ? $topPrompt : "celebration") . " | BOTTOM: " . (!empty($bottomPrompt) ? $bottomPrompt : "website") . "\n\n";
-    $instructions .= "IMPORTANT: You MUST generate exactly {$count} tagline pairs. Do not stop early.\n";
-    $instructions .= "Respond ONLY in JSON array format: [{\"top\": \"...\", \"bottom\": \"...\"}, ...]";
+    $instructions .= "STRICT REQUIREMENTS:\n";
+    $instructions .= "- Output EXACTLY {$count} items in a JSON array\n";
+    $instructions .= "- Each item must be: {\"top\": \"...\", \"bottom\": \"...\"}\n";
+    $instructions .= "- Do NOT output anything else - only the JSON array\n";
+    $instructions .= "- Do NOT wrap in code blocks\n\n";
+    $instructions .= "Example output format:\n";
+    $instructions .= "[{\"top\": \"Birthday Bash\", \"bottom\": \"Order Now\"}, {\"top\": \"Celebrate Today\", \"bottom\": \"Shop Here\"}, ...]\n\n";
+    $instructions .= "Remember: Output exactly {$count} tagline pairs!";
     
     $result = callCohereAPI($apiKey, $instructions, $model, min($count * 60, 3000), true, 3, 2, 0.95);
     
@@ -1202,20 +1215,21 @@ function generateSocialContentWithCohere($apiKey, $topic, $platform, $count, $mo
     $model = $cohereModels[$model] ?? 'command-a-03-2025';
     $platformInfo = getPlatformInfo($platform);
     
-    $instructions = "Generate {$count} UNIQUE social media content sets for {$platform}.\n\n";
+    $instructions = "Generate EXACTLY {$count} UNIQUE social media content sets for {$platform}. This is CRITICAL - you MUST output exactly {$count} items in the array.\n\n";
     $instructions .= "Each set must have 3 parts:\n";
     $instructions .= "1. TITLE: {$platformInfo['title_limit']} (SHORT, catchy, max 60 chars)\n";
     $instructions .= "2. DESCRIPTION: {$platformInfo['desc_limit']} (engaging, SEO-friendly, max 500 chars)\n";
     $instructions .= "3. HASHTAGS: {$platformInfo['hashtag_limit']} (relevant, trending-style, max 500 chars)\n\n";
     $instructions .= "Topic: {$topic}\n\n";
-    $instructions .= "IMPORTANT:\n";
+    $instructions .= "STRICT REQUIREMENTS:\n";
+    $instructions .= "- Output EXACTLY {$count} items in a JSON array\n";
+    $instructions .= "- Each item must be: {\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}\n";
     $instructions .= "- All titles, descriptions, hashtags must be UNIQUE (no duplicates)\n";
-    $instructions .= "- Title must be under 60 characters\n";
-    $instructions .= "- Description must be under 500 characters\n";
-    $instructions .= "- Hashtags must be under 500 characters\n";
-    $instructions .= "- No duplicate content across all sets\n\n";
-    $instructions .= "Respond ONLY in JSON array format:\n";
-    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]";
+    $instructions .= "- Do NOT output anything else - only the JSON array\n";
+    $instructions .= "- Do NOT wrap in code blocks\n\n";
+    $instructions .= "Example output format:\n";
+    $instructions .= "[{\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, {\"title\": \"...\", \"description\": \"...\", \"hashtags\": \"...\"}, ...]\n\n";
+    $instructions .= "Remember: Output exactly {$count} content sets!";
     
     $result = callCohereAPI($apiKey, $instructions, $model, min($count * 300, 4000), true);
     
