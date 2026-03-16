@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mysqli \
         pdo_mysql \
         zip \
+    && a2dismod mpm_event mpm_worker mpm_prefork \
+    && a2enmod mpm_prefork \
     && a2enmod rewrite headers expires \
     && rm -rf /var/lib/apt/lists/*
 
