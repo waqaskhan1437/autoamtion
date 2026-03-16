@@ -1,21 +1,12 @@
 {
-  "framework": null,
   "builds": [
     {
       "src": "index.php",
-      "use": "vercel-php@0.6.0"
-    },
-    {
-      "src": "api/*.php",
-      "use": "vercel-php@0.6.0"
+      "use": "@vercel/php@0.6.0"
     },
     {
       "src": "api/**/*.php",
-      "use": "vercel-php@0.6.0"
-    },
-    {
-      "src": "automation.php",
-      "use": "vercel-php@0.6.0"
+      "use": "@vercel/php@0.6.0"
     }
   ],
   "routes": [
