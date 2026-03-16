@@ -1,4 +1,4 @@
-FROM php:8.2-apache
+FROM php:8.2-fpm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libzip-dev \
     unzip \
+    nginx \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install \
         curl \
@@ -16,9 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mysqli \
         pdo_mysql \
         zip \
-    && a2dismod mpm_event mpm_worker 2>/dev/null || true \
-    && a2enmod rewrite headers expires \
     && rm -rf /var/lib/apt/lists/*
+
+RUN echo "daemon off;" >> /etc/nginx/nginx.conf
+
+RUN sed -i 's/listen = 9000/listen = 9001/' /usr/local/etc/php-fpm.d/www.conf 2>/dev/null || true
+
+COPY default/nginx.conf /etc/nginx/sites-available/default
 
 WORKDIR /var/www/html
 
@@ -27,6 +32,6 @@ COPY . /var/www/html
 RUN mkdir -p /var/www/html/logs \
     && chown -R www-data:www-data /var/www/html
 
-EXPOSE $PORT
+EXPOSE 80
 
-CMD ["apache2-foreground"]
+CMD ["sh", "-c", "php-fpm && nginx"]
