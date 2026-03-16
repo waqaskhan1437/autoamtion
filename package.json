@@ -8,7 +8,8 @@
     "cf:smoke": "node cloudflare-worker/scripts/smoke-worker.mjs"
   },
   "dependencies": {
-    "libsodium-wrappers": "^0.7.15"
+    "libsodium-wrappers": "^0.7.15",
+    "vercel-php": "^0.6.0"
   },
   "devDependencies": {
     "wrangler": "4.71.0"
