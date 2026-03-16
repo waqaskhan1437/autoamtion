@@ -1,14 +1,11 @@
 .git
 .github
-node_modules
-logs
-content
-default
-cloudflare-worker
-examples
 .gitignore
 *.md
 Dockerfile
 docker
 railway.json
 render.yaml
+logs
+content
+examples
