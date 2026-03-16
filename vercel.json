@@ -1,21 +1,31 @@
 {
+  "framework": null,
   "builds": [
     {
-      "src": "*.php",
-      "use": "vercel-php"
+      "src": "index.php",
+      "use": "vercel-php@0.6.0"
     },
     {
-      "src": "api/**",
-      "use": "vercel-php"
+      "src": "api/*.php",
+      "use": "vercel-php@0.6.0"
+    },
+    {
+      "src": "api/**/*.php",
+      "use": "vercel-php@0.6.0"
+    },
+    {
+      "src": "automation.php",
+      "use": "vercel-php@0.6.0"
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "/api/$1"
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.php"
     }
-  ],
-  "env": {
-    "PHP_VERSION": "8.2"
-  }
+  ]
 }
