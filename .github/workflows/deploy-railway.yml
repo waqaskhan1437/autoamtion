@@ -12,9 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to Railway
-        uses: railwayhq/railway-action@v1
-        with:
-          token: ${{ secrets.RAILWAY_TOKEN }}
-          project: 88608be2-ded4-486b-9f93-e02720e62e3c
-          environment: production
+      - name: Install Railway CLI
+        run: |
+          npm install -g @railway/cli
+
+      - name: Login to Railway
+        run: railway login --token ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Deploy
+        run: railway deploy --project 88608be2-ded4-486b-9f93-e02720e62e3c
