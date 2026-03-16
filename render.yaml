@@ -4,5 +4,5 @@ services:
     env: docker
     dockerfilePath: Dockerfile
     dockerContext: .
-    port: 10000
+    port: 8080
     plan: free
