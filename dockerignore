@@ -1,0 +1,10 @@
+node_modules/
+.git/
+*.log
+*.zip
+temp-repo/
+logs/
+cookies.txt
+automation-backup.json
+automation-local-backup.zip
+.DS_Store

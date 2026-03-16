@@ -1,0 +1,138 @@
+name: Run Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID from UI'
+        required: false
+        type: string
+      local_api_url:
+        description: 'Local API URL'
+        required: false
+        type: string
+      local_api_key:
+        description: 'Local API Key'
+        required: false
+        type: string
+      automation_id:
+        description: 'Automation ID to run'
+        required: false
+        type: string
+        default: "1"
+      webhook_url:
+        description: 'Webhook URL to report status'
+        required: false
+        type: string
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Start timer
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Report started
+        if: inputs.webhook_url != ''
+        run: |
+          curl -s -X POST "${{ inputs.webhook_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "run_id": "${{ inputs.run_id }}",
+              "status": "running",
+              "started_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+            }' || true
+
+      - name: Trigger Local API
+        id: trigger
+        run: |
+          API_URL="${LOCAL_API_URL:-http://localhost}"
+          API_KEY="${LOCAL_API_KEY:-}"
+          AUTO_ID="${AUTOMATION_ID:-1}"
+          
+          echo "Triggering automation on $API_URL"
+          echo "Automation ID: $AUTO_ID"
+          
+          if [ -n "$API_KEY" ]; then
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/start-automation.php" \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: $API_KEY" \
+              -d "{\"automation_id\": $AUTO_ID}")
+          else
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/api/start-automation.php" \
+              -H "Content-Type: application/json" \
+              -d "{\"automation_id\": $AUTO_ID}")
+          fi
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          echo "HTTP Response: $HTTP_CODE"
+          echo "Response: $BODY"
+          
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "response=$BODY" >> $GITHUB_OUTPUT
+          
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "Failed to trigger automation"
+            exit 1
+          fi
+
+      - name: Wait for completion
+        run: |
+          # Wait for automation to complete
+          # Adjust this time based on your automation duration
+          echo "Waiting for automation to complete..."
+          sleep 600
+
+      - name: Check automation status
+        id: check_status
+        run: |
+          API_URL="${LOCAL_API_URL:-http://localhost}"
+          API_KEY="${LOCAL_API_KEY:-}"
+          
+          echo "Checking automation status..."
+          
+          if [ -n "$API_KEY" ]; then
+            STATUS_RESPONSE=$(curl -s -X GET "$API_URL/api/check-running-automation.php" \
+              -H "X-API-Key: $API_KEY")
+          else
+            STATUS_RESPONSE=$(curl -s -X GET "$API_URL/api/check-running-automation.php")
+          fi
+          
+          echo "Status response: $STATUS_RESPONSE"
+          echo "status_response=$STATUS_RESPONSE" >> $GITHUB_OUTPUT
+
+      - name: Calculate duration
+        run: |
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "Duration: $DURATION seconds"
+          echo "duration=$DURATION" >> $GITHUB_ENV
+
+      - name: Report completion
+        if: always() && inputs.webhook_url != ''
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            STATUS="completed"
+          else
+            STATUS="error"
+          fi
+          
+          curl -s -X POST "${{ inputs.webhook_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "run_id": "${{ inputs.run_id }}",
+              "status": "'$STATUS'",
+              "conclusion": "${{ job.status }}",
+              "duration_seconds": '${{ env.duration }}',
+              "completed_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+            }' || true
+
+      - name: Upload logs
+        if: always()
+        run: |
+          echo "Automation run completed with status: ${{ job.status }}"
+          echo "Total duration: ${{ env.duration }} seconds"
